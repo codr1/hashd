@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Workstream Metadata",
+  "type": "object",
+  "required": ["ID", "TITLE", "BRANCH", "WORKTREE", "BASE_BRANCH", "BASE_SHA", "STATUS"],
+  "properties": {
+    "ID": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "TITLE": { "type": "string", "minLength": 1 },
+    "BRANCH": { "type": "string", "pattern": "^[a-z]+/[a-z0-9_-]+$" },
+    "WORKTREE": { "type": "string", "minLength": 1 },
+    "BASE_BRANCH": { "type": "string", "minLength": 1 },
+    "BASE_SHA": { "type": "string", "pattern": "^[a-f0-9]{7,40}$" },
+    "STATUS": { "type": "string" },
+    "CREATED_AT": { "type": "string" },
+    "LAST_REFRESHED": { "type": "string" },
+    "LAST_RUN_ID": { "type": "string" },
+    "LAST_COMMIT_SHA": { "type": "string", "pattern": "^[a-f0-9]{7,40}$" }
+  }
+}

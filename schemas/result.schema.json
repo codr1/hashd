@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Run Result",
+  "type": "object",
+  "required": ["version", "project", "workstream", "status", "timestamps"],
+  "properties": {
+    "version": { "const": 1 },
+    "project": { "type": "string" },
+    "workstream": { "type": "string" },
+    "microcommit": { "type": ["string", "null"], "pattern": "^COMMIT-[A-Za-z0-9_-]+-\\d{3}$" },
+    "status": { "enum": ["passed", "failed", "blocked", "complete"] },
+    "failed_stage": {
+      "enum": ["load", "select", "clarification_check", "implement", "test", "review", "human_review", "qa_gate", "update_state", "docs", "uat", "internal"]
+    },
+    "blocked_reason": { "type": "string" },
+    "base_sha": { "type": "string", "pattern": "^[a-f0-9]{7,40}$" },
+    "commit_sha": { "type": "string", "pattern": "^[a-f0-9]{7,40}$" },
+    "touched_files_count": { "type": "integer", "minimum": 0 },
+    "timestamps": {
+      "type": "object",
+      "required": ["started", "ended"],
+      "properties": {
+        "started": { "type": "string" },
+        "ended": { "type": "string" },
+        "duration_seconds": { "type": "number" }
+      }
+    },
+    "stages": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "status": { "enum": ["passed", "failed", "skipped", "blocked"] },
+          "duration_seconds": { "type": "number" },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}

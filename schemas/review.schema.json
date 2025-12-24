@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Claude Review Output",
+  "type": "object",
+  "required": ["version", "decision"],
+  "properties": {
+    "version": { "const": 1 },
+    "decision": { "enum": ["approve", "request_changes"] },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "issue"],
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": ["integer", "null"] },
+          "issue": { "type": "string" },
+          "severity": { "enum": ["critical", "major", "minor"] },
+          "fix_hint": { "type": "string" }
+        }
+      }
+    },
+    "required_changes": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "suggestions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "documentation": {
+      "type": "object",
+      "properties": {
+        "required": { "type": "boolean" },
+        "present": { "type": "boolean" },
+        "quality": { "enum": ["adequate", "good", "needs_work"] },
+        "missing_sections": { "type": "array", "items": { "type": "string" } },
+        "stale_screenshots": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}
