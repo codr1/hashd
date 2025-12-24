@@ -9,8 +9,12 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from orchestrator.lib.config import ProjectConfig, load_project_profile, load_workstream
-from orchestrator.runner.locking import global_lock, LockTimeout
+from orchestrator.runner.locking import (
+    workstream_lock, LockTimeout, count_running_workstreams,
+    cleanup_stale_lock_files, CONCURRENCY_WARNING_THRESHOLD
+)
 from orchestrator.runner.context import RunContext
+from orchestrator.notifications import notify_awaiting_review, notify_complete, notify_failed, notify_blocked
 from orchestrator.runner.stages import run_stage, StageError, StageBlocked, StageResult
 from orchestrator.runner.impl.stages import (
     stage_load,
@@ -29,7 +33,7 @@ from orchestrator.runner.impl.stages import (
 MAX_REVIEW_ATTEMPTS = 3
 
 
-def run_once(ctx: RunContext) -> tuple[str, int]:
+def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
     """
     Run a single micro-commit cycle with retry loop and human gate.
 
@@ -39,7 +43,7 @@ def run_once(ctx: RunContext) -> tuple[str, int]:
     3. HUMAN_REVIEW (blocks until human action)
     4. QA_GATE, UPDATE_STATE (commit)
 
-    Returns: (status, exit_code)
+    Returns: (status, exit_code, failed_stage)
     """
     ctx.write_env_snapshot()
     ctx.log(f"Starting run: {ctx.run_id}")
@@ -50,30 +54,30 @@ def run_once(ctx: RunContext) -> tuple[str, int]:
         result = run_stage(ctx, "load", stage_load)
         if result == StageResult.BLOCKED:
             ctx.write_result("blocked", blocked_reason="load blocked")
-            return "blocked", 8
+            return "blocked", 8, None
     except StageError as e:
         ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code
+        return "failed", e.exit_code, e.stage
 
     try:
         result = run_stage(ctx, "select", stage_select)
         if result == StageResult.BLOCKED:
             reason = ctx.stages.get("select", {}).get("notes", "unknown")
             ctx.write_result("blocked", blocked_reason=reason)
-            return "blocked", 8
+            return "blocked", 8, None
     except StageError as e:
         ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code
+        return "failed", e.exit_code, e.stage
 
     try:
         result = run_stage(ctx, "clarification_check", stage_clarification_check)
         if result == StageResult.BLOCKED:
             reason = ctx.stages.get("clarification_check", {}).get("notes", "unknown")
             ctx.write_result("blocked", blocked_reason=reason)
-            return "blocked", 8
+            return "blocked", 8, None
     except StageError as e:
         ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code
+        return "failed", e.exit_code, e.stage
 
     # === Phase 2: Inner Loop (Implement -> Test -> Review) ===
     review_feedback = None
@@ -97,10 +101,10 @@ def run_once(ctx: RunContext) -> tuple[str, int]:
             if result == StageResult.BLOCKED:
                 reason = ctx.stages.get("implement", {}).get("notes", "unknown")
                 ctx.write_result("blocked", blocked_reason=reason)
-                return "blocked", 8
+                return "blocked", 8, None
         except StageError as e:
             ctx.write_result("failed", e.stage)
-            return "failed", e.exit_code
+            return "failed", e.exit_code, e.stage
 
         # Clear human feedback after first use
         human_feedback = None
@@ -111,12 +115,12 @@ def run_once(ctx: RunContext) -> tuple[str, int]:
             if result == StageResult.BLOCKED:
                 reason = ctx.stages.get("test", {}).get("notes", "unknown")
                 ctx.write_result("blocked", blocked_reason=reason)
-                return "blocked", 8
+                return "blocked", 8, None
         except StageError as e:
             # Test failure - don't retry, exit immediately
             ctx.write_result("failed", e.stage)
             ctx.log(f"Tests failed on attempt {attempt}, not retrying")
-            return "failed", e.exit_code
+            return "failed", e.exit_code, e.stage
 
         # REVIEW
         try:
@@ -124,7 +128,7 @@ def run_once(ctx: RunContext) -> tuple[str, int]:
             if result == StageResult.BLOCKED:
                 reason = ctx.stages.get("review", {}).get("notes", "unknown")
                 ctx.write_result("blocked", blocked_reason=reason)
-                return "blocked", 8
+                return "blocked", 8, None
             # Review passed!
             ctx.log(f"Review approved on attempt {attempt}")
             break
@@ -151,11 +155,11 @@ def run_once(ctx: RunContext) -> tuple[str, int]:
         if result == StageResult.BLOCKED:
             reason = ctx.stages.get("human_review", {}).get("notes", "unknown")
             ctx.write_result("blocked", blocked_reason=reason)
-            return "blocked", 8
+            return "blocked", 8, None
     except StageError as e:
         # Human rejected/reset or other error - exit, next run will handle it
         ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code
+        return "failed", e.exit_code, e.stage
 
     # === Phase 4: Final gates and commit ===
     try:
@@ -163,25 +167,25 @@ def run_once(ctx: RunContext) -> tuple[str, int]:
         if result == StageResult.BLOCKED:
             reason = ctx.stages.get("qa_gate", {}).get("notes", "unknown")
             ctx.write_result("blocked", blocked_reason=reason)
-            return "blocked", 8
+            return "blocked", 8, None
     except StageError as e:
         ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code
+        return "failed", e.exit_code, e.stage
 
     try:
         result = run_stage(ctx, "update_state", stage_update_state)
         if result == StageResult.BLOCKED:
             reason = ctx.stages.get("update_state", {}).get("notes", "unknown")
             ctx.write_result("blocked", blocked_reason=reason)
-            return "blocked", 8
+            return "blocked", 8, None
     except StageError as e:
         ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code
+        return "failed", e.exit_code, e.stage
 
     # Success!
     ctx.write_result("passed")
     ctx.log("Run complete: passed")
-    return "passed", 0
+    return "passed", 0, None
 
 
 def _load_review_feedback(run_dir: Path) -> dict:
@@ -246,21 +250,41 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             test_timeout=300,
         )
 
-    # Acquire lock
-    print(f"Acquiring lock...")
+    # Clean up any stale lock files from crashed processes
+    cleanup_stale_lock_files(ops_dir)
+
+    # Check concurrency before acquiring lock
+    running_count = count_running_workstreams(ops_dir)
+    if running_count >= CONCURRENCY_WARNING_THRESHOLD:
+        print(f"WARNING: {running_count} workstreams already running (threshold: {CONCURRENCY_WARNING_THRESHOLD})")
+        print("Consider waiting for some to complete to avoid API rate limits")
+
+    # Acquire per-workstream lock
+    print(f"Acquiring lock for {ws_id}...")
     try:
-        with global_lock(ops_dir):
+        with workstream_lock(ops_dir, ws_id):
             print(f"Lock acquired")
 
             if args.loop:
                 # Loop mode - run until blocked or complete
-                return run_loop(ops_dir, project_config, profile, workstream, workstream_dir)
+                return run_loop(ops_dir, project_config, profile, workstream, workstream_dir, ws_id)
             else:
                 # Single run
                 ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir)
                 print(f"Run ID: {ctx.run_id}")
 
-                status, exit_code = run_once(ctx)
+                status, exit_code, failed_stage = run_once(ctx)
+
+                # Send notifications based on result
+                if status == "blocked":
+                    reason = ctx.stages.get("human_review", {}).get("notes", "")
+                    if "human approval" in reason.lower():
+                        notify_awaiting_review(ws_id)
+                    else:
+                        notify_blocked(ws_id, reason)
+                elif status == "failed":
+                    notify_failed(ws_id, failed_stage or "unknown")
+                # No notification on single successful runs - only loop completion notifies
 
                 print(f"\nResult: {status}")
                 print(f"Run directory: {ctx.run_dir}")
@@ -268,11 +292,12 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                 return exit_code
 
     except LockTimeout:
-        print("ERROR: Could not acquire lock (timeout)")
+        print(f"ERROR: Could not acquire lock for {ws_id} (timeout)")
+        print("Another run may be active for this workstream")
         return 3
 
 
-def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, workstream_dir: Path) -> int:
+def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, workstream_dir: Path, ws_id: str) -> int:
     """Run until blocked or all micro-commits complete."""
     iteration = 0
 
@@ -288,27 +313,31 @@ def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, 
         ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir)
         print(f"Run ID: {ctx.run_id}")
 
-        status, exit_code = run_once(ctx)
+        status, exit_code, failed_stage = run_once(ctx)
         print(f"Result: {status}")
 
         if status == "blocked":
             reason = ctx.stages.get("select", {}).get("notes", "")
             if reason == "all_complete":
                 print("\nAll micro-commits complete!")
+                notify_complete(ws_id)
                 return 0
             # Check if blocked on human review
             hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
             if "human approval" in hr_notes.lower():
                 print(f"\nAwaiting human review")
-                print(f"Use: wf approve {workstream.id}")
-                print(f"  or: wf reject {workstream.id} --feedback \"...\"")
-                print(f"  or: wf reset {workstream.id}")
+                print(f"Use: wf approve {ws_id}")
+                print(f"  or: wf reject {ws_id} --feedback \"...\"")
+                print(f"  or: wf reset {ws_id}")
+                notify_awaiting_review(ws_id)
             else:
                 print(f"\nBlocked: {reason or hr_notes}")
+                notify_blocked(ws_id, reason or hr_notes)
             return exit_code
 
         if status == "failed":
-            print(f"\nFailed, stopping loop")
+            print(f"\nFailed at stage: {failed_stage or 'unknown'}")
+            notify_failed(ws_id, failed_stage or "unknown")
             return exit_code
 
         # Continue to next iteration
