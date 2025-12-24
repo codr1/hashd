@@ -123,9 +123,10 @@ class ClaudeAgent:
 
         return review
 
-    def build_review_prompt(self, diff: str, commit_title: str, commit_description: str) -> str:
+    def build_review_prompt(self, diff: str, commit_title: str, commit_description: str,
+                            review_history: list = None) -> str:
         """Build the review prompt for Claude."""
-        return f'''Review these changes as a sr. staff engineer who doesn't feel like taking any shit.
+        prompt = f'''Review these changes as a sr. staff engineer who doesn't feel like taking any shit.
 
 Make sure it is perfect - from design to implementation to documentation. You will support it when it fails at 2am. No compromises.
 
@@ -139,7 +140,36 @@ Description: {commit_description}
 ```diff
 {diff}
 ```
+'''
 
+        # Add conversation history so reviewer knows what it already asked for
+        if review_history:
+            prompt += "\n## PREVIOUS REVIEW CYCLES\n"
+            prompt += "You already reviewed earlier attempts. Don't re-flag issues that were addressed.\n\n"
+
+            for entry in review_history:
+                attempt = entry.get("attempt", "?")
+                prompt += f"### Attempt {attempt}\n"
+
+                feedback = entry.get("review_feedback", {})
+                if feedback:
+                    prompt += "**Your previous feedback:**\n"
+                    if feedback.get("blockers"):
+                        for blocker in feedback["blockers"]:
+                            if isinstance(blocker, dict):
+                                prompt += f"- BLOCKER: {blocker.get('file', '?')}: {blocker.get('issue', '?')}\n"
+                            else:
+                                prompt += f"- BLOCKER: {blocker}\n"
+                    if feedback.get("required_changes"):
+                        for change in feedback["required_changes"]:
+                            prompt += f"- REQUIRED: {change}\n"
+
+                if entry.get("implement_summary"):
+                    prompt += f"**Implementer response:** {entry['implement_summary']}\n"
+
+                prompt += "\n"
+
+        prompt += f'''
 ## Required Response Format
 {{
   "version": 1,
@@ -162,5 +192,7 @@ Rules:
 - blockers: bugs, security issues, breaking changes, missing error handling, silent failures
 - required_changes: code smells, inconsistencies, missing logging, unchecked return codes
 - suggestions: improvements that would make the code more maintainable
+- If you asked for a change in a previous review and it was addressed, don't re-flag it
 - Be ruthless. If you wouldn't stake your reputation on this code, reject it.
 '''
+        return prompt

@@ -26,6 +26,8 @@ class RunContext:
     microcommit: Optional[MicroCommit] = None
     start_time: datetime = field(default_factory=datetime.now)
     stages: dict = field(default_factory=dict)
+    # Conversation history: list of {"attempt": N, "review_feedback": {...}, "implement_summary": "..."}
+    review_history: list = field(default_factory=list)
 
     @classmethod
     def create(cls, ops_dir: Path, project: ProjectConfig, profile: ProjectProfile,
