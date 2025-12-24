@@ -47,6 +47,45 @@ EOF
 ./bin/wf run my_feature --loop
 ```
 
+## Parallel Workstreams
+
+Hashd supports running multiple workstreams simultaneously. Each workstream gets its own git worktree and lock file, allowing true parallel development:
+
+```bash
+# Terminal 1
+./bin/wf run feature_auth --loop
+
+# Terminal 2 (at the same time)
+./bin/wf run feature_api --loop
+
+# Terminal 3
+./bin/wf run bugfix_123 --loop
+```
+
+A warning is shown when more than 3 workstreams are running concurrently (to avoid API rate limits).
+
+## Desktop Notifications
+
+Hashd sends desktop notifications when workstreams need attention:
+
+| Event | Urgency | When |
+|-------|---------|------|
+| Ready for review | normal | Human approval needed |
+| Blocked | critical | Clarification needed or other blocker |
+| Complete | low | All micro-commits done |
+| Failed | critical | Stage failure |
+
+Works with any freedesktop-compliant notification daemon (mako, dunst, GNOME, KDE).
+
+Requires `notify-send` to be installed:
+```bash
+# Debian/Ubuntu
+sudo apt install libnotify-bin
+
+# Arch
+sudo pacman -S libnotify
+```
+
 ## Commands
 
 | Command | Description |
