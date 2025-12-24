@@ -18,6 +18,7 @@ from orchestrator.commands import run as cmd_run_module
 from orchestrator.commands import approve as cmd_approve_module
 from orchestrator.commands import show as cmd_show_module
 from orchestrator.commands import clarify as cmd_clarify_module
+from orchestrator.commands import pm as cmd_pm_module
 
 
 def get_ops_dir() -> Path:
@@ -138,6 +139,36 @@ def cmd_clarify_ask(args):
     return cmd_clarify_module.cmd_clarify_ask(args, ops_dir, project_config)
 
 
+def cmd_pm_plan(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_pm_module.cmd_pm_plan(args, ops_dir, project_config)
+
+
+def cmd_pm_refine(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_pm_module.cmd_pm_refine(args, ops_dir, project_config)
+
+
+def cmd_pm_spec(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_pm_module.cmd_pm_spec(args, ops_dir, project_config)
+
+
+def cmd_pm_status(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_pm_module.cmd_pm_status(args, ops_dir, project_config)
+
+
+def cmd_pm_list(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_pm_module.cmd_pm_list(args, ops_dir, project_config)
+
+
+def cmd_pm_show(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_pm_module.cmd_pm_show(args, ops_dir, project_config)
+
+
 def main():
     parser = argparse.ArgumentParser(prog='wf', description='AOS Workflow CLI')
     parser.add_argument('--project', '-p', help='Project name')
@@ -250,6 +281,38 @@ def main():
     p_clarify_ask.add_argument('--context', '-c', help='Additional context')
     p_clarify_ask.add_argument('--urgency', '-u', choices=['blocking', 'non-blocking'], default='blocking')
     p_clarify_ask.set_defaults(func=cmd_clarify_ask)
+
+    # wf pm
+    p_pm = subparsers.add_parser('pm', help='Project management (story sifting, SPEC generation)')
+    p_pm.set_defaults(func=cmd_pm_status)
+    pm_sub = p_pm.add_subparsers(dest='pm_cmd')
+
+    # wf pm plan
+    p_pm_plan = pm_sub.add_parser('plan', help='Start interactive planning session')
+    p_pm_plan.set_defaults(func=cmd_pm_plan)
+
+    # wf pm refine
+    p_pm_refine = pm_sub.add_parser('refine', help='Create story from a chunk')
+    p_pm_refine.add_argument('name', help='Chunk name/description')
+    p_pm_refine.set_defaults(func=cmd_pm_refine)
+
+    # wf pm spec
+    p_pm_spec = pm_sub.add_parser('spec', help='Update SPEC.md from workstream')
+    p_pm_spec.add_argument('workstream', help='Workstream ID')
+    p_pm_spec.set_defaults(func=cmd_pm_spec)
+
+    # wf pm status
+    p_pm_status = pm_sub.add_parser('status', help='Show PM status')
+    p_pm_status.set_defaults(func=cmd_pm_status)
+
+    # wf pm list
+    p_pm_list = pm_sub.add_parser('list', help='List stories')
+    p_pm_list.set_defaults(func=cmd_pm_list)
+
+    # wf pm show
+    p_pm_show = pm_sub.add_parser('show', help='Show story details')
+    p_pm_show.add_argument('story', help='Story ID')
+    p_pm_show.set_defaults(func=cmd_pm_show)
 
     args = parser.parse_args()
     return args.func(args)

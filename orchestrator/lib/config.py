@@ -16,6 +16,7 @@ class ProjectConfig:
     name: str
     repo_path: Path
     default_branch: str
+    reqs_path: str  # Relative to repo_path, e.g., "REQS.md"
 
 
 @dataclass
@@ -48,6 +49,7 @@ def load_project_config(project_dir: Path) -> ProjectConfig:
         name=env["PROJECT_NAME"],
         repo_path=Path(env["REPO_PATH"]),
         default_branch=env.get("DEFAULT_BRANCH", "main"),
+        reqs_path=env.get("REQS_PATH", "REQS.md"),
     )
 
 
