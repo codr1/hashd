@@ -134,11 +134,9 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
             break
         except StageError as e:
             if e.stage == "review" and attempt < MAX_REVIEW_ATTEMPTS:
-                # Review rejected - capture feedback and retry
+                # Review rejected - capture feedback and retry (iterative, no reset)
                 ctx.log(f"Review rejected on attempt {attempt}, will retry")
                 review_feedback = _load_review_feedback(ctx.run_dir)
-                # Reset uncommitted changes for clean retry
-                _reset_worktree(ctx.workstream.worktree)
                 continue
             else:
                 # Final attempt failed or non-review error
