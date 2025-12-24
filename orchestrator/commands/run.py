@@ -30,7 +30,7 @@ from orchestrator.runner.impl.stages import (
 )
 
 
-MAX_REVIEW_ATTEMPTS = 3
+MAX_REVIEW_ATTEMPTS = 5
 
 
 def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
@@ -39,7 +39,7 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
 
     Flow:
     1. LOAD, SELECT, CLARIFICATION_CHECK
-    2. Inner loop (up to 3 attempts): IMPLEMENT -> TEST -> REVIEW
+    2. Inner loop (up to 5 attempts): IMPLEMENT -> TEST -> REVIEW
     3. HUMAN_REVIEW (blocks until human action)
     4. QA_GATE, UPDATE_STATE (commit)
 

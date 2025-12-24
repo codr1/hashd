@@ -207,15 +207,58 @@ def stage_review(ctx: RunContext):
     if not ctx.microcommit:
         raise StageError("review", "No micro-commit selected", 9)
 
-    # Get diff of uncommitted changes (staged + unstaged)
+    worktree = str(ctx.workstream.worktree)
+
+    # Get diff of uncommitted changes (staged + unstaged, but not untracked)
     result = subprocess.run(
-        ["git", "-C", str(ctx.workstream.worktree), "diff", "HEAD"],
+        ["git", "-C", worktree, "diff", "HEAD"],
         capture_output=True, text=True
     )
     if result.returncode != 0:
         raise StageError("review", "Could not get diff", 6)
 
     diff = result.stdout
+
+    # Get untracked files and include their content
+    status_result = subprocess.run(
+        ["git", "-C", worktree, "status", "--porcelain"],
+        capture_output=True, text=True
+    )
+    MAX_UNTRACKED_FILE_SIZE = 1024 * 1024  # 1MB limit
+    if status_result.returncode == 0:
+        for line in status_result.stdout.splitlines():
+            if line.startswith("?? "):
+                filepath = line[3:].strip()
+                full_path = ctx.workstream.worktree / filepath
+                if full_path.is_file():
+                    # Skip large files
+                    try:
+                        file_size = full_path.stat().st_size
+                        if file_size > MAX_UNTRACKED_FILE_SIZE:
+                            logger.warning(f"Skipping large untracked file ({file_size} bytes): {filepath}")
+                            continue
+                    except OSError as e:
+                        logger.warning(f"Could not stat untracked file {filepath}: {e}")
+                        continue
+
+                    try:
+                        content = full_path.read_text()
+                        # Format as a diff for a new file
+                        diff += f"\ndiff --git a/{filepath} b/{filepath}\n"
+                        diff += f"new file mode 100644\n"
+                        diff += f"--- /dev/null\n"
+                        diff += f"+++ b/{filepath}\n"
+                        lines = content.splitlines(keepends=True)
+                        diff += f"@@ -0,0 +1,{len(lines)} @@\n"
+                        for content_line in lines:
+                            diff += f"+{content_line}"
+                        if not content.endswith('\n'):
+                            diff += "\n\\ No newline at end of file\n"
+                    except UnicodeDecodeError:
+                        logger.warning(f"Skipping binary untracked file: {filepath}")
+                    except OSError as e:
+                        logger.warning(f"Could not read untracked file {filepath}: {e}")
+
     if not diff.strip():
         ctx.log("No changes to review")
         return
