@@ -84,12 +84,11 @@ def stage_clarification_check(ctx: RunContext):
     ctx.log("No blocking clarifications")
 
 
-def stage_implement(ctx: RunContext, review_feedback: dict = None, human_feedback: str = None):
+def stage_implement(ctx: RunContext, human_feedback: str = None):
     """Run Codex to implement the micro-commit.
 
     Args:
-        ctx: Run context
-        review_feedback: Previous Claude review feedback (blockers, required_changes)
+        ctx: Run context (includes review_history for iterative feedback)
         human_feedback: Human-provided guidance from rejection
     """
     if not ctx.microcommit:
@@ -110,24 +109,37 @@ Instructions:
 3. If you encounter ambiguity or need clarification, stop and explain what you need
 """
 
-    # Add review feedback if this is a retry
-    if review_feedback:
-        prompt += "\n\n## PREVIOUS REVIEW FEEDBACK (must address these issues)\n\n"
-        if review_feedback.get("blockers"):
-            prompt += "### Blockers:\n"
-            for blocker in review_feedback["blockers"]:
-                if isinstance(blocker, dict):
-                    prompt += f"- {blocker.get('file', 'unknown')}: {blocker.get('issue', 'unknown issue')}\n"
-                else:
-                    prompt += f"- {blocker}\n"
-        if review_feedback.get("required_changes"):
-            prompt += "\n### Required Changes:\n"
-            for change in review_feedback["required_changes"]:
-                prompt += f"- {change}\n"
-        if review_feedback.get("suggestions"):
-            prompt += "\n### Suggestions (should also address):\n"
-            for suggestion in review_feedback["suggestions"]:
-                prompt += f"- {suggestion}\n"
+    # Add full conversation history if this is a retry
+    if ctx.review_history:
+        prompt += "\n\n## CONVERSATION HISTORY\n"
+        prompt += "Previous review/implement cycles. Learn from what was already addressed.\n\n"
+
+        for entry in ctx.review_history:
+            attempt = entry.get("attempt", "?")
+            prompt += f"### Attempt {attempt}\n\n"
+
+            # What the implementer did
+            if entry.get("implement_summary"):
+                prompt += f"**Implementer said:**\n{entry['implement_summary']}\n\n"
+
+            # What the reviewer said
+            feedback = entry.get("review_feedback", {})
+            if feedback:
+                prompt += "**Reviewer feedback:**\n"
+                if feedback.get("blockers"):
+                    prompt += "Blockers:\n"
+                    for blocker in feedback["blockers"]:
+                        if isinstance(blocker, dict):
+                            prompt += f"- {blocker.get('file', 'unknown')}: {blocker.get('issue', 'unknown issue')}\n"
+                        else:
+                            prompt += f"- {blocker}\n"
+                if feedback.get("required_changes"):
+                    prompt += "Required changes:\n"
+                    for change in feedback["required_changes"]:
+                        prompt += f"- {change}\n"
+                if feedback.get("notes"):
+                    prompt += f"Notes: {feedback['notes']}\n"
+                prompt += "\n"
 
     # Add human feedback if provided
     if human_feedback:
@@ -266,12 +278,13 @@ def stage_review(ctx: RunContext):
     # Save diff
     (ctx.run_dir / "diff.patch").write_text(diff)
 
-    # Build review prompt
+    # Build review prompt with conversation history
     agent = ClaudeAgent(timeout=ctx.profile.review_timeout)
     prompt = agent.build_review_prompt(
         diff=diff,
         commit_title=ctx.microcommit.title,
-        commit_description=ctx.microcommit.block_content
+        commit_description=ctx.microcommit.block_content,
+        review_history=ctx.review_history
     )
 
     ctx.log("Running Claude review")

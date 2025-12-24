@@ -80,7 +80,6 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
         return "failed", e.exit_code, e.stage
 
     # === Phase 2: Inner Loop (Implement -> Test -> Review) ===
-    review_feedback = None
     human_feedback, should_reset = get_human_feedback(ctx.workstream_dir)  # From previous human rejection
 
     # Reset worktree if human requested it (wf reset)
@@ -91,12 +90,11 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
     for attempt in range(1, MAX_REVIEW_ATTEMPTS + 1):
         ctx.log(f"=== Review attempt {attempt}/{MAX_REVIEW_ATTEMPTS} ===")
 
-        # IMPLEMENT
+        # IMPLEMENT - pass full conversation history
         try:
-            # Pass feedback if this is a retry
             result = run_stage(
                 ctx, "implement",
-                lambda c: stage_implement(c, review_feedback, human_feedback)
+                lambda c: stage_implement(c, human_feedback)
             )
             if result == StageResult.BLOCKED:
                 reason = ctx.stages.get("implement", {}).get("notes", "unknown")
@@ -122,7 +120,7 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
             ctx.log(f"Tests failed on attempt {attempt}, not retrying")
             return "failed", e.exit_code, e.stage
 
-        # REVIEW
+        # REVIEW - pass full conversation history
         try:
             result = run_stage(ctx, "review", stage_review)
             if result == StageResult.BLOCKED:
@@ -134,9 +132,15 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
             break
         except StageError as e:
             if e.stage == "review" and attempt < MAX_REVIEW_ATTEMPTS:
-                # Review rejected - capture feedback and retry (iterative, no reset)
+                # Review rejected - capture feedback, add to history, and retry
                 ctx.log(f"Review rejected on attempt {attempt}, will retry")
                 review_feedback = _load_review_feedback(ctx.run_dir)
+                implement_summary = _load_implement_summary(ctx.run_dir)
+                ctx.review_history.append({
+                    "attempt": attempt,
+                    "review_feedback": review_feedback,
+                    "implement_summary": implement_summary,
+                })
                 continue
             else:
                 # Final attempt failed or non-review error
@@ -197,10 +201,31 @@ def _load_review_feedback(run_dir: Path) -> dict:
             "blockers": data.get("blockers", []),
             "required_changes": data.get("required_changes", []),
             "suggestions": data.get("suggestions", []),
+            "notes": data.get("notes", ""),
         }
     except (json.JSONDecodeError, IOError) as e:
         logger.warning(f"Failed to load review feedback from {review_path}: {e}")
         return None
+
+
+def _load_implement_summary(run_dir: Path) -> str:
+    """Load implement summary from implement.log (Codex stdout)."""
+    log_path = run_dir / "stages" / "implement.log"
+    if not log_path.exists():
+        return ""
+    try:
+        content = log_path.read_text()
+        # Extract STDOUT section
+        if "=== STDOUT ===" in content:
+            stdout_start = content.index("=== STDOUT ===") + len("=== STDOUT ===")
+            stdout_end = content.find("=== STDERR ===", stdout_start)
+            if stdout_end == -1:
+                stdout_end = len(content)
+            return content[stdout_start:stdout_end].strip()
+        return ""
+    except IOError as e:
+        logger.warning(f"Failed to load implement summary from {log_path}: {e}")
+        return ""
 
 
 def _reset_worktree(worktree: Path):
