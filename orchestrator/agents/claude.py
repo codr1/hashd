@@ -91,16 +91,24 @@ class ClaudeAgent:
             # Extract the inner result (the actual review)
             inner = wrapper.get("result", "")
 
-            # Strip markdown code blocks if present (handles leading whitespace/newlines)
+            # Find and extract JSON from markdown code blocks
+            # Claude sometimes adds prose before the code block
             inner = inner.strip()
-            if inner.startswith("```"):
-                lines = inner.split("\n")
-                # Remove opening ``` line and closing ``` line
-                if lines and lines[0].strip().startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                inner = "\n".join(lines)
+
+            # Look for ```json or ``` code block anywhere in the response
+            if "```" in inner:
+                # Find opening fence
+                start_match = inner.find("```json")
+                if start_match == -1:
+                    start_match = inner.find("```")
+                if start_match != -1:
+                    # Find the newline after opening fence
+                    newline_after_open = inner.find("\n", start_match)
+                    if newline_after_open != -1:
+                        # Find closing fence
+                        close_match = inner.find("\n```", newline_after_open)
+                        if close_match != -1:
+                            inner = inner[newline_after_open + 1:close_match].strip()
 
             data = json.loads(inner)
 
@@ -126,11 +134,11 @@ class ClaudeAgent:
     def build_review_prompt(self, diff: str, commit_title: str, commit_description: str,
                             review_history: list = None) -> str:
         """Build the review prompt for Claude."""
-        prompt = f'''Review these changes as a sr. staff engineer who doesn't feel like taking any shit.
+        prompt = f'''CRITICAL: Your response must be ONLY raw JSON. No markdown fences. No prose. No "here is my review". Just the JSON object starting with {{ and ending with }}.
+
+Review these changes as a sr. staff engineer who doesn't feel like taking any shit.
 
 Make sure it is perfect - from design to implementation to documentation. You will support it when it fails at 2am. No compromises.
-
-Respond with ONLY valid JSON (no markdown, no explanation).
 
 ## Commit
 Title: {commit_title}
@@ -149,6 +157,13 @@ Description: {commit_description}
 
             for entry in review_history:
                 attempt = entry.get("attempt", "?")
+
+                # Human feedback (attempt 0 is human rejection feedback)
+                if entry.get("human_feedback"):
+                    prompt += f"### Human Rejection\n"
+                    prompt += f"**Human said:** {entry['human_feedback']}\n\n"
+                    continue
+
                 prompt += f"### Attempt {attempt}\n"
 
                 feedback = entry.get("review_feedback", {})

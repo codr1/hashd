@@ -19,6 +19,40 @@ from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 
 
+def _verbose_header(title: str):
+    """Print a section header for verbose output."""
+    print(f"\n{'='*60}")
+    print(title)
+    print('='*60)
+
+
+def _verbose_footer():
+    """Print a section footer for verbose output."""
+    print('='*60 + "\n")
+
+
+def _print_review_result(review):
+    """Print formatted review result for verbose output."""
+    print(f"Decision: {review.decision}")
+    if review.blockers:
+        print(f"\nBlockers ({len(review.blockers)}):")
+        for b in review.blockers:
+            if isinstance(b, dict):
+                print(f"  - {b.get('file', '?')}:{b.get('line', '?')} [{b.get('severity', '?')}] {b.get('issue', '?')}")
+            else:
+                print(f"  - {b}")
+    if review.required_changes:
+        print(f"\nRequired changes ({len(review.required_changes)}):")
+        for c in review.required_changes:
+            print(f"  - {c}")
+    if review.suggestions:
+        print(f"\nSuggestions ({len(review.suggestions)}):")
+        for s in review.suggestions:
+            print(f"  - {s}")
+    if review.notes:
+        print(f"\nNotes: {review.notes}")
+
+
 def stage_load(ctx: RunContext):
     """Validate configuration and workstream state."""
     # Check worktree exists
@@ -116,6 +150,13 @@ Instructions:
 
         for entry in ctx.review_history:
             attempt = entry.get("attempt", "?")
+
+            # Human feedback (attempt 0 is human rejection feedback)
+            if entry.get("human_feedback"):
+                prompt += f"### Human Rejection\n"
+                prompt += f"**Human said:** {entry['human_feedback']}\n\n"
+                continue
+
             prompt += f"### Attempt {attempt}\n\n"
 
             # What the implementer did
@@ -141,16 +182,26 @@ Instructions:
                     prompt += f"Notes: {feedback['notes']}\n"
                 prompt += "\n"
 
-    # Add human feedback if provided
+    # Add human feedback if provided (for first attempt, before it's in history)
     if human_feedback:
         prompt += f"\n\n## HUMAN GUIDANCE\n\n{human_feedback}\n"
 
     ctx.log(f"Running Codex for {ctx.microcommit.id}")
 
+    if ctx.verbose:
+        _verbose_header("IMPLEMENT PROMPT")
+        print(prompt)
+        _verbose_footer()
+
     agent = CodexAgent(timeout=ctx.profile.implement_timeout)
     log_file = ctx.run_dir / "stages" / "implement.log"
 
     result = agent.implement(prompt, ctx.workstream.worktree, log_file)
+
+    if ctx.verbose and result.stdout:
+        _verbose_header("IMPLEMENT OUTPUT")
+        print(result.stdout)
+        _verbose_footer()
 
     # Check for clarification request
     if result.clarification_needed:
@@ -299,9 +350,22 @@ def stage_review(ctx: RunContext):
     )
 
     ctx.log("Running Claude review")
+
+    if ctx.verbose:
+        _verbose_header("REVIEW PROMPT")
+        # Print prompt without the full diff (already saved to diff.patch)
+        prompt_preview = prompt.split("## Diff")[0] + "\n[... diff omitted, see diff.patch ...]"
+        print(prompt_preview)
+        _verbose_footer()
+
     log_file = ctx.run_dir / "stages" / "review.log"
 
     review = agent.review(prompt, ctx.workstream.worktree, log_file)
+
+    if ctx.verbose:
+        _verbose_header("REVIEW RESULT")
+        _print_review_result(review)
+        _verbose_footer()
 
     # Save review result
     import json

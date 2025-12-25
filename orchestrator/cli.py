@@ -210,6 +210,7 @@ def main():
     p_run.add_argument('id', help='Workstream ID')
     p_run.add_argument('--once', action='store_true', help='Run single cycle')
     p_run.add_argument('--loop', action='store_true', help='Run until blocked')
+    p_run.add_argument('--verbose', '-v', action='store_true', help='Show implement/review exchange')
     p_run.set_defaults(func=cmd_run)
 
     # wf close
