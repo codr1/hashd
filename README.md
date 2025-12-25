@@ -40,12 +40,31 @@ REVIEW_TIMEOUT="120"
 TEST_TIMEOUT="300"
 EOF
 
-# 4. Create a workstream
-./bin/wf new my_feature "Add user authentication"
+# 4. Set up the wf command (optional but recommended)
+mkdir -p ~/bin
+ln -sf "$(pwd)/bin/wf" ~/bin/wf
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+echo "source $(pwd)/bin/wf-completion.bash" >> ~/.bashrc
+source ~/.bashrc
 
-# 5. Run the pipeline
-./bin/wf run my_feature --loop
+# 5. Create a workstream
+wf new my_feature "Add user authentication"
+
+# 6. Run the pipeline
+wf run my_feature --loop
 ```
+
+## Shell Completion
+
+Tab completion is available for bash:
+
+```bash
+wf r<TAB>                    # -> wf run
+wf run o<TAB>                # -> wf run open_play_rules
+wf run myfeature -<TAB>      # -> --verbose --loop --once
+```
+
+The completion script is at `bin/wf-completion.bash`. Source it in your shell config as shown above.
 
 ## Parallel Workstreams
 
@@ -95,6 +114,7 @@ sudo pacman -S libnotify
 | `wf status <id>` | Show workstream status |
 | `wf run <id>` | Run one micro-commit cycle |
 | `wf run <id> --loop` | Run until blocked or complete |
+| `wf run <id> --verbose` | Show implement/review exchange |
 | `wf show <id>` | Show pending changes and review feedback |
 | `wf approve <id>` | Approve changes for commit |
 | `wf reject <id> -f "feedback"` | Reject with feedback (iterate) |
