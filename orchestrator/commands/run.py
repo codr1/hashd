@@ -87,6 +87,15 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
         ctx.log("Human requested reset - discarding uncommitted changes")
         _reset_worktree(ctx.workstream.worktree)
 
+    # Add human feedback to history so both models see it
+    if human_feedback:
+        ctx.review_history.append({
+            "attempt": 0,
+            "human_feedback": human_feedback,
+            "review_feedback": None,
+            "implement_summary": None,
+        })
+
     for attempt in range(1, MAX_REVIEW_ATTEMPTS + 1):
         ctx.log(f"=== Review attempt {attempt}/{MAX_REVIEW_ATTEMPTS} ===")
 
@@ -290,10 +299,10 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
             if args.loop:
                 # Loop mode - run until blocked or complete
-                return run_loop(ops_dir, project_config, profile, workstream, workstream_dir, ws_id)
+                return run_loop(ops_dir, project_config, profile, workstream, workstream_dir, ws_id, args.verbose)
             else:
                 # Single run
-                ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir)
+                ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir, args.verbose)
                 print(f"Run ID: {ctx.run_id}")
 
                 status, exit_code, failed_stage = run_once(ctx)
@@ -320,7 +329,7 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         return 3
 
 
-def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, workstream_dir: Path, ws_id: str) -> int:
+def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, workstream_dir: Path, ws_id: str, verbose: bool = False) -> int:
     """Run until blocked or all micro-commits complete."""
     iteration = 0
 
@@ -333,7 +342,7 @@ def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, 
         # Reload workstream in case state changed
         workstream = load_workstream(workstream_dir)
 
-        ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir)
+        ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir, verbose)
         print(f"Run ID: {ctx.run_id}")
 
         status, exit_code, failed_stage = run_once(ctx)

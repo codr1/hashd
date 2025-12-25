@@ -28,10 +28,11 @@ class RunContext:
     stages: dict = field(default_factory=dict)
     # Conversation history: list of {"attempt": N, "review_feedback": {...}, "implement_summary": "..."}
     review_history: list = field(default_factory=list)
+    verbose: bool = False
 
     @classmethod
     def create(cls, ops_dir: Path, project: ProjectConfig, profile: ProjectProfile,
-               workstream: Workstream, workstream_dir: Path) -> 'RunContext':
+               workstream: Workstream, workstream_dir: Path, verbose: bool = False) -> 'RunContext':
         """Create a new run context with fresh run directory."""
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         run_id = f"{timestamp}_{project.name}_{workstream.id}"
@@ -49,6 +50,7 @@ class RunContext:
             profile=profile,
             workstream=workstream,
             workstream_dir=workstream_dir,
+            verbose=verbose,
         )
 
     def log(self, message: str):
