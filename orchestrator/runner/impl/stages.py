@@ -242,24 +242,35 @@ def stage_review(ctx: RunContext):
             if line.startswith("?? "):
                 filepath = line[3:].strip()
                 full_path = ctx.workstream.worktree / filepath
+
+                # Collect files to process (handle both files and directories)
+                files_to_include = []
                 if full_path.is_file():
+                    files_to_include.append((filepath, full_path))
+                elif full_path.is_dir():
+                    for child in full_path.rglob("*"):
+                        if child.is_file():
+                            rel_path = child.relative_to(ctx.workstream.worktree)
+                            files_to_include.append((str(rel_path), child))
+
+                for rel_filepath, file_full_path in files_to_include:
                     # Skip large files
                     try:
-                        file_size = full_path.stat().st_size
+                        file_size = file_full_path.stat().st_size
                         if file_size > MAX_UNTRACKED_FILE_SIZE:
-                            logger.warning(f"Skipping large untracked file ({file_size} bytes): {filepath}")
+                            logger.warning(f"Skipping large untracked file ({file_size} bytes): {rel_filepath}")
                             continue
                     except OSError as e:
-                        logger.warning(f"Could not stat untracked file {filepath}: {e}")
+                        logger.warning(f"Could not stat untracked file {rel_filepath}: {e}")
                         continue
 
                     try:
-                        content = full_path.read_text()
+                        content = file_full_path.read_text()
                         # Format as a diff for a new file
-                        diff += f"\ndiff --git a/{filepath} b/{filepath}\n"
+                        diff += f"\ndiff --git a/{rel_filepath} b/{rel_filepath}\n"
                         diff += f"new file mode 100644\n"
                         diff += f"--- /dev/null\n"
-                        diff += f"+++ b/{filepath}\n"
+                        diff += f"+++ b/{rel_filepath}\n"
                         lines = content.splitlines(keepends=True)
                         diff += f"@@ -0,0 +1,{len(lines)} @@\n"
                         for content_line in lines:
@@ -267,9 +278,9 @@ def stage_review(ctx: RunContext):
                         if not content.endswith('\n'):
                             diff += "\n\\ No newline at end of file\n"
                     except UnicodeDecodeError:
-                        logger.warning(f"Skipping binary untracked file: {filepath}")
+                        logger.warning(f"Skipping binary untracked file: {rel_filepath}")
                     except OSError as e:
-                        logger.warning(f"Could not read untracked file {filepath}: {e}")
+                        logger.warning(f"Could not read untracked file {rel_filepath}: {e}")
 
     if not diff.strip():
         ctx.log("No changes to review")
