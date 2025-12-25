@@ -354,14 +354,18 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                     notify_failed(ws_id, failed_stage or "unknown")
                 # No notification on single successful runs - only loop completion notifies
 
-                print(f"\nResult: {status}")
+                # Show result with clearer status for human review
+                hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
+                if status == "blocked" and "human approval" in hr_notes.lower():
+                    print(f"\nResult: waiting for human")
+                else:
+                    print(f"\nResult: {status}")
                 print(f"Run directory: {ctx.run_dir}")
 
                 # Show actionable next steps
                 if status == "blocked":
-                    hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
                     if "human approval" in hr_notes.lower():
-                        print(f"\nAwaiting human review:")
+                        print(f"\nNext steps:")
                         print(f"  wf approve {ws_id}")
                         print(f"  wf reject {ws_id} -f '...'")
                         print(f"  wf reset {ws_id}")
@@ -394,23 +398,25 @@ def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, 
         print(f"Run ID: {ctx.run_id}")
 
         status, exit_code, failed_stage = run_once(ctx)
-        print(f"Result: {status}")
 
         if status == "blocked":
             reason = ctx.stages.get("select", {}).get("notes", "")
             if reason == "all_complete":
+                print("Result: complete")
                 print("\nAll micro-commits complete!")
                 notify_complete(ws_id)
                 return 0
             # Check if blocked on human review
             hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
             if "human approval" in hr_notes.lower():
-                print(f"\nAwaiting human review")
-                print(f"Use: wf approve {ws_id}")
-                print(f"  or: wf reject {ws_id} --feedback \"...\"")
-                print(f"  or: wf reset {ws_id}")
+                print("Result: waiting for human")
+                print(f"\nNext steps:")
+                print(f"  wf approve {ws_id}")
+                print(f"  wf reject {ws_id} -f '...'")
+                print(f"  wf reset {ws_id}")
                 notify_awaiting_review(ws_id)
             else:
+                print(f"Result: {status}")
                 print(f"\nBlocked: {reason or hr_notes}")
                 notify_blocked(ws_id, reason or hr_notes)
             return exit_code
