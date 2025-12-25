@@ -153,7 +153,8 @@ Description: {commit_description}
         # Add conversation history so reviewer knows what it already asked for
         if review_history:
             prompt += "\n## PREVIOUS REVIEW CYCLES\n"
-            prompt += "You already reviewed earlier attempts. Don't re-flag issues that were addressed.\n\n"
+            prompt += "You already reviewed earlier attempts. Don't re-flag issues that were addressed.\n"
+            prompt += "IMPORTANT: If the human explicitly told you to ignore an issue, DO NOT raise it again. Human overrides are final.\n\n"
 
             for entry in review_history:
                 attempt = entry.get("attempt", "?")
@@ -208,6 +209,5 @@ Rules:
 - required_changes: code smells, inconsistencies, missing logging, unchecked return codes
 - suggestions: improvements that would make the code more maintainable
 - If you asked for a change in a previous review and it was addressed, don't re-flag it
-- Be ruthless. If you wouldn't stake your reputation on this code, reject it.
 '''
         return prompt
