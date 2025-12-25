@@ -548,11 +548,31 @@ def _store_human_feedback(workstream_dir: Path, feedback: str, reset: bool = Fal
 def get_human_feedback(workstream_dir: Path) -> tuple:
     """Get stored human feedback and reset flag if any, and clear it.
 
+    Checks both:
+    - human_feedback.json (from previous run's human_review stage)
+    - human_approval.json with action="reject" (fresh rejection, consume immediately)
+
     Returns: (feedback: str|None, reset: bool)
     """
     import json
-    feedback_file = workstream_dir / "human_feedback.json"
 
+    # First check for fresh rejection in human_approval.json
+    approval_file = workstream_dir / "human_approval.json"
+    if approval_file.exists():
+        try:
+            data = json.loads(approval_file.read_text())
+            if data.get("action") == "reject":
+                feedback = data.get("feedback", "")
+                reset = data.get("reset", False)
+                # Consume the rejection
+                approval_file.unlink()
+                _update_workstream_status(workstream_dir, "active")
+                return feedback, reset
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Failed to read human approval from {approval_file}: {e}")
+
+    # Fall back to stored feedback from previous run
+    feedback_file = workstream_dir / "human_feedback.json"
     if not feedback_file.exists():
         return None, False
 

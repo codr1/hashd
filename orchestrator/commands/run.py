@@ -79,6 +79,42 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
         ctx.write_result("failed", e.stage)
         return "failed", e.exit_code, e.stage
 
+    # === Check for pending human approval (skip to commit) ===
+    approval_file = ctx.workstream_dir / "human_approval.json"
+    if approval_file.exists():
+        try:
+            import json
+            approval = json.loads(approval_file.read_text())
+            if approval.get("action") == "approve":
+                ctx.log("Human already approved - skipping to commit")
+                approval_file.unlink()
+                # Skip straight to Phase 4
+                try:
+                    result = run_stage(ctx, "qa_gate", stage_qa_gate)
+                    if result == StageResult.BLOCKED:
+                        reason = ctx.stages.get("qa_gate", {}).get("notes", "unknown")
+                        ctx.write_result("blocked", blocked_reason=reason)
+                        return "blocked", 8, None
+                except StageError as e:
+                    ctx.write_result("failed", e.stage)
+                    return "failed", e.exit_code, e.stage
+
+                try:
+                    result = run_stage(ctx, "update_state", stage_update_state)
+                    if result == StageResult.BLOCKED:
+                        reason = ctx.stages.get("update_state", {}).get("notes", "unknown")
+                        ctx.write_result("blocked", blocked_reason=reason)
+                        return "blocked", 8, None
+                except StageError as e:
+                    ctx.write_result("failed", e.stage)
+                    return "failed", e.exit_code, e.stage
+
+                ctx.write_result("passed")
+                ctx.log("Run complete: passed (fast path - human pre-approved)")
+                return "passed", 0, None
+        except (json.JSONDecodeError, IOError):
+            pass  # Fall through to normal flow
+
     # === Phase 2: Inner Loop (Implement -> Test -> Review) ===
     human_feedback, should_reset = get_human_feedback(ctx.workstream_dir)  # From previous human rejection
 
@@ -320,6 +356,18 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
                 print(f"\nResult: {status}")
                 print(f"Run directory: {ctx.run_dir}")
+
+                # Show actionable next steps
+                if status == "blocked":
+                    hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
+                    if "human approval" in hr_notes.lower():
+                        print(f"\nAwaiting human review:")
+                        print(f"  wf approve {ws_id}")
+                        print(f"  wf reject {ws_id} -f '...'")
+                        print(f"  wf reset {ws_id}")
+                elif status == "failed":
+                    print(f"\nFailed at stage: {failed_stage or 'unknown'}")
+                    print(f"  Check: {ctx.run_dir}/stages/{failed_stage}.log")
 
                 return exit_code
 
