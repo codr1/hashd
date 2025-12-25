@@ -5,7 +5,12 @@ import sys
 import argparse
 from pathlib import Path
 
-from orchestrator.lib.config import load_project_config
+from orchestrator.lib.config import (
+    load_project_config,
+    get_current_workstream,
+    set_current_workstream,
+    clear_current_workstream,
+)
 from orchestrator.commands import new as cmd_new_module
 from orchestrator.commands import list as cmd_list_module
 from orchestrator.commands import refresh as cmd_refresh_module
@@ -49,9 +54,55 @@ def get_project_config(args):
     return load_project_config(project_dir), ops_dir
 
 
+def resolve_workstream_id(args, ops_dir: Path) -> str:
+    """Resolve workstream ID from args or current context."""
+    # Use explicit ID if provided
+    ws_id = getattr(args, 'id', None)
+    if ws_id:
+        return ws_id
+
+    # Fall back to current context
+    current = get_current_workstream(ops_dir)
+    if current:
+        return current
+
+    print("ERROR: No workstream specified. Use 'wf use <id>' to set current workstream.")
+    sys.exit(2)
+
+
 def cmd_new(args):
     project_config, ops_dir = get_project_config(args)
     return cmd_new_module.cmd_new(args, ops_dir, project_config)
+
+
+def cmd_use(args):
+    """Set, show, or clear the current workstream context."""
+    ops_dir = get_ops_dir()
+
+    # Clear context
+    if args.clear:
+        clear_current_workstream(ops_dir)
+        print("Cleared current workstream context.")
+        return 0
+
+    # Show current context
+    if not args.id:
+        current = get_current_workstream(ops_dir)
+        if current:
+            print(f"Current workstream: {current}")
+        else:
+            print("No current workstream set. Use 'wf use <id>' to set one.")
+        return 0
+
+    # Set context - validate workstream exists first
+    ws_dir = ops_dir / "workstreams" / args.id
+    if not ws_dir.exists():
+        print(f"ERROR: Workstream '{args.id}' not found.")
+        return 1
+
+    set_current_workstream(ops_dir, args.id)
+    print(f"Now using workstream: {args.id}")
+    return 0
 
 
 def cmd_list(args):
@@ -66,26 +117,31 @@ def cmd_refresh(args):
 
 def cmd_status(args):
     project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
     return cmd_status_module.cmd_status(args, ops_dir, project_config)
 
 
 def cmd_conflicts(args):
     project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
     return cmd_conflicts_module.cmd_conflicts(args, ops_dir, project_config)
 
 
 def cmd_run(args):
     project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
     return cmd_run_module.cmd_run(args, ops_dir, project_config)
 
 
 def cmd_close(args):
     project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
     return cmd_close_module.cmd_close(args, ops_dir, project_config)
 
 
 def cmd_merge(args):
     project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
     return cmd_merge_module.cmd_merge(args, ops_dir, project_config)
 
 
@@ -101,21 +157,25 @@ def cmd_archive_delete(args):
 
 def cmd_approve(args):
     project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
     return cmd_approve_module.cmd_approve(args, ops_dir, project_config)
 
 
 def cmd_reject(args):
     project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
     return cmd_approve_module.cmd_reject(args, ops_dir, project_config)
 
 
 def cmd_reset(args):
     project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
     return cmd_approve_module.cmd_reset(args, ops_dir, project_config)
 
 
 def cmd_show(args):
     project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
     return cmd_show_module.cmd_show(args, ops_dir, project_config)
 
 
@@ -184,6 +244,12 @@ def main():
     p_list = subparsers.add_parser('list', help='List workstreams')
     p_list.set_defaults(func=cmd_list)
 
+    # wf use
+    p_use = subparsers.add_parser('use', help='Set/show current workstream')
+    p_use.add_argument('id', nargs='?', help='Workstream ID to use')
+    p_use.add_argument('--clear', action='store_true', help='Clear current workstream')
+    p_use.set_defaults(func=cmd_use)
+
     # wf refresh
     p_refresh = subparsers.add_parser('refresh', help='Refresh touched files')
     p_refresh.add_argument('id', nargs='?', help='Workstream ID (optional, refreshes all if omitted)')
@@ -191,23 +257,23 @@ def main():
 
     # wf status
     p_status = subparsers.add_parser('status', help='Show workstream status')
-    p_status.add_argument('id', help='Workstream ID')
+    p_status.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_status.set_defaults(func=cmd_status)
 
     # wf show
     p_show = subparsers.add_parser('show', help='Show changes and last run details')
-    p_show.add_argument('id', help='Workstream ID')
+    p_show.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_show.add_argument('--brief', '-b', action='store_true', help='Show only diff stats, not full diff')
     p_show.set_defaults(func=cmd_show)
 
     # wf conflicts
     p_conflicts = subparsers.add_parser('conflicts', help='Check file conflicts')
-    p_conflicts.add_argument('id', help='Workstream ID')
+    p_conflicts.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_conflicts.set_defaults(func=cmd_conflicts)
 
     # wf run
     p_run = subparsers.add_parser('run', help='Run cycle')
-    p_run.add_argument('id', help='Workstream ID')
+    p_run.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_run.add_argument('--once', action='store_true', help='Run single cycle')
     p_run.add_argument('--loop', action='store_true', help='Run until blocked')
     p_run.add_argument('--verbose', '-v', action='store_true', help='Show implement/review exchange')
@@ -215,13 +281,13 @@ def main():
 
     # wf close
     p_close = subparsers.add_parser('close', help='Archive workstream without merging (abandon)')
-    p_close.add_argument('id', help='Workstream ID')
+    p_close.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_close.add_argument('--force', action='store_true', help='Close even with uncommitted changes')
     p_close.set_defaults(func=cmd_close)
 
     # wf merge
     p_merge = subparsers.add_parser('merge', help='Merge workstream to main and archive')
-    p_merge.add_argument('id', help='Workstream ID')
+    p_merge.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_merge.add_argument('--push', action='store_true', help='Push to remote after merge')
     p_merge.set_defaults(func=cmd_merge)
 
@@ -238,18 +304,18 @@ def main():
 
     # wf approve
     p_approve = subparsers.add_parser('approve', help='Approve workstream for commit')
-    p_approve.add_argument('id', help='Workstream ID')
+    p_approve.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_approve.set_defaults(func=cmd_approve)
 
     # wf reject
     p_reject = subparsers.add_parser('reject', help='Reject and iterate on current changes')
-    p_reject.add_argument('id', help='Workstream ID')
+    p_reject.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_reject.add_argument('--feedback', '-f', help='Feedback for the implementer')
     p_reject.set_defaults(func=cmd_reject)
 
     # wf reset
     p_reset = subparsers.add_parser('reset', help='Discard changes and start fresh (rare)')
-    p_reset.add_argument('id', help='Workstream ID')
+    p_reset.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_reset.add_argument('--feedback', '-f', help='Feedback for the implementer')
     p_reset.set_defaults(func=cmd_reset)
 

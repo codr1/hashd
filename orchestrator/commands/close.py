@@ -7,7 +7,12 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
-from orchestrator.lib.config import ProjectConfig, load_workstream
+from orchestrator.lib.config import (
+    ProjectConfig,
+    load_workstream,
+    get_current_workstream,
+    clear_current_workstream,
+)
 
 
 def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
@@ -69,6 +74,10 @@ def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     print(f"Archiving workstream to {dest}...")
     shutil.move(str(workstream_dir), str(dest))
+
+    # Clear context if this was the current workstream
+    if get_current_workstream(ops_dir) == ws_id:
+        clear_current_workstream(ops_dir)
 
     print(f"Workstream '{ws_id}' closed (not merged).")
     print(f"  Branch '{ws.branch}' preserved for potential resurrection")

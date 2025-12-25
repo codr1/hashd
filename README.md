@@ -47,11 +47,12 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
 echo "source $(pwd)/bin/wf-completion.bash" >> ~/.bashrc
 source ~/.bashrc
 
-# 5. Create a workstream
+# 5. Create a workstream and set as current
 wf new my_feature "Add user authentication"
+wf use my_feature
 
-# 6. Run the pipeline
-wf run my_feature --loop
+# 6. Run the pipeline (uses current workstream)
+wf run --loop
 ```
 
 ## Shell Completion
@@ -105,24 +106,48 @@ sudo apt install libnotify-bin
 sudo pacman -S libnotify
 ```
 
+## Workstream Context
+
+Set a current workstream to avoid typing it repeatedly:
+
+```bash
+wf use my_feature        # Set current workstream
+wf run --loop            # Operates on my_feature
+wf approve               # Still my_feature
+wf status                # Still my_feature
+
+wf use                   # Show current workstream
+wf use --clear           # Clear current workstream
+```
+
+When a workstream context is set, you can still override it explicitly:
+
+```bash
+wf use my_feature
+wf status other_feature  # Operates on other_feature, context unchanged
+```
+
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| `wf use [id]` | Set/show current workstream |
 | `wf new <id> "title"` | Create a new workstream |
 | `wf list` | List all workstreams |
-| `wf status <id>` | Show workstream status |
-| `wf run <id>` | Run one micro-commit cycle |
-| `wf run <id> --loop` | Run until blocked or complete |
-| `wf run <id> --verbose` | Show implement/review exchange |
-| `wf show <id>` | Show pending changes and review feedback |
-| `wf approve <id>` | Approve changes for commit |
-| `wf reject <id> -f "feedback"` | Reject with feedback (iterate) |
-| `wf reset <id>` | Discard changes, start fresh |
-| `wf merge <id>` | Merge completed workstream to main |
-| `wf close <id>` | Archive without merge (abandon) |
+| `wf status [id]` | Show workstream status |
+| `wf run [id]` | Run one micro-commit cycle |
+| `wf run [id] --loop` | Run until blocked or complete |
+| `wf run [id] --verbose` | Show implement/review exchange |
+| `wf show [id]` | Show pending changes and review feedback |
+| `wf approve [id]` | Approve changes for commit |
+| `wf reject [id] -f "feedback"` | Reject with feedback (iterate) |
+| `wf reset [id]` | Discard changes, start fresh |
+| `wf merge [id]` | Merge completed workstream to main |
+| `wf close [id]` | Archive without merge (abandon) |
 | `wf archive` | List archived workstreams |
 | `wf clarify` | List pending clarification requests |
+
+Commands marked with `[id]` use the current workstream context if no ID is provided.
 
 ## Workstream Lifecycle
 

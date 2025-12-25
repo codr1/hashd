@@ -99,3 +99,36 @@ def get_active_workstreams(project_dir: Path) -> list[Workstream]:
                 pass  # Skip invalid workstreams
 
     return workstreams
+
+
+def get_current_workstream(ops_dir: Path) -> str | None:
+    """Get the current workstream ID from context, or None if not set.
+
+    Auto-clears stale context if the workstream no longer exists.
+    """
+    context_file = ops_dir / "config" / "current_workstream"
+    if context_file.exists():
+        ws_id = context_file.read_text().strip()
+        if ws_id:
+            # Validate workstream still exists
+            ws_dir = ops_dir / "workstreams" / ws_id
+            if ws_dir.exists():
+                return ws_id
+            # Stale context - clean it up
+            context_file.unlink()
+    return None
+
+
+def set_current_workstream(ops_dir: Path, ws_id: str) -> None:
+    """Set the current workstream context."""
+    config_dir = ops_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    context_file = config_dir / "current_workstream"
+    context_file.write_text(ws_id + "\n")
+
+
+def clear_current_workstream(ops_dir: Path) -> None:
+    """Clear the current workstream context."""
+    context_file = ops_dir / "config" / "current_workstream"
+    if context_file.exists():
+        context_file.unlink()
