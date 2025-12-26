@@ -228,7 +228,7 @@ def cmd_pm_list(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
 def cmd_pm_show(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     """Show full details of a story."""
-    story_id = args.id
+    story_id = args.story
     project_dir = ops_dir / "projects" / project_config.name
 
     story = load_story(project_dir, story_id)

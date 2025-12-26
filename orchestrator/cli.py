@@ -27,6 +27,7 @@ from orchestrator.commands import clarify as cmd_clarify_module
 from orchestrator.commands import pm as cmd_pm_module
 from orchestrator.commands import open as cmd_open_module
 from orchestrator.commands import log as cmd_log_module
+from orchestrator.commands import watch as cmd_watch_module
 
 
 def get_ops_dir() -> Path:
@@ -199,6 +200,12 @@ def cmd_review(args):
     return cmd_review_module.cmd_review(args, ops_dir, project_config)
 
 
+def cmd_watch(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_watch_module.cmd_watch(args, ops_dir, project_config)
+
+
 def cmd_clarify_list(args):
     project_config, ops_dir = get_project_config(args)
     return cmd_clarify_module.cmd_clarify_list(args, ops_dir, project_config)
@@ -301,6 +308,11 @@ def main():
     p_review = subparsers.add_parser('review', help='Final AI review of entire branch before merge')
     p_review.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_review.set_defaults(func=cmd_review)
+
+    # wf watch
+    p_watch = subparsers.add_parser('watch', help='Interactive TUI for monitoring workstream')
+    p_watch.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_watch.set_defaults(func=cmd_watch)
 
     # wf conflicts
     p_conflicts = subparsers.add_parser('conflicts', help='Check file conflicts')
