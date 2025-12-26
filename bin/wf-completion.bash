@@ -5,7 +5,7 @@ _wf_completions() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     
     # Main commands
-    commands="new list use refresh status show conflicts run close merge archive approve reject reset clarify pm"
+    commands="new list use refresh status show conflicts run close merge archive open approve reject reset clarify pm"
     
     # Subcommands
     case "$prev" in
@@ -34,6 +34,15 @@ _wf_completions() {
             COMPREPLY=($(compgen -W "delete" -- "$cur"))
             return 0
             ;;
+        open)
+            # Complete with archived workstream IDs
+            local closed_dir="${WF_OPS_DIR:-$(dirname $(dirname $(realpath "${COMP_WORDS[0]}")))}/workstreams/_closed"
+            if [[ -d "$closed_dir" ]]; then
+                local workstreams=$(ls -1 "$closed_dir" 2>/dev/null | tr '\n' ' ')
+                COMPREPLY=($(compgen -W "$workstreams" -- "$cur"))
+            fi
+            return 0
+            ;;
     esac
     
     # Flags
@@ -57,6 +66,9 @@ _wf_completions() {
                     ;;
                 merge)
                     COMPREPLY=($(compgen -W "--push" -- "$cur"))
+                    ;;
+                open)
+                    COMPREPLY=($(compgen -W "--use --force" -- "$cur"))
                     ;;
             esac
             return 0

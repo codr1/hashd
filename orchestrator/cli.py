@@ -22,8 +22,10 @@ from orchestrator.commands import archive as cmd_archive_module
 from orchestrator.commands import run as cmd_run_module
 from orchestrator.commands import approve as cmd_approve_module
 from orchestrator.commands import show as cmd_show_module
+from orchestrator.commands import review as cmd_review_module
 from orchestrator.commands import clarify as cmd_clarify_module
 from orchestrator.commands import pm as cmd_pm_module
+from orchestrator.commands import open as cmd_open_module
 
 
 def get_ops_dir() -> Path:
@@ -155,6 +157,11 @@ def cmd_archive_delete(args):
     return cmd_archive_module.cmd_archive_delete(args, ops_dir, project_config)
 
 
+def cmd_open(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_open_module.cmd_open(args, ops_dir, project_config)
+
+
 def cmd_approve(args):
     project_config, ops_dir = get_project_config(args)
     args.id = resolve_workstream_id(args, ops_dir)
@@ -177,6 +184,12 @@ def cmd_show(args):
     project_config, ops_dir = get_project_config(args)
     args.id = resolve_workstream_id(args, ops_dir)
     return cmd_show_module.cmd_show(args, ops_dir, project_config)
+
+
+def cmd_review(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_review_module.cmd_review(args, ops_dir, project_config)
 
 
 def cmd_clarify_list(args):
@@ -301,6 +314,13 @@ def main():
     p_archive_delete.add_argument('id', help='Workstream ID')
     p_archive_delete.add_argument('--confirm', action='store_true', required=True, help='Confirm deletion')
     p_archive_delete.set_defaults(func=cmd_archive_delete)
+
+    # wf open
+    p_open = subparsers.add_parser('open', help='Resurrect archived workstream')
+    p_open.add_argument('id', help='Workstream ID')
+    p_open.add_argument('--use', action='store_true', help='Set as current workstream after opening')
+    p_open.add_argument('--force', action='store_true', help='Skip confirmation for high-severity conflicts')
+    p_open.set_defaults(func=cmd_open)
 
     # wf approve
     p_approve = subparsers.add_parser('approve', help='Approve workstream for commit')

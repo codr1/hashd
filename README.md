@@ -139,12 +139,14 @@ wf status other_feature  # Operates on other_feature, context unchanged
 | `wf run [id] --loop` | Run until blocked or complete |
 | `wf run [id] --verbose` | Show implement/review exchange |
 | `wf show [id]` | Show pending changes and review feedback |
+| `wf review [id]` | Final AI review of entire branch before merge |
 | `wf approve [id]` | Approve changes for commit |
 | `wf reject [id] -f "feedback"` | Reject with feedback (iterate) |
 | `wf reset [id]` | Discard changes, start fresh |
 | `wf merge [id]` | Merge completed workstream to main |
 | `wf close [id]` | Archive without merge (abandon) |
 | `wf archive` | List archived workstreams |
+| `wf open <id>` | Resurrect archived workstream (with conflict analysis) |
 | `wf clarify` | List pending clarification requests |
 
 Commands marked with `[id]` use the current workstream context if no ID is provided.
