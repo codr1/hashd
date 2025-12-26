@@ -79,6 +79,8 @@ def cmd_pm_refine(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     print(f"Created: {story.id}")
     print(f"Title:   {story.title}")
+    if story.suggested_ws_id:
+        print(f"Suggested workstream ID: {story.suggested_ws_id}")
     print()
     print("Source References:")
     print(f"  {story.source_refs}")
@@ -114,7 +116,10 @@ def cmd_pm_refine(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     print()
     print("Next steps:")
     print(f"  wf pm show {story.id}     # View full details")
-    print(f"  wf new {project_config.name} <id> --stories {story.id}  # Create workstream")
+    if story.suggested_ws_id:
+        print(f"  wf new --stories {story.id}  # Create workstream (uses ID: {story.suggested_ws_id})")
+    else:
+        print(f"  wf new <id> --stories {story.id}  # Create workstream")
 
     return 0
 
@@ -237,6 +242,9 @@ def cmd_pm_show(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     print(f"Title:   {story.title}")
     print(f"Status:  {story.status}")
     print(f"Created: {story.created}")
+
+    if story.suggested_ws_id:
+        print(f"Suggested workstream ID: {story.suggested_ws_id}")
 
     if story.workstream:
         print(f"Workstream: {story.workstream}")

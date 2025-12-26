@@ -249,8 +249,9 @@ def main():
 
     # wf new
     p_new = subparsers.add_parser('new', help='Create workstream')
-    p_new.add_argument('id', help='Workstream ID')
-    p_new.add_argument('title', help='Workstream title')
+    p_new.add_argument('id', nargs='?', help='Workstream ID (optional if --stories provided)')
+    p_new.add_argument('title', nargs='?', help='Workstream title (optional if --stories provided)')
+    p_new.add_argument('--stories', '-s', help='Link to story ID (e.g., STORY-0001)')
     p_new.set_defaults(func=cmd_new)
 
     # wf list
@@ -278,6 +279,11 @@ def main():
     p_show.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_show.add_argument('--brief', '-b', action='store_true', help='Show only diff stats, not full diff')
     p_show.set_defaults(func=cmd_show)
+
+    # wf review
+    p_review = subparsers.add_parser('review', help='Final AI review of entire branch before merge')
+    p_review.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_review.set_defaults(func=cmd_review)
 
     # wf conflicts
     p_conflicts = subparsers.add_parser('conflicts', help='Check file conflicts')
