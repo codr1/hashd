@@ -139,6 +139,7 @@ wf status other_feature  # Operates on other_feature, context unchanged
 | `wf run [id] --loop` | Run until blocked or complete |
 | `wf run [id] --verbose` | Show implement/review exchange |
 | `wf show [id]` | Show pending changes and review feedback |
+| `wf log [id]` | Show workstream timeline (runs, approvals, etc.) |
 | `wf review [id]` | Final AI review of entire branch before merge |
 | `wf approve [id]` | Approve changes for commit |
 | `wf reject [id] -f "feedback"` | Reject with feedback (iterate) |

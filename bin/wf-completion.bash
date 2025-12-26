@@ -5,7 +5,7 @@ _wf_completions() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     
     # Main commands
-    commands="new list use refresh status show conflicts run close merge archive open approve reject reset clarify pm"
+    commands="new list use refresh status show log conflicts run close merge archive open approve reject reset clarify pm review"
     
     # Subcommands
     case "$prev" in
@@ -13,7 +13,7 @@ _wf_completions() {
             COMPREPLY=($(compgen -W "$commands" -- "$cur"))
             return 0
             ;;
-        use|run|status|show|conflicts|close|merge|approve|reject|reset|refresh)
+        use|run|status|show|log|conflicts|close|merge|approve|reject|reset|refresh|review)
             # Complete with workstream IDs
             local ws_dir="${WF_OPS_DIR:-$(dirname $(dirname $(realpath "${COMP_WORDS[0]}")))}/workstreams"
             if [[ -d "$ws_dir" ]]; then
@@ -60,6 +60,9 @@ _wf_completions() {
                     ;;
                 show)
                     COMPREPLY=($(compgen -W "--brief -b" -- "$cur"))
+                    ;;
+                log)
+                    COMPREPLY=($(compgen -W "--since -s --limit -n --verbose -v --reverse -r --no-color" -- "$cur"))
                     ;;
                 close)
                     COMPREPLY=($(compgen -W "--force" -- "$cur"))

@@ -26,6 +26,7 @@ from orchestrator.commands import review as cmd_review_module
 from orchestrator.commands import clarify as cmd_clarify_module
 from orchestrator.commands import pm as cmd_pm_module
 from orchestrator.commands import open as cmd_open_module
+from orchestrator.commands import log as cmd_log_module
 
 
 def get_ops_dir() -> Path:
@@ -186,6 +187,12 @@ def cmd_show(args):
     return cmd_show_module.cmd_show(args, ops_dir, project_config)
 
 
+def cmd_log(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_log_module.cmd_log(args, ops_dir, project_config)
+
+
 def cmd_review(args):
     project_config, ops_dir = get_project_config(args)
     args.id = resolve_workstream_id(args, ops_dir)
@@ -279,6 +286,16 @@ def main():
     p_show.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_show.add_argument('--brief', '-b', action='store_true', help='Show only diff stats, not full diff')
     p_show.set_defaults(func=cmd_show)
+
+    # wf log
+    p_log = subparsers.add_parser('log', help='Show workstream timeline')
+    p_log.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_log.add_argument('--since', '-s', help='Show events since (1h, 1d, 1w, or ISO timestamp)')
+    p_log.add_argument('--limit', '-n', type=int, help='Limit to N most recent events')
+    p_log.add_argument('--verbose', '-v', action='store_true', help='Show event details')
+    p_log.add_argument('--reverse', '-r', action='store_true', help='Show oldest first (default: newest first)')
+    p_log.add_argument('--no-color', action='store_true', help='Disable colors')
+    p_log.set_defaults(func=cmd_log)
 
     # wf review
     p_review = subparsers.add_parser('review', help='Final AI review of entire branch before merge')
