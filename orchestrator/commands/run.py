@@ -15,6 +15,7 @@ from orchestrator.runner.locking import (
 )
 from orchestrator.runner.context import RunContext
 from orchestrator.notifications import notify_awaiting_review, notify_complete, notify_failed, notify_blocked
+from orchestrator.commands.review import run_final_review
 from orchestrator.runner.stages import run_stage, StageError, StageBlocked, StageResult
 from orchestrator.runner.impl.stages import (
     stage_load,
@@ -30,7 +31,7 @@ from orchestrator.runner.impl.stages import (
 )
 
 
-MAX_REVIEW_ATTEMPTS = 5
+MAX_REVIEW_ATTEMPTS = 3
 
 
 def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
@@ -160,10 +161,22 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
                 ctx.write_result("blocked", blocked_reason=reason)
                 return "blocked", 8, None
         except StageError as e:
-            # Test failure - don't retry, exit immediately
-            ctx.write_result("failed", e.stage)
-            ctx.log(f"Tests failed on attempt {attempt}, not retrying")
-            return "failed", e.exit_code, e.stage
+            if attempt < MAX_REVIEW_ATTEMPTS:
+                # Test failure - capture output and retry
+                ctx.log(f"Tests failed on attempt {attempt}, will retry")
+                test_output = _load_test_output(ctx.run_dir)
+                implement_summary = _load_implement_summary(ctx.run_dir)
+                ctx.review_history.append({
+                    "attempt": attempt,
+                    "test_failure": test_output,
+                    "implement_summary": implement_summary,
+                })
+                continue
+            else:
+                # Final attempt failed - fall through to HITL
+                ctx.log(f"Tests failed after {MAX_REVIEW_ATTEMPTS} attempts")
+                ctx.write_result("failed", e.stage)
+                break
 
         # REVIEW - pass full conversation history
         try:
@@ -270,6 +283,22 @@ def _load_implement_summary(run_dir: Path) -> str:
         return ""
     except IOError as e:
         logger.warning(f"Failed to load implement summary from {log_path}: {e}")
+        return ""
+
+
+def _load_test_output(run_dir: Path) -> str:
+    """Load test output from test.log."""
+    log_path = run_dir / "stages" / "test.log"
+    if not log_path.exists():
+        return ""
+    try:
+        content = log_path.read_text()
+        # Truncate if too long (keep last 2000 chars for most relevant output)
+        if len(content) > 2000:
+            content = "... (truncated)\n" + content[-2000:]
+        return content.strip()
+    except IOError as e:
+        logger.warning(f"Failed to load test output from {log_path}: {e}")
         return ""
 
 
@@ -402,9 +431,19 @@ def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, 
         if status == "blocked":
             reason = ctx.stages.get("select", {}).get("notes", "")
             if reason == "all_complete":
-                print("Result: complete")
-                print("\nAll micro-commits complete!")
-                notify_complete(ws_id)
+                print("Result: all micro-commits complete")
+                print("\nRunning final branch review...")
+                print()
+                verdict = run_final_review(workstream_dir, project_config, verbose=True)
+                print()
+                if verdict == "approve":
+                    print("Final review: APPROVE")
+                    print(f"\nReady to merge: wf merge {ws_id}")
+                    notify_complete(ws_id)
+                else:
+                    print("Final review: CONCERNS")
+                    print(f"\nReview the concerns above, then: wf merge {ws_id}")
+                    notify_awaiting_review(ws_id)
                 return 0
             # Check if blocked on human review
             hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
