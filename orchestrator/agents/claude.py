@@ -131,6 +131,44 @@ class ClaudeAgent:
 
         return review
 
+    def review_freeform(self, prompt: str, cwd: Path) -> str:
+        """
+        Run Claude and return raw text response (no JSON parsing).
+
+        Used for final branch reviews where we want prose, not structured output.
+        """
+        cmd = [
+            "claude",
+            "--output-format", "json",
+        ]
+
+        # Remove ANTHROPIC_API_KEY so Claude uses OAuth credentials instead
+        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(cwd),
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return "ERROR: Review timed out"
+
+        if result.returncode != 0:
+            return f"ERROR: Claude failed with exit code {result.returncode}\n{result.stderr}"
+
+        # Parse JSON wrapper to extract the text result
+        try:
+            import json
+            wrapper = json.loads(result.stdout.strip())
+            return wrapper.get("result", result.stdout)
+        except json.JSONDecodeError:
+            return result.stdout
+
     def build_review_prompt(self, diff: str, commit_title: str, commit_description: str,
                             review_history: list = None) -> str:
         """Build the review prompt for Claude."""
