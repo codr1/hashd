@@ -52,6 +52,12 @@
       "items": { "type": "string" },
       "description": "Unresolved questions or ambiguities"
     },
+    "suggested_ws_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "maxLength": 16,
+      "description": "AI-suggested workstream ID (slugified, max 16 chars)"
+    },
     "workstream": {
       "type": ["string", "null"],
       "description": "Linked workstream ID when accepted"
