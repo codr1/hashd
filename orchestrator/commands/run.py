@@ -9,6 +9,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from orchestrator.lib.config import ProjectConfig, load_project_profile, load_workstream
+from orchestrator.lib.planparse import parse_plan, get_next_microcommit
 from orchestrator.runner.locking import (
     workstream_lock, LockTimeout, count_running_workstreams,
     cleanup_stale_lock_files, CONCURRENCY_WARNING_THRESHOLD
@@ -32,6 +33,24 @@ from orchestrator.runner.impl.stages import (
 
 
 MAX_REVIEW_ATTEMPTS = 3
+
+
+def _run_final_review_and_exit(workstream_dir: Path, project_config: ProjectConfig, ws_id: str, verbose: bool = True) -> int:
+    """Run final branch review and return exit code."""
+    print("Result: all micro-commits complete")
+    print("\nRunning final branch review...")
+    print()
+    verdict = run_final_review(workstream_dir, project_config, verbose=verbose)
+    print()
+    if verdict == "approve":
+        print("Final review: APPROVE")
+        print(f"\nReady to merge: wf merge {ws_id}")
+        notify_complete(ws_id)
+    else:
+        print("Final review: CONCERNS")
+        print(f"\nReview the concerns above, then: wf merge {ws_id}")
+        notify_awaiting_review(ws_id)
+    return 0
 
 
 def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
@@ -372,8 +391,20 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
                 status, exit_code, failed_stage = run_once(ctx)
 
+                # After successful commit, check if all commits are now done
+                if status == "passed":
+                    plan_path = workstream_dir / "plan.md"
+                    commits = parse_plan(str(plan_path))
+                    if get_next_microcommit(commits) is None:
+                        return _run_final_review_and_exit(workstream_dir, project_config, ws_id, args.verbose)
+
                 # Send notifications based on result
                 if status == "blocked":
+                    # Check if all commits are done (select stage returned all_complete)
+                    select_reason = ctx.stages.get("select", {}).get("notes", "")
+                    if select_reason == "all_complete":
+                        return _run_final_review_and_exit(workstream_dir, project_config, ws_id, args.verbose)
+
                     reason = ctx.stages.get("human_review", {}).get("notes", "")
                     if "human approval" in reason.lower():
                         notify_awaiting_review(ws_id)
@@ -431,20 +462,7 @@ def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, 
         if status == "blocked":
             reason = ctx.stages.get("select", {}).get("notes", "")
             if reason == "all_complete":
-                print("Result: all micro-commits complete")
-                print("\nRunning final branch review...")
-                print()
-                verdict = run_final_review(workstream_dir, project_config, verbose=True)
-                print()
-                if verdict == "approve":
-                    print("Final review: APPROVE")
-                    print(f"\nReady to merge: wf merge {ws_id}")
-                    notify_complete(ws_id)
-                else:
-                    print("Final review: CONCERNS")
-                    print(f"\nReview the concerns above, then: wf merge {ws_id}")
-                    notify_awaiting_review(ws_id)
-                return 0
+                return _run_final_review_and_exit(workstream_dir, project_config, ws_id, verbose)
             # Check if blocked on human review
             hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
             if "human approval" in hr_notes.lower():
