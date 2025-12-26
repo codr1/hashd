@@ -1,4 +1,8 @@
-# Hashd - Agent Orchestration System
+# HASHD - Human-Agent Synchronized Handoff Development
+
+*A crowd of AI agents traversing artifact state, with human oversight at the gates.*
+
+(حشد = Arabic for "crowd")
 
 An AI-assisted development workflow system that coordinates LLM agents (Claude, Codex) to implement, test, and review code changes with human oversight.
 
@@ -19,10 +23,8 @@ Hashd breaks down development work into **workstreams** containing **micro-commi
 git clone https://github.com/codr1/hashd.git
 cd hashd
 
-# 2. Install dependencies
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# 2. Install dependencies (uses uv)
+uv pip install -r requirements.txt
 
 # 3. Configure your project
 mkdir -p projects/myproject
@@ -140,6 +142,7 @@ wf status other_feature  # Operates on other_feature, context unchanged
 | `wf run [id] --verbose` | Show implement/review exchange |
 | `wf show [id]` | Show pending changes and review feedback |
 | `wf log [id]` | Show workstream timeline (runs, approvals, etc.) |
+| `wf watch [id]` | Interactive TUI for monitoring workstream |
 | `wf review [id]` | Final AI review of entire branch before merge |
 | `wf approve [id]` | Approve changes for commit |
 | `wf reject [id] -f "feedback"` | Reject with feedback (iterate) |
@@ -179,6 +182,7 @@ All micro-commits complete -> final branch review -> merge -> archived
 
 - Python 3.11+
 - Git
+- [uv](https://github.com/astral-sh/uv) - for dependency management
 - [Claude CLI](https://github.com/anthropics/claude-cli) - for code review
 - [Codex CLI](https://github.com/openai/codex) - for implementation
 - A project with a Makefile and test target
