@@ -151,17 +151,27 @@ wf status other_feature  # Operates on other_feature, context unchanged
 
 Commands marked with `[id]` use the current workstream context if no ID is provided.
 
+When reopening archived workstreams, `wf open` analyzes staleness by comparing file changes on the branch vs main. It shows a severity score (LOW/MODERATE/HIGH/CRITICAL) and prompts for confirmation if conflicts are likely.
+
 ## Workstream Lifecycle
 
 ```
-new -> run -> [implement -> test -> review] x N -> human_review -> commit
-                                                        |
-                                                        v
-                                            [approve] -> next micro-commit
-                                            [reject]  -> iterate with feedback
-                                            [reset]   -> discard, start fresh
+                    MICRO-COMMIT LOOP
+                    =================
+new -> run -> [implement -> test -> review -> human_review -> commit] x N
+                                                   |
+                                                   v
+                                       [approve] -> next micro-commit
+                                       [reject]  -> iterate with feedback
+                                       [reset]   -> discard, start fresh
 
-All micro-commits complete -> merge -> archived
+                    COMPLETION
+                    ==========
+All micro-commits complete -> final branch review -> merge -> archived
+                                    |
+                                    v
+                              AI reviews entire branch
+                              as senior staff engineer
 ```
 
 ## Requirements
@@ -214,4 +224,6 @@ TEST_TIMEOUT="300"            # Test execution timeout (seconds)
 
 ## License
 
-MIT
+BSL 1.1 (Business Source License)
+
+See [LICENSE](LICENSE) for details.
