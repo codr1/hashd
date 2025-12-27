@@ -17,6 +17,7 @@ from orchestrator.runner.stages import StageError, StageBlocked
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit, mark_done
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
+from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
 
 
 def _verbose_header(title: str):
@@ -87,6 +88,57 @@ def stage_load(ctx: RunContext):
     ctx.log("Load stage passed - configuration validated")
 
 
+def stage_breakdown(ctx: RunContext):
+    """Generate micro-commits from story/ACs if not present.
+
+    This stage runs before SELECT. If plan.md already has micro-commits,
+    it passes through. Otherwise, calls Claude to generate them.
+
+    In supervised mode, pauses after generating breakdown for human review.
+    """
+    plan_path = ctx.workstream_dir / "plan.md"
+    commits = parse_plan(str(plan_path))
+
+    if commits:
+        ctx.log(f"Plan already has {len(commits)} micro-commits, skipping breakdown")
+        return
+
+    ctx.log("No micro-commits found - generating breakdown")
+
+    # Read plan content for Claude
+    plan_content = plan_path.read_text()
+
+    # Generate breakdown
+    log_file = ctx.run_dir / "stages" / "breakdown.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    breakdown = generate_breakdown(
+        ws_id=ctx.workstream.id,
+        worktree=ctx.workstream.worktree,
+        plan_content=plan_content,
+        timeout=ctx.profile.breakdown_timeout,
+        log_file=log_file,
+    )
+
+    if not breakdown:
+        raise StageError("breakdown", "Failed to generate micro-commits", 2)
+
+    # Append to plan.md
+    append_commits_to_plan(plan_path, breakdown)
+
+    ctx.log(f"Generated {len(breakdown)} micro-commits:")
+    for c in breakdown:
+        ctx.log(f"  - {c['id']}: {c['title']}")
+
+    # In supervised mode, pause for human review of plan.md
+    if ctx.profile.supervised_mode:
+        ctx.log("Supervised mode: pausing for human review of plan.md")
+        raise StageBlocked(
+            "breakdown",
+            f"Review plan.md, then run: wf run {ctx.workstream.id}"
+        )
+
+
 def stage_select(ctx: RunContext):
     """Select next micro-commit to work on."""
     plan_path = ctx.workstream_dir / "plan.md"
@@ -113,7 +165,11 @@ def stage_clarification_check(ctx: RunContext):
 
     if blocking:
         ids = [c.id for c in blocking]
-        raise StageBlocked("clarification_check", f"Blocked by: {', '.join(ids)}")
+        raise StageBlocked(
+            "clarification_check",
+            f"Blocked by: {', '.join(ids)}. "
+            f"Run 'wf clarify {ctx.workstream.id}' to view and answer."
+        )
 
     ctx.log("No blocking clarifications")
 

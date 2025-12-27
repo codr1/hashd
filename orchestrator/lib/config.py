@@ -27,6 +27,8 @@ class ProjectProfile:
     implement_timeout: int
     review_timeout: int
     test_timeout: int
+    breakdown_timeout: int
+    supervised_mode: bool
 
 
 @dataclass
@@ -62,6 +64,8 @@ def load_project_profile(project_dir: Path) -> ProjectProfile:
         implement_timeout=int(env.get("IMPLEMENT_TIMEOUT", "600")),
         review_timeout=int(env.get("REVIEW_TIMEOUT", "120")),
         test_timeout=int(env.get("TEST_TIMEOUT", "300")),
+        breakdown_timeout=int(env.get("BREAKDOWN_TIMEOUT", "180")),
+        supervised_mode=env.get("SUPERVISED_MODE", "false").lower() == "true",
     )
 
 

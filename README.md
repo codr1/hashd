@@ -8,13 +8,14 @@ An AI-assisted development workflow system that coordinates LLM agents (Claude, 
 
 ## Overview
 
-Hashd breaks down development work into **workstreams** containing **micro-commits** - small, reviewable units of work. Each micro-commit goes through:
+Hashd breaks down development work into **workstreams** containing **micro-commits** - small, reviewable units of work. The pipeline stages are:
 
-1. **IMPLEMENT** - Codex writes the code
-2. **TEST** - Automated tests run
-3. **REVIEW** - Claude reviews the changes (as a senior staff engineer)
-4. **HUMAN_REVIEW** - Human approves, rejects, or resets
-5. **COMMIT** - Changes are committed to the branch
+1. **BREAKDOWN** - Claude generates micro-commits from acceptance criteria (first run only)
+2. **IMPLEMENT** - Codex writes the code
+3. **TEST** - Automated tests run
+4. **REVIEW** - Claude reviews the changes (as a senior staff engineer)
+5. **HUMAN_REVIEW** - Human approves, rejects, or resets
+6. **COMMIT** - Changes are committed to the branch
 
 ## Quick Start
 
@@ -46,28 +47,41 @@ EOF
 mkdir -p ~/bin
 ln -sf "$(pwd)/bin/wf" ~/bin/wf
 echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
-echo "source $(pwd)/bin/wf-completion.bash" >> ~/.bashrc
+
+# 5. Enable shell completion
+wf --completion bash >> ~/.bashrc
 source ~/.bashrc
 
-# 5. Create a workstream and set as current
-wf new my_feature "Add user authentication"
-wf use my_feature
+# 6. Plan a story from requirements
+wf plan                    # Interactive discovery from REQS.md
+wf approve STORY-0001      # Accept the story
 
-# 6. Run the pipeline (uses current workstream)
-wf run --loop
+# 7. Run the pipeline (creates workstream from story)
+wf run STORY-0001 --loop
 ```
 
 ## Shell Completion
 
-Tab completion is available for bash:
+Tab completion is available for bash, zsh, and fish:
 
+```bash
+# Bash
+wf --completion bash >> ~/.bashrc
+
+# Zsh
+wf --completion zsh >> ~/.zshrc
+
+# Fish
+wf --completion fish > ~/.config/fish/completions/wf.fish
+```
+
+Examples:
 ```bash
 wf r<TAB>                    # -> wf run
 wf run o<TAB>                # -> wf run open_play_rules
-wf run myfeature -<TAB>      # -> --verbose --loop --once
+wf run STORY-<TAB>           # -> wf run STORY-0001
+wf show <TAB>                # Shows both stories and workstreams
 ```
-
-The completion script is at `bin/wf-completion.bash`. Source it in your shell config as shown above.
 
 ## Parallel Workstreams
 
@@ -116,7 +130,7 @@ Set a current workstream to avoid typing it repeatedly:
 wf use my_feature        # Set current workstream
 wf run --loop            # Operates on my_feature
 wf approve               # Still my_feature
-wf status                # Still my_feature
+wf show                  # Still my_feature
 
 wf use                   # Show current workstream
 wf use --clear           # Clear current workstream
@@ -126,48 +140,81 @@ When a workstream context is set, you can still override it explicitly:
 
 ```bash
 wf use my_feature
-wf status other_feature  # Operates on other_feature, context unchanged
+wf show other_feature  # Operates on other_feature, context unchanged
 ```
 
 ## Commands
 
+### Core Commands
+
 | Command | Description |
 |---------|-------------|
-| `wf use [id]` | Set/show current workstream |
-| `wf new <id> "title"` | Create a new workstream |
-| `wf list` | List all workstreams |
-| `wf status [id]` | Show workstream status |
-| `wf run [id]` | Run one micro-commit cycle |
+| `wf plan` | Plan stories from REQS.md (interactive discovery) |
+| `wf plan new ["title"]` | Create ad-hoc story (not from REQS.md) |
+| `wf plan clone STORY-xxx` | Clone a locked story to edit |
+| `wf plan STORY-xxx` | Edit existing story (if unlocked) |
+| `wf run <id> [name]` | Run workstream or create from story |
+| `wf list` | List all stories and workstreams |
+| `wf show <id>` | Show story or workstream details |
+| `wf approve <id>` | Accept story or approve workstream gate |
+| `wf merge <ws>` | Merge completed workstream to main |
+| `wf close <id>` | Close story or workstream (abandon) |
+| `wf watch <ws>` | Interactive TUI for monitoring |
+
+### Supporting Commands
+
+| Command | Description |
+|---------|-------------|
+| `wf use [id]` | Set/show current workstream context |
 | `wf run [id] --loop` | Run until blocked or complete |
+| `wf run [id] --yes` | Skip confirmation prompts |
 | `wf run [id] --verbose` | Show implement/review exchange |
-| `wf show [id]` | Show pending changes and review feedback |
-| `wf log [id]` | Show workstream timeline (runs, approvals, etc.) |
-| `wf watch [id]` | Interactive TUI for monitoring workstream |
-| `wf review [id]` | Final AI review of entire branch before merge |
-| `wf approve [id]` | Approve changes for commit |
-| `wf reject [id] -f "feedback"` | Reject with feedback (iterate) |
-| `wf reset [id]` | Discard changes, start fresh |
-| `wf merge [id]` | Merge completed workstream to main |
-| `wf close [id]` | Archive without merge (abandon) |
+| `wf log [id]` | Show workstream timeline |
+| `wf review [id]` | Final AI review before merge |
+| `wf reject [id] -f "..."` | Reject with feedback (iterate) |
+| `wf reject [id] --reset` | Discard changes, start fresh |
+| `wf refresh [id]` | Refresh touched files |
+| `wf conflicts [id]` | Check for file conflicts |
 | `wf archive` | List archived workstreams |
-| `wf open <id>` | Resurrect archived workstream (with conflict analysis) |
-| `wf clarify` | List pending clarification requests |
+| `wf open <id>` | Resurrect archived workstream |
+| `wf clarify` | Manage clarification requests |
+
+### Smart ID Routing
+
+Commands automatically route based on ID prefix:
+- `STORY-xxx` - Routes to story commands (e.g., `wf show STORY-0001`)
+- `lowercase_id` - Routes to workstream commands (e.g., `wf show my_feature`)
 
 Commands marked with `[id]` use the current workstream context if no ID is provided.
 
 When reopening archived workstreams, `wf open` analyzes staleness by comparing file changes on the branch vs main. It shows a severity score (LOW/MODERATE/HIGH/CRITICAL) and prompts for confirmation if conflicts are likely.
 
-## Workstream Lifecycle
+## Lifecycle
+
+### Story Lifecycle
+
+```
+draft -> accepted -> implementing -> implemented
+         (editable)    (LOCKED)       (LOCKED)
+```
+
+- Stories in `draft` can be edited with `wf plan STORY-xxx`
+- `wf approve STORY-xxx` moves draft to accepted (ready for implementation)
+- `wf run STORY-xxx` creates workstream and locks the story
+- `wf close <workstream>` unlocks the linked story
+- `wf merge <workstream>` marks story as implemented
+
+### Workstream Lifecycle
 
 ```
                     MICRO-COMMIT LOOP
                     =================
-new -> run -> [implement -> test -> review -> human_review -> commit] x N
-                                                   |
-                                                   v
-                                       [approve] -> next micro-commit
-                                       [reject]  -> iterate with feedback
-                                       [reset]   -> discard, start fresh
+run -> breakdown -> [implement -> test -> review -> human_review -> commit] x N
+                                                                 |
+                                                                 v
+                                                     [approve] -> next micro-commit
+                                                     [reject]  -> iterate with feedback
+                                                     [reject --reset] -> discard changes, start fresh
 
                     COMPLETION
                     ==========
@@ -225,6 +272,8 @@ MAKE_TARGET_TEST="test"       # Make target for running tests
 IMPLEMENT_TIMEOUT="600"       # Codex timeout (seconds)
 REVIEW_TIMEOUT="120"          # Claude review timeout (seconds)
 TEST_TIMEOUT="300"            # Test execution timeout (seconds)
+BREAKDOWN_TIMEOUT="180"       # Claude breakdown generation timeout (seconds)
+SUPERVISED_MODE="false"       # Pause after breakdown for human review
 ```
 
 ## License

@@ -4,11 +4,16 @@ wf run - Execute the run loop with retry and human gate.
 
 import json
 import logging
+import subprocess
+from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 from orchestrator.lib.config import ProjectConfig, load_project_profile, load_workstream
+from orchestrator.lib.constants import MAX_WS_ID_LEN, WS_ID_PATTERN
+from orchestrator.pm.stories import load_story, lock_story, is_story_locked
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit
 from orchestrator.runner.locking import (
     workstream_lock, LockTimeout, count_running_workstreams,
@@ -20,6 +25,7 @@ from orchestrator.commands.review import run_final_review
 from orchestrator.runner.stages import run_stage, StageError, StageBlocked, StageResult
 from orchestrator.runner.impl.stages import (
     stage_load,
+    stage_breakdown,
     stage_select,
     stage_clarification_check,
     stage_implement,
@@ -33,6 +39,208 @@ from orchestrator.runner.impl.stages import (
 
 
 MAX_REVIEW_ATTEMPTS = 3
+
+
+def create_workstream_from_story(
+    args, ops_dir: Path, project_config: ProjectConfig,
+    story_id: str, ws_name: Optional[str] = None
+) -> Optional[str]:
+    """
+    Create a workstream from a story.
+
+    Returns workstream ID on success, None on error.
+    If workstream already exists (story is implementing), returns existing ID.
+    """
+    project_dir = ops_dir / "projects" / project_config.name
+
+    # Load story
+    story = load_story(project_dir, story_id)
+    if not story:
+        print(f"ERROR: Story '{story_id}' not found")
+        return None
+
+    # If story already has a workstream (implementing), use it
+    if story.status == "implementing" and story.workstream:
+        ws_dir = ops_dir / "workstreams" / story.workstream
+        if ws_dir.exists():
+            print(f"Story already implementing via '{story.workstream}'")
+            return story.workstream
+
+    # Check if story is ready for implementation
+    if story.status == "draft":
+        print(f"ERROR: Story is in 'draft' status")
+        print(f"  Accept the story first: wf approve {story_id}")
+        return None
+
+    if story.status == "implemented":
+        print(f"ERROR: Story is already implemented")
+        print(f"  Clone to iterate: wf plan clone {story_id}")
+        return None
+
+    if story.status == "closed":
+        print(f"ERROR: Story is closed")
+        return None
+
+    # Determine workstream ID
+    if ws_name:
+        ws_id = ws_name
+    elif story.suggested_ws_id:
+        ws_id = story.suggested_ws_id
+    else:
+        print(f"ERROR: No workstream name provided and story has no suggested ID")
+        print(f"  Usage: wf run {story_id} <name>")
+        return None
+
+    # Validate workstream ID
+    if not WS_ID_PATTERN.match(ws_id) or len(ws_id) > MAX_WS_ID_LEN:
+        print(f"ERROR: Invalid workstream ID '{ws_id}'")
+        print(f"  Must be 1-{MAX_WS_ID_LEN} chars: lowercase letter, then letters/numbers/underscores")
+        return None
+
+    workstream_dir = ops_dir / "workstreams" / ws_id
+
+    # Check if workstream already exists
+    if workstream_dir.exists():
+        print(f"ERROR: Workstream '{ws_id}' already exists")
+        print(f"  Run directly: wf run {ws_id}")
+        return None
+
+    # Confirm creation
+    print(f"Creating workstream '{ws_id}' from {story_id}:")
+    print(f"  Title: {story.title}")
+    print()
+    if not getattr(args, 'yes', False):
+        response = input("Proceed? [Y/n] ").strip().lower()
+        if response and response != 'y':
+            print("Cancelled")
+            return None
+
+    # Create workstream
+    repo_path = project_config.repo_path
+    default_branch = project_config.default_branch
+    branch_name = f"feat/{ws_id}"
+    worktree_path = ops_dir / "worktrees" / ws_id
+
+    # Check worktree path doesn't exist
+    if worktree_path.exists():
+        print(f"ERROR: Worktree path already exists: {worktree_path}")
+        return None
+
+    # Check branch doesn't exist
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "show-ref", "--verify", f"refs/heads/{branch_name}"],
+        capture_output=True
+    )
+    if result.returncode == 0:
+        print(f"ERROR: Branch '{branch_name}' already exists")
+        return None
+
+    # Get BASE_SHA from default branch
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "rev-parse", default_branch],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"ERROR: Could not find branch '{default_branch}'")
+        return None
+    base_sha = result.stdout.strip()
+
+    # Create branch + worktree
+    print(f"Creating worktree at {worktree_path}...")
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "worktree", "add", str(worktree_path), "-b", branch_name, base_sha],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"ERROR: Failed to create worktree: {result.stderr}")
+        return None
+
+    # Create workstream directory structure
+    print(f"Creating workstream directory at {workstream_dir}...")
+    workstream_dir.mkdir(parents=True)
+    (workstream_dir / "clarifications" / "pending").mkdir(parents=True)
+    (workstream_dir / "clarifications" / "answered").mkdir(parents=True)
+    (workstream_dir / "uat" / "pending").mkdir(parents=True)
+    (workstream_dir / "uat" / "passed").mkdir(parents=True)
+
+    # Write meta.env
+    now = datetime.now().isoformat()
+    meta_content = f'''ID="{ws_id}"
+TITLE="{story.title}"
+BRANCH="{branch_name}"
+WORKTREE="{worktree_path}"
+BASE_BRANCH="{default_branch}"
+BASE_SHA="{base_sha}"
+STATUS="active"
+CREATED_AT="{now}"
+LAST_REFRESHED="{now}"
+'''
+    (workstream_dir / "meta.env").write_text(meta_content)
+
+    # Generate plan.md from story
+    plan_content = _generate_plan_from_story(story)
+    (workstream_dir / "plan.md").write_text(plan_content)
+
+    # Write notes.md
+    notes_content = f'''# Notes: {story.title}
+
+Created: {now}
+Story: {story_id}
+
+## Log
+
+'''
+    (workstream_dir / "notes.md").write_text(notes_content)
+
+    # Create touched_files.txt (empty initially)
+    (workstream_dir / "touched_files.txt").write_text("")
+
+    # Lock the story
+    locked = lock_story(project_dir, story_id, ws_id)
+    if not locked:
+        print(f"WARNING: Failed to lock story {story_id}")
+
+    print(f"Workstream '{ws_id}' created from {story_id}")
+    print(f"  Branch: {branch_name}")
+    print(f"  Worktree: {worktree_path}")
+    print()
+
+    return ws_id
+
+
+def _generate_plan_from_story(story) -> str:
+    """Generate plan.md content from a story."""
+    lines = [f"# {story.title}", ""]
+
+    if story.problem:
+        lines.extend(["## Overview", "", story.problem, ""])
+
+    if story.acceptance_criteria:
+        lines.extend(["## Acceptance Criteria", ""])
+        for ac in story.acceptance_criteria:
+            lines.append(f"- [ ] {ac}")
+        lines.append("")
+
+    if story.non_goals:
+        lines.extend(["## Non-Goals", ""])
+        for ng in story.non_goals:
+            lines.append(f"- {ng}")
+        lines.append("")
+
+    lines.extend([
+        "## Micro-commits",
+        "",
+        "<!-- Add micro-commits below in this format:",
+        "### COMMIT-XX-001: Title",
+        "",
+        "Description of what this commit does.",
+        "",
+        "Done: [ ]",
+        "-->",
+        ""
+    ])
+
+    return "\n".join(lines)
 
 
 def _run_final_review_and_exit(workstream_dir: Path, project_config: ProjectConfig, ws_id: str, verbose: bool = True) -> int:
@@ -58,8 +266,8 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
     Run a single micro-commit cycle with retry loop and human gate.
 
     Flow:
-    1. LOAD, SELECT, CLARIFICATION_CHECK
-    2. Inner loop (up to 5 attempts): IMPLEMENT -> TEST -> REVIEW
+    1. LOAD, BREAKDOWN, SELECT, CLARIFICATION_CHECK
+    2. Inner loop (up to 3 attempts): IMPLEMENT -> TEST -> REVIEW
     3. HUMAN_REVIEW (blocks until human action)
     4. QA_GATE, UPDATE_STATE (commit)
 
@@ -69,11 +277,20 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
     ctx.log(f"Starting run: {ctx.run_id}")
     ctx.log(f"Workstream: {ctx.workstream.id}")
 
-    # === Phase 1: Load and Select ===
+    # === Phase 1: Load, Breakdown, and Select ===
     try:
         result = run_stage(ctx, "load", stage_load)
         if result == StageResult.BLOCKED:
             ctx.write_result("blocked", blocked_reason="load blocked")
+            return "blocked", 8, None
+    except StageError as e:
+        ctx.write_result("failed", e.stage)
+        return "failed", e.exit_code, e.stage
+
+    try:
+        result = run_stage(ctx, "breakdown", stage_breakdown)
+        if result == StageResult.BLOCKED:
+            ctx.write_result("blocked", blocked_reason="breakdown blocked")
             return "blocked", 8, None
     except StageError as e:
         ctx.write_result("failed", e.stage)
@@ -138,7 +355,7 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
     # === Phase 2: Inner Loop (Implement -> Test -> Review) ===
     human_feedback, should_reset = get_human_feedback(ctx.workstream_dir)  # From previous human rejection
 
-    # Reset worktree if human requested it (wf reset)
+    # Reset worktree if human requested it (wf reject --reset)
     if should_reset:
         ctx.log("Human requested reset - discarding uncommitted changes")
         _reset_worktree(ctx.workstream.worktree)
@@ -428,7 +645,7 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                         print(f"\nNext steps:")
                         print(f"  wf approve {ws_id}")
                         print(f"  wf reject {ws_id} -f '...'")
-                        print(f"  wf reset {ws_id}")
+                        print(f"  wf reject {ws_id} --reset")
                 elif status == "failed":
                     print(f"\nFailed at stage: {failed_stage or 'unknown'}")
                     print(f"  Check: {ctx.run_dir}/stages/{failed_stage}.log")
@@ -470,7 +687,7 @@ def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, 
                 print(f"\nNext steps:")
                 print(f"  wf approve {ws_id}")
                 print(f"  wf reject {ws_id} -f '...'")
-                print(f"  wf reset {ws_id}")
+                print(f"  wf reject {ws_id} --reset")
                 notify_awaiting_review(ws_id)
             else:
                 print(f"Result: {status}")
