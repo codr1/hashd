@@ -166,12 +166,154 @@ def update_story(project_dir: Path, story_id: str, updates: dict) -> Optional[St
     return updated
 
 
+def is_story_locked(story: Story) -> bool:
+    """Check if a story is locked (cannot be edited).
+
+    Stories are locked when:
+    - status is 'implementing' (workstream in progress)
+    - status is 'implemented' (workstream completed)
+    """
+    return story.status in ("implementing", "implemented")
+
+
+def lock_story(project_dir: Path, story_id: str, workstream_id: str) -> Optional[Story]:
+    """Lock a story when implementation starts.
+
+    Sets status to 'implementing' and links the workstream.
+
+    Args:
+        project_dir: Project directory
+        story_id: Story ID to lock
+        workstream_id: Workstream ID being created
+
+    Returns:
+        Updated Story or None if not found or already locked
+    """
+    story = load_story(project_dir, story_id)
+    if not story:
+        return None
+
+    if is_story_locked(story):
+        logger.warning(f"Cannot lock {story_id}: already locked (status={story.status})")
+        return None
+
+    return update_story(project_dir, story_id, {
+        "status": "implementing",
+        "workstream": workstream_id,
+    })
+
+
+def unlock_story(project_dir: Path, story_id: str) -> Optional[Story]:
+    """Unlock a story when implementation is cancelled.
+
+    Sets status back to 'accepted' (or 'draft' if never accepted).
+
+    Args:
+        project_dir: Project directory
+        story_id: Story ID to unlock
+
+    Returns:
+        Updated Story or None if not found
+    """
+    story = load_story(project_dir, story_id)
+    if not story:
+        return None
+
+    if story.status != "implementing":
+        logger.warning(f"Cannot unlock {story_id}: not in 'implementing' state (status={story.status})")
+        return None
+
+    # Go back to accepted (it was accepted before implementation started)
+    return update_story(project_dir, story_id, {
+        "status": "accepted",
+        "workstream": None,
+    })
+
+
+def mark_story_implemented(project_dir: Path, story_id: str) -> Optional[Story]:
+    """Mark a story as implemented when workstream merges.
+
+    Args:
+        project_dir: Project directory
+        story_id: Story ID to mark
+
+    Returns:
+        Updated Story or None if not found
+    """
+    story = load_story(project_dir, story_id)
+    if not story:
+        return None
+
+    return update_story(project_dir, story_id, {
+        "status": "implemented",
+        "implemented_at": datetime.now().isoformat(),
+    })
+
+
+def clone_story(project_dir: Path, story_id: str) -> Optional[Story]:
+    """Clone a story to create an editable copy.
+
+    Useful when the original is locked (implementing/implemented).
+
+    Args:
+        project_dir: Project directory
+        story_id: Story ID to clone
+
+    Returns:
+        New Story (clone) or None if original not found
+    """
+    original = load_story(project_dir, story_id)
+    if not original:
+        return None
+
+    # Create clone with fresh ID, reset status
+    clone_data = {
+        "title": f"{original.title} (clone)",
+        "source_refs": f"Cloned from {story_id}. Original refs: {original.source_refs}",
+        "problem": original.problem,
+        "acceptance_criteria": original.acceptance_criteria.copy(),
+        "non_goals": original.non_goals.copy(),
+        "dependencies": original.dependencies.copy(),
+        "open_questions": original.open_questions.copy(),
+        "suggested_ws_id": "",  # Clear suggested ID for clone
+    }
+
+    return create_story(project_dir, clone_data)
+
+
+def accept_story(project_dir: Path, story_id: str) -> Optional[Story]:
+    """Accept a story, marking it ready for implementation.
+
+    Args:
+        project_dir: Project directory
+        story_id: Story ID to accept
+
+    Returns:
+        Updated Story or None if not found or not in draft
+    """
+    story = load_story(project_dir, story_id)
+    if not story:
+        return None
+
+    if story.status != "draft":
+        logger.warning(f"Cannot accept {story_id}: not in 'draft' state (status={story.status})")
+        return None
+
+    return update_story(project_dir, story_id, {
+        "status": "accepted",
+    })
+
+
 def write_story_markdown(path: Path, story: Story):
     """Write story as human-readable markdown."""
+    status_display = story.status
+    if is_story_locked(story):
+        status_display = f"{story.status} [LOCKED]"
+
     lines = [
         f"# {story.id}: {story.title}",
         "",
-        f"**Status:** {story.status}",
+        f"**Status:** {status_display}",
         f"**Created:** {story.created}",
     ]
 

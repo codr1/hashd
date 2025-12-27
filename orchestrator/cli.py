@@ -11,10 +11,10 @@ from orchestrator.lib.config import (
     set_current_workstream,
     clear_current_workstream,
 )
-from orchestrator.commands import new as cmd_new_module
+from orchestrator.lib.suggest import suggest_workstream, suggest_story
+from orchestrator.lib.completion import generate_completion
 from orchestrator.commands import list as cmd_list_module
 from orchestrator.commands import refresh as cmd_refresh_module
-from orchestrator.commands import status as cmd_status_module
 from orchestrator.commands import conflicts as cmd_conflicts_module
 from orchestrator.commands import close as cmd_close_module
 from orchestrator.commands import merge as cmd_merge_module
@@ -24,7 +24,7 @@ from orchestrator.commands import approve as cmd_approve_module
 from orchestrator.commands import show as cmd_show_module
 from orchestrator.commands import review as cmd_review_module
 from orchestrator.commands import clarify as cmd_clarify_module
-from orchestrator.commands import pm as cmd_pm_module
+from orchestrator.commands import plan as cmd_plan_module
 from orchestrator.commands import open as cmd_open_module
 from orchestrator.commands import log as cmd_log_module
 from orchestrator.commands import watch as cmd_watch_module
@@ -58,11 +58,20 @@ def get_project_config(args):
     return load_project_config(project_dir), ops_dir
 
 
-def resolve_workstream_id(args, ops_dir: Path) -> str:
+def resolve_workstream_id(args, ops_dir: Path, check_exists: bool = True) -> str:
     """Resolve workstream ID from args or current context."""
     # Use explicit ID if provided
     ws_id = getattr(args, 'id', None)
     if ws_id:
+        if check_exists:
+            ws_dir = ops_dir / "workstreams" / ws_id
+            if not ws_dir.exists():
+                print(f"ERROR: Workstream '{ws_id}' not found")
+                # Try to suggest a similar one
+                suggestion = suggest_workstream(ws_id, ops_dir / "workstreams")
+                if suggestion:
+                    print(f"  Did you mean: {suggestion}?")
+                sys.exit(2)
         return ws_id
 
     # Fall back to current context
@@ -74,9 +83,14 @@ def resolve_workstream_id(args, ops_dir: Path) -> str:
     sys.exit(2)
 
 
-def cmd_new(args):
+def is_story_id(id_str: str) -> bool:
+    """Check if an ID is a story ID (STORY-xxxx)."""
+    return id_str and id_str.startswith('STORY-')
+
+
+def cmd_plan(args):
     project_config, ops_dir = get_project_config(args)
-    return cmd_new_module.cmd_new(args, ops_dir, project_config)
+    return cmd_plan_module.cmd_plan(args, ops_dir, project_config)
 
 
 def cmd_use(args):
@@ -119,12 +133,6 @@ def cmd_refresh(args):
     return cmd_refresh_module.cmd_refresh(args, ops_dir, project_config)
 
 
-def cmd_status(args):
-    project_config, ops_dir = get_project_config(args)
-    args.id = resolve_workstream_id(args, ops_dir)
-    return cmd_status_module.cmd_status(args, ops_dir, project_config)
-
-
 def cmd_conflicts(args):
     project_config, ops_dir = get_project_config(args)
     args.id = resolve_workstream_id(args, ops_dir)
@@ -133,12 +141,32 @@ def cmd_conflicts(args):
 
 def cmd_run(args):
     project_config, ops_dir = get_project_config(args)
+    id_arg = getattr(args, 'id', None)
+
+    # Handle STORY- prefix - create workstream from story if needed
+    if is_story_id(id_arg):
+        ws_name = getattr(args, 'name', None)
+        result = cmd_run_module.create_workstream_from_story(
+            args, ops_dir, project_config, id_arg, ws_name
+        )
+        if result is None:
+            # Error already printed
+            return 2
+        args.id = result  # Use the new workstream ID
+
     args.id = resolve_workstream_id(args, ops_dir)
     return cmd_run_module.cmd_run(args, ops_dir, project_config)
 
 
 def cmd_close(args):
     project_config, ops_dir = get_project_config(args)
+    id_arg = getattr(args, 'id', None)
+
+    # Handle STORY- prefix - close story
+    if is_story_id(id_arg):
+        return cmd_close_module.cmd_close_story(args, ops_dir, project_config, id_arg)
+
+    # Otherwise close workstream
     args.id = resolve_workstream_id(args, ops_dir)
     return cmd_close_module.cmd_close(args, ops_dir, project_config)
 
@@ -166,6 +194,13 @@ def cmd_open(args):
 
 def cmd_approve(args):
     project_config, ops_dir = get_project_config(args)
+    id_arg = getattr(args, 'id', None)
+
+    # Handle STORY- prefix - accept story
+    if is_story_id(id_arg):
+        return cmd_approve_module.cmd_accept_story(args, ops_dir, project_config, id_arg)
+
+    # Otherwise approve workstream
     args.id = resolve_workstream_id(args, ops_dir)
     return cmd_approve_module.cmd_approve(args, ops_dir, project_config)
 
@@ -176,14 +211,15 @@ def cmd_reject(args):
     return cmd_approve_module.cmd_reject(args, ops_dir, project_config)
 
 
-def cmd_reset(args):
-    project_config, ops_dir = get_project_config(args)
-    args.id = resolve_workstream_id(args, ops_dir)
-    return cmd_approve_module.cmd_reset(args, ops_dir, project_config)
-
-
 def cmd_show(args):
     project_config, ops_dir = get_project_config(args)
+    id_arg = getattr(args, 'id', None)
+
+    # Handle STORY- prefix - show story details
+    if is_story_id(id_arg):
+        return cmd_show_module.cmd_show_story(args, ops_dir, project_config, id_arg)
+
+    # Otherwise show workstream
     args.id = resolve_workstream_id(args, ops_dir)
     return cmd_show_module.cmd_show(args, ops_dir, project_config)
 
@@ -226,50 +262,43 @@ def cmd_clarify_ask(args):
     return cmd_clarify_module.cmd_clarify_ask(args, ops_dir, project_config)
 
 
-def cmd_pm_plan(args):
-    project_config, ops_dir = get_project_config(args)
-    return cmd_pm_module.cmd_pm_plan(args, ops_dir, project_config)
-
-
-def cmd_pm_refine(args):
-    project_config, ops_dir = get_project_config(args)
-    return cmd_pm_module.cmd_pm_refine(args, ops_dir, project_config)
-
-
-def cmd_pm_spec(args):
-    project_config, ops_dir = get_project_config(args)
-    return cmd_pm_module.cmd_pm_spec(args, ops_dir, project_config)
-
-
-def cmd_pm_status(args):
-    project_config, ops_dir = get_project_config(args)
-    return cmd_pm_module.cmd_pm_status(args, ops_dir, project_config)
-
-
-def cmd_pm_list(args):
-    project_config, ops_dir = get_project_config(args)
-    return cmd_pm_module.cmd_pm_list(args, ops_dir, project_config)
-
-
-def cmd_pm_show(args):
-    project_config, ops_dir = get_project_config(args)
-    return cmd_pm_module.cmd_pm_show(args, ops_dir, project_config)
-
-
 def main():
+    # Handle --completion before parsing subcommands
+    if len(sys.argv) == 2 and sys.argv[1] == '--completion':
+        print("Usage: wf --completion bash|zsh|fish")
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == '--completion':
+        shell = sys.argv[2]
+        try:
+            print(generate_completion(shell))
+            return 0
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            return 1
+
     parser = argparse.ArgumentParser(prog='wf', description='AOS Workflow CLI')
     parser.add_argument('--project', '-p', help='Project name')
-    subparsers = parser.add_subparsers(dest='command', required=True)
+    parser.add_argument('--completion', metavar='SHELL', help='Generate shell completion (bash|zsh|fish)')
+    subparsers = parser.add_subparsers(dest='command')
 
-    # wf new
-    p_new = subparsers.add_parser('new', help='Create workstream')
-    p_new.add_argument('id', nargs='?', help='Workstream ID (optional if --stories provided)')
-    p_new.add_argument('title', nargs='?', help='Workstream title (optional if --stories provided)')
-    p_new.add_argument('--stories', '-s', help='Link to story ID (e.g., STORY-0001)')
-    p_new.set_defaults(func=cmd_new)
+    # wf plan
+    p_plan = subparsers.add_parser('plan', help='Plan stories from REQS.md or ad-hoc')
+    p_plan.add_argument('story_id', nargs='?', help='Story ID to edit (e.g., STORY-0001)')
+    p_plan.set_defaults(func=cmd_plan, new=False, clone=False)
+    plan_sub = p_plan.add_subparsers(dest='plan_cmd')
+
+    # wf plan new
+    p_plan_new = plan_sub.add_parser('new', help='Create ad-hoc story')
+    p_plan_new.add_argument('title', nargs='?', help='Story title hint')
+    p_plan_new.set_defaults(func=cmd_plan, new=True, clone=False)
+
+    # wf plan clone
+    p_plan_clone = plan_sub.add_parser('clone', help='Clone a locked story')
+    p_plan_clone.add_argument('clone_id', help='Story ID to clone (e.g., STORY-0001)')
+    p_plan_clone.set_defaults(func=cmd_plan, new=False, clone=True)
 
     # wf list
-    p_list = subparsers.add_parser('list', help='List workstreams')
+    p_list = subparsers.add_parser('list', help='List stories and workstreams')
     p_list.set_defaults(func=cmd_list)
 
     # wf use
@@ -283,14 +312,9 @@ def main():
     p_refresh.add_argument('id', nargs='?', help='Workstream ID (optional, refreshes all if omitted)')
     p_refresh.set_defaults(func=cmd_refresh)
 
-    # wf status
-    p_status = subparsers.add_parser('status', help='Show workstream status')
-    p_status.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
-    p_status.set_defaults(func=cmd_status)
-
     # wf show
-    p_show = subparsers.add_parser('show', help='Show changes and last run details')
-    p_show.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_show = subparsers.add_parser('show', help='Show story or workstream details')
+    p_show.add_argument('id', nargs='?', help='Story ID (STORY-xxxx) or workstream ID')
     p_show.add_argument('--brief', '-b', action='store_true', help='Show only diff stats, not full diff')
     p_show.set_defaults(func=cmd_show)
 
@@ -321,15 +345,17 @@ def main():
 
     # wf run
     p_run = subparsers.add_parser('run', help='Run cycle')
-    p_run.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_run.add_argument('id', nargs='?', help='Workstream or STORY-xxxx (uses current if not specified)')
+    p_run.add_argument('name', nargs='?', help='Override workstream name (only for STORY-xxxx)')
     p_run.add_argument('--once', action='store_true', help='Run single cycle')
     p_run.add_argument('--loop', action='store_true', help='Run until blocked')
     p_run.add_argument('--verbose', '-v', action='store_true', help='Show implement/review exchange')
+    p_run.add_argument('--yes', '-y', action='store_true', help='Skip confirmation prompts')
     p_run.set_defaults(func=cmd_run)
 
     # wf close
-    p_close = subparsers.add_parser('close', help='Archive workstream without merging (abandon)')
-    p_close.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_close = subparsers.add_parser('close', help='Close story or workstream (abandon)')
+    p_close.add_argument('id', nargs='?', help='Story ID (STORY-xxxx) or workstream ID')
     p_close.add_argument('--force', action='store_true', help='Close even with uncommitted changes')
     p_close.set_defaults(func=cmd_close)
 
@@ -358,21 +384,16 @@ def main():
     p_open.set_defaults(func=cmd_open)
 
     # wf approve
-    p_approve = subparsers.add_parser('approve', help='Approve workstream for commit')
-    p_approve.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_approve = subparsers.add_parser('approve', help='Accept story or approve workstream gate')
+    p_approve.add_argument('id', nargs='?', help='Story ID (STORY-xxxx) or workstream ID')
     p_approve.set_defaults(func=cmd_approve)
 
     # wf reject
     p_reject = subparsers.add_parser('reject', help='Reject and iterate on current changes')
     p_reject.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_reject.add_argument('--feedback', '-f', help='Feedback for the implementer')
+    p_reject.add_argument('--reset', action='store_true', help='Discard changes and start fresh')
     p_reject.set_defaults(func=cmd_reject)
-
-    # wf reset
-    p_reset = subparsers.add_parser('reset', help='Discard changes and start fresh (rare)')
-    p_reset.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
-    p_reset.add_argument('--feedback', '-f', help='Feedback for the implementer')
-    p_reset.set_defaults(func=cmd_reset)
 
     # wf clarify
     p_clarify = subparsers.add_parser('clarify', help='Manage clarification requests')
@@ -404,39 +425,13 @@ def main():
     p_clarify_ask.add_argument('--urgency', '-u', choices=['blocking', 'non-blocking'], default='blocking')
     p_clarify_ask.set_defaults(func=cmd_clarify_ask)
 
-    # wf pm
-    p_pm = subparsers.add_parser('pm', help='Project management (story sifting, SPEC generation)')
-    p_pm.set_defaults(func=cmd_pm_status)
-    pm_sub = p_pm.add_subparsers(dest='pm_cmd')
-
-    # wf pm plan
-    p_pm_plan = pm_sub.add_parser('plan', help='Start interactive planning session')
-    p_pm_plan.set_defaults(func=cmd_pm_plan)
-
-    # wf pm refine
-    p_pm_refine = pm_sub.add_parser('refine', help='Create story from a chunk')
-    p_pm_refine.add_argument('name', help='Chunk name/description')
-    p_pm_refine.set_defaults(func=cmd_pm_refine)
-
-    # wf pm spec
-    p_pm_spec = pm_sub.add_parser('spec', help='Update SPEC.md from workstream')
-    p_pm_spec.add_argument('workstream', help='Workstream ID')
-    p_pm_spec.set_defaults(func=cmd_pm_spec)
-
-    # wf pm status
-    p_pm_status = pm_sub.add_parser('status', help='Show PM status')
-    p_pm_status.set_defaults(func=cmd_pm_status)
-
-    # wf pm list
-    p_pm_list = pm_sub.add_parser('list', help='List stories')
-    p_pm_list.set_defaults(func=cmd_pm_list)
-
-    # wf pm show
-    p_pm_show = pm_sub.add_parser('show', help='Show story details')
-    p_pm_show.add_argument('story', help='Story ID')
-    p_pm_show.set_defaults(func=cmd_pm_show)
-
     args = parser.parse_args()
+
+    # Handle no command
+    if not args.command:
+        parser.print_help()
+        return 0
+
     return args.func(args)
 
 
