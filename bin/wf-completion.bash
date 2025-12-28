@@ -14,12 +14,21 @@ _wf_completions() {
             return 0
             ;;
         use|run|status|show|log|watch|conflicts|close|merge|approve|reject|reset|refresh|review)
-            # Complete with workstream IDs
-            local ws_dir="${WF_OPS_DIR:-$(dirname $(dirname $(realpath "${COMP_WORDS[0]}")))}/workstreams"
+            # Complete with workstream IDs and story IDs
+            local ops_dir="${WF_OPS_DIR:-$(dirname $(dirname $(realpath "${COMP_WORDS[0]}")))}"
+            local ws_dir="$ops_dir/workstreams"
+            local ids=""
+            # Workstreams (exclude _closed)
             if [[ -d "$ws_dir" ]]; then
-                local workstreams=$(ls -1 "$ws_dir" 2>/dev/null | tr '\n' ' ')
-                COMPREPLY=($(compgen -W "$workstreams" -- "$cur"))
+                ids=$(ls -1 "$ws_dir" 2>/dev/null | grep -v '^_' | tr '\n' ' ')
             fi
+            # Stories from all projects
+            for story_dir in "$ops_dir"/projects/*/pm/stories; do
+                if [[ -d "$story_dir" ]]; then
+                    ids="$ids $(ls -1 "$story_dir" 2>/dev/null | grep '\.json$' | sed 's/\.json$//' | tr '\n' ' ')"
+                fi
+            done
+            COMPREPLY=($(compgen -W "$ids" -- "$cur"))
             return 0
             ;;
         clarify)
