@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 from orchestrator.lib.config import ProjectConfig, load_project_profile, load_workstream
 from orchestrator.lib.constants import MAX_WS_ID_LEN, WS_ID_PATTERN
 from orchestrator.pm.stories import load_story, lock_story, is_story_locked
+from orchestrator.pm.planner import slugify_for_ws_id
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit
 from orchestrator.runner.locking import (
     workstream_lock, LockTimeout, count_running_workstreams,
@@ -90,9 +91,9 @@ def create_workstream_from_story(
     elif story.suggested_ws_id:
         ws_id = story.suggested_ws_id
     else:
-        print(f"ERROR: No workstream name provided and story has no suggested ID")
-        print(f"  Usage: wf run {story_id} <name>")
-        return None
+        # Generate from title
+        ws_id = slugify_for_ws_id(story.title)
+        print(f"Generated workstream ID from title: {ws_id}")
 
     # Validate workstream ID
     if not WS_ID_PATTERN.match(ws_id) or len(ws_id) > MAX_WS_ID_LEN:
