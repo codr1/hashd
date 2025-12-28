@@ -295,8 +295,19 @@ IMPLEMENT_TIMEOUT="600"       # Codex timeout (seconds)
 REVIEW_TIMEOUT="120"          # Claude review timeout (seconds)
 TEST_TIMEOUT="300"            # Test execution timeout (seconds)
 BREAKDOWN_TIMEOUT="180"       # Claude breakdown generation timeout (seconds)
-SUPERVISED_MODE="false"       # Pause after breakdown for human review
+SUPERVISED_MODE="false"       # See "Autonomy Modes" below
 ```
+
+### Autonomy Modes
+
+Hashd currently supports two modes controlled by `SUPERVISED_MODE`:
+
+| Mode | Setting | Behavior |
+|------|---------|----------|
+| **Gatekeeper** | `false` (default) | Runs autonomously between gates, blocks at human checkpoints (clarifications, merge gate) |
+| **Supervised** | `true` | Also pauses after breakdown for human review of plan.md |
+
+Default is gatekeeper mode - the pipeline runs autonomously but requires human approval at gates.
 
 ## License
 
