@@ -9,6 +9,7 @@ Designed for reuse in: wf log, wf watch, wf dashboard
 """
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -52,6 +53,11 @@ EVENT_COLORS = {
     "run_complete": "green",
     "merged": "blue",
     "closed": "dim",
+    # Live stage events
+    "run_started": "cyan",
+    "stage_started": "cyan",
+    "stage_passed": "green",
+    "stage_failed": "red",
 }
 
 EVENT_SYMBOLS = {
@@ -62,7 +68,19 @@ EVENT_SYMBOLS = {
     "run_complete": "*",
     "merged": "M",
     "closed": "-",
+    # Live stage events
+    "run_started": ">",
+    "stage_started": ".",
+    "stage_passed": "o",
+    "stage_failed": "x",
 }
+
+# Regex patterns for parsing run.log
+LOG_TIMESTAMP_RE = re.compile(r'^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\]\s+(.+)$')
+STAGE_START_RE = re.compile(r'^Starting stage:\s+(\w+)$')
+STAGE_PASSED_RE = re.compile(r'^Stage\s+(\w+)\s+passed')
+STAGE_FAILED_RE = re.compile(r'^Stage\s+(\w+)\s+failed:\s+(.+)$')
+RUN_START_RE = re.compile(r'^Starting run:\s+(.+)$')
 
 
 def get_workstream_timeline(
@@ -165,7 +183,7 @@ def _extract_meta_events(workstream_dir: Path, ws: Workstream) -> list[TimelineE
 
 
 def _extract_run_events(ops_dir: Path, project_name: str, ws_id: str) -> list[TimelineEvent]:
-    """Extract events from run result.json files."""
+    """Extract events from run result.json files and run.log for in-progress runs."""
     events = []
     runs_dir = ops_dir / "runs"
 
@@ -174,67 +192,157 @@ def _extract_run_events(ops_dir: Path, project_name: str, ws_id: str) -> list[Ti
 
     # Find all runs for this workstream
     pattern = f"*_{project_name}_{ws_id}"
+    matching_runs = sorted(runs_dir.glob(pattern))
 
-    for run_dir in sorted(runs_dir.glob(pattern)):
+    # Track runs without result.json (potentially in-progress or crashed)
+    incomplete_runs = []
+
+    for run_dir in matching_runs:
         result_file = run_dir / "result.json"
-        if not result_file.exists():
+        log_file = run_dir / "run.log"
+
+        if result_file.exists():
+            # Completed run - parse result.json
+            try:
+                result = json.loads(result_file.read_text())
+            except (json.JSONDecodeError, IOError):
+                continue
+
+            timestamps = result.get("timestamps", {})
+            status = result.get("status", "unknown")
+            microcommit = result.get("microcommit")
+            failed_stage = result.get("failed_stage")
+            blocked_reason = result.get("blocked_reason")
+            stages = result.get("stages", {})
+            duration = timestamps.get("duration_seconds", 0)
+
+            # Run completion event
+            if "ended" in timestamps:
+                try:
+                    ts = datetime.fromisoformat(timestamps["ended"])
+
+                    # Build summary based on status
+                    if status == "passed":
+                        summary = f"Run passed: {microcommit or 'unknown'}"
+                        event_type = "run_passed"
+                    elif status == "complete":
+                        summary = "All micro-commits complete"
+                        event_type = "run_complete"
+                    elif status == "failed":
+                        summary = f"Run failed at {failed_stage or 'unknown'}"
+                        event_type = "run_failed"
+                    elif status == "blocked":
+                        if "human" in (blocked_reason or "").lower():
+                            summary = "Awaiting human review"
+                        else:
+                            summary = f"Blocked: {blocked_reason or 'unknown'}"
+                        event_type = "run_blocked"
+                    else:
+                        summary = f"Run {status}"
+                        event_type = f"run_{status}"
+
+                    events.append(TimelineEvent(
+                        timestamp=ts,
+                        event_type=event_type,
+                        summary=summary,
+                        details={
+                            "run_id": run_dir.name,
+                            "microcommit": microcommit,
+                            "status": status,
+                            "duration_seconds": duration,
+                            "failed_stage": failed_stage,
+                            "blocked_reason": blocked_reason,
+                            "stages": _summarize_stages(stages),
+                        },
+                        source_file=result_file,
+                    ))
+                except ValueError:
+                    pass
+        elif log_file.exists():
+            # Track incomplete run (no result.json yet)
+            incomplete_runs.append((run_dir, log_file))
+
+    # Only parse the most recent incomplete run (likely in-progress)
+    # Older incomplete runs are probably crashed/orphaned
+    if incomplete_runs:
+        run_dir, log_file = incomplete_runs[-1]  # Most recent
+        events.extend(_parse_run_log(log_file, run_dir.name))
+
+    return events
+
+
+def _parse_run_log(log_file: Path, run_id: str) -> list[TimelineEvent]:
+    """Parse run.log to extract live stage events for in-progress runs."""
+    events = []
+
+    try:
+        content = log_file.read_text()
+    except IOError:
+        return events
+
+    for line in content.splitlines():
+        ts_match = LOG_TIMESTAMP_RE.match(line)
+        if not ts_match:
             continue
 
         try:
-            result = json.loads(result_file.read_text())
-        except (json.JSONDecodeError, IOError):
+            ts = datetime.fromisoformat(ts_match.group(1))
+        except ValueError:
             continue
 
-        timestamps = result.get("timestamps", {})
-        status = result.get("status", "unknown")
-        microcommit = result.get("microcommit")
-        failed_stage = result.get("failed_stage")
-        blocked_reason = result.get("blocked_reason")
-        stages = result.get("stages", {})
-        duration = timestamps.get("duration_seconds", 0)
+        message = ts_match.group(2)
 
-        # Run completion event
-        if "ended" in timestamps:
-            try:
-                ts = datetime.fromisoformat(timestamps["ended"])
+        # Check for run start
+        run_start = RUN_START_RE.match(message)
+        if run_start:
+            events.append(TimelineEvent(
+                timestamp=ts,
+                event_type="run_started",
+                summary=f"Run started: {run_id}",
+                details={"run_id": run_id},
+                source_file=log_file,
+            ))
+            continue
 
-                # Build summary based on status
-                if status == "passed":
-                    summary = f"Run passed: {microcommit or 'unknown'}"
-                    event_type = "run_passed"
-                elif status == "complete":
-                    summary = "All micro-commits complete"
-                    event_type = "run_complete"
-                elif status == "failed":
-                    summary = f"Run failed at {failed_stage or 'unknown'}"
-                    event_type = "run_failed"
-                elif status == "blocked":
-                    if "human" in (blocked_reason or "").lower():
-                        summary = "Awaiting human review"
-                    else:
-                        summary = f"Blocked: {blocked_reason or 'unknown'}"
-                    event_type = "run_blocked"
-                else:
-                    summary = f"Run {status}"
-                    event_type = f"run_{status}"
+        # Check for stage start
+        stage_start = STAGE_START_RE.match(message)
+        if stage_start:
+            stage = stage_start.group(1)
+            events.append(TimelineEvent(
+                timestamp=ts,
+                event_type="stage_started",
+                summary=f"Stage: {stage}",
+                details={"run_id": run_id, "stage": stage},
+                source_file=log_file,
+            ))
+            continue
 
-                events.append(TimelineEvent(
-                    timestamp=ts,
-                    event_type=event_type,
-                    summary=summary,
-                    details={
-                        "run_id": run_dir.name,
-                        "microcommit": microcommit,
-                        "status": status,
-                        "duration_seconds": duration,
-                        "failed_stage": failed_stage,
-                        "blocked_reason": blocked_reason,
-                        "stages": _summarize_stages(stages),
-                    },
-                    source_file=result_file,
-                ))
-            except ValueError:
-                pass
+        # Check for stage passed
+        stage_passed = STAGE_PASSED_RE.match(message)
+        if stage_passed:
+            stage = stage_passed.group(1)
+            events.append(TimelineEvent(
+                timestamp=ts,
+                event_type="stage_passed",
+                summary=f"Passed: {stage}",
+                details={"run_id": run_id, "stage": stage},
+                source_file=log_file,
+            ))
+            continue
+
+        # Check for stage failed
+        stage_failed = STAGE_FAILED_RE.match(message)
+        if stage_failed:
+            stage = stage_failed.group(1)
+            reason = stage_failed.group(2)
+            events.append(TimelineEvent(
+                timestamp=ts,
+                event_type="stage_failed",
+                summary=f"Failed: {stage} - {reason[:50]}",
+                details={"run_id": run_id, "stage": stage, "reason": reason},
+                source_file=log_file,
+            ))
+            continue
 
     return events
 

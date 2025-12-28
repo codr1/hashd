@@ -391,6 +391,7 @@ def main():
     # wf approve
     p_approve = subparsers.add_parser('approve', help='Accept story or approve workstream gate')
     p_approve.add_argument('id', nargs='?', help='Story ID (STORY-xxxx) or workstream ID')
+    p_approve.add_argument('--no-run', action='store_true', help='Do not auto-continue after approval')
     p_approve.set_defaults(func=cmd_approve)
 
     # wf reject

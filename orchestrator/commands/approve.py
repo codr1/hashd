@@ -5,13 +5,14 @@ wf approve/reject - Human approval commands.
 import json
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from orchestrator.lib.config import ProjectConfig, load_workstream
 from orchestrator.pm.stories import load_story, accept_story
 
 
 def cmd_approve(args, ops_dir: Path, project_config: ProjectConfig) -> int:
-    """Approve workstream and allow commit."""
+    """Approve workstream and continue execution."""
     ws_id = args.id
     workstream_dir = ops_dir / "workstreams" / ws_id
 
@@ -33,8 +34,19 @@ def cmd_approve(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     }, indent=2))
 
     print(f"Approved workstream '{ws_id}'")
-    print(f"Run 'wf run {ws_id}' to complete the commit")
-    return 0
+
+    # Auto-continue unless --no-run specified
+    no_run = args.no_run
+    if no_run:
+        print(f"Run 'wf run {ws_id}' to complete the commit")
+        return 0
+
+    # Continue execution in loop mode to complete all micro-commits
+    print("Continuing...")
+    print()
+    from orchestrator.commands.run import cmd_run
+    run_args = SimpleNamespace(id=ws_id, loop=True, once=False, verbose=False)
+    return cmd_run(run_args, ops_dir, project_config)
 
 
 def cmd_reject(args, ops_dir: Path, project_config: ProjectConfig) -> int:

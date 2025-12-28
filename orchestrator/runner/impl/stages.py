@@ -4,6 +4,7 @@ Stage implementations for AOS.
 Each stage function takes a RunContext and raises StageError/StageBlocked on failure.
 """
 
+import json
 import logging
 import subprocess
 import time
@@ -613,12 +614,20 @@ def stage_merge_gate(ctx: RunContext) -> dict:
 def stage_human_review(ctx: RunContext):
     """Block until human approves or rejects.
 
-    Checks for approval file in workstream directory:
+    In gatekeeper mode (supervised_mode=False), this stage is skipped since
+    the AI review already approved. Human review only happens at the merge gate.
+
+    In supervised mode (supervised_mode=True), checks for approval file:
     - human_approval.json with {"action": "approve"} -> proceed
     - human_approval.json with {"action": "reject", "reset": bool, "feedback": "..."} -> StageError
     - No file -> StageBlocked (waiting for human)
     """
-    import json
+    # In gatekeeper mode, skip human review IF AI approved
+    # If AI rejected after max attempts, we still need human review
+    review_status = ctx.stages.get("review", {}).get("status")
+    if not ctx.profile.supervised_mode and review_status == "passed":
+        ctx.log("Gatekeeper mode: skipping human review (AI approved)")
+        return
 
     approval_file = ctx.workstream_dir / "human_approval.json"
 

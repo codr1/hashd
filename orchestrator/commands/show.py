@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from orchestrator.lib.config import ProjectConfig, load_workstream
+from orchestrator.lib.planparse import parse_plan
 from orchestrator.pm.stories import load_story, is_story_locked
 
 
@@ -56,6 +57,20 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
                 print(f"    [{symbol.get(status, '?')}] {stage}: {status}{note_preview}")
             print()
 
+    # Show micro-commit progress
+    plan_path = workstream_dir / "plan.md"
+    if plan_path.exists():
+        commits = parse_plan(str(plan_path))
+        if commits:
+            print("Micro-commits")
+            print("-" * 40)
+            done_count = sum(1 for c in commits if c.done)
+            print(f"  Progress: {done_count}/{len(commits)}")
+            for c in commits:
+                marker = "[x]" if c.done else "[ ]"
+                print(f"  {marker} {c.id}: {c.title}")
+            print()
+
     # Show diff
     if workstream.worktree.exists():
         print("Pending Changes")
@@ -89,7 +104,7 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
         review_file = matching_runs[0] / "stages" / "review.log"
         if review_file.exists():
             content = review_file.read_text()
-            if "request_changes" in content or "blockers" in content:
+            if "decision" in content:
                 print()
                 print("Review Feedback")
                 print("-" * 40)
@@ -98,19 +113,54 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
                     # Find JSON in stdout section
                     if "STDOUT ===" in content:
                         stdout_section = content.split("=== STDOUT ===")[1].split("=== STDERR ===")[0]
-                        data = json.loads(stdout_section.strip())
-                        if "result" in data and isinstance(data["result"], str):
-                            # It's an error message, not review data
-                            print(f"  Review error: {data['result']}")
+                        wrapper = json.loads(stdout_section.strip())
+
+                        # The result field is double-encoded JSON
+                        if "result" in wrapper and isinstance(wrapper["result"], str):
+                            review = json.loads(wrapper["result"])
                         else:
-                            # Try to parse as review
-                            print(f"  Decision: {data.get('decision', 'unknown')}")
-                            for blocker in data.get("blockers", []):
-                                print(f"  [!] {blocker.get('file', '?')}:{blocker.get('line', '?')} - {blocker.get('issue', '?')}")
-                            for change in data.get("required_changes", []):
-                                print(f"  [*] {change}")
+                            review = wrapper
+
+                        decision = review.get("decision", "unknown")
+                        print(f"  Decision: {decision}")
+
+                        # Show blockers
+                        blockers = review.get("blockers", [])
+                        if blockers:
+                            print()
+                            print("  Blockers:")
+                            for blocker in blockers:
+                                severity = blocker.get("severity", "issue")
+                                file_loc = f"{blocker.get('file', '?')}:{blocker.get('line', '?')}"
+                                print(f"    [{severity}] {file_loc}")
+                                print(f"           {blocker.get('issue', '?')}")
+
+                        # Show required changes
+                        changes = review.get("required_changes", [])
+                        if changes:
+                            print()
+                            print("  Required Changes:")
+                            for change in changes:
+                                print(f"    - {change}")
+
+                        # Show suggestions
+                        suggestions = review.get("suggestions", [])
+                        if suggestions:
+                            print()
+                            print("  Suggestions:")
+                            for suggestion in suggestions:
+                                print(f"    - {suggestion}")
+
+                        # Show notes
+                        notes = review.get("notes", "")
+                        if notes:
+                            print()
+                            print("  Notes:")
+                            print(f"    {notes}")
+
                 except (json.JSONDecodeError, KeyError, IndexError):
-                    pass  # Couldn't parse review data, show raw output instead
+                    print("  (Unable to parse review data)")
+                    print()
 
     # Show available actions
     if workstream.status == "awaiting_human_review":
