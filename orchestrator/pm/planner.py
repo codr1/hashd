@@ -13,6 +13,7 @@ from typing import Optional
 
 from orchestrator.lib.config import ProjectConfig
 from orchestrator.lib.constants import MAX_WS_ID_LEN, WS_ID_PATTERN
+from orchestrator.lib.prompts import render_prompt, build_section
 from orchestrator.pm.claude_utils import run_claude, strip_markdown_fences
 
 # Limit touched files in prompt to avoid token explosion
@@ -117,94 +118,47 @@ def gather_context(
 
 def build_plan_prompt(context: dict) -> str:
     """Build the planning prompt for Claude."""
-    parts = [
-        "You are helping a human PM plan the next chunk of work to implement.",
-        "",
-        "Your job is to:",
-        "1. Review the dirty requirements (REQS.md)",
-        "2. See what's already built (SPEC.md)",
-        "3. Check for conflicts with active workstreams",
-        "4. Propose 2-4 logical next chunks to build",
-        "5. Flag any missing requirements or ambiguities",
-        "",
-    ]
+    # Build SPEC section
+    spec_section = build_section(
+        context.get("spec_content"),
+        "## Current SPEC (what's already built)",
+        "No SPEC.md exists yet. This is a greenfield project."
+    )
 
-    # Add SPEC
-    if context.get("spec_content"):
-        parts.extend([
-            "## Current SPEC (what's already built)",
-            "",
-            context["spec_content"],
-            "",
-        ])
-    else:
-        parts.extend([
-            "## Current SPEC",
-            "",
-            "No SPEC.md exists yet. This is a greenfield project.",
-            "",
-        ])
-
-    # Add active workstreams
+    # Build active workstreams section
+    workstreams_section = ""
     if context.get("workstreams"):
-        parts.extend([
-            "## Active Workstreams (in progress)",
-            "",
-        ])
+        ws_parts = ["## Active Workstreams (in progress)\n"]
         for ws in context["workstreams"]:
-            parts.append(f"### {ws['id']}")
+            ws_parts.append(f"### {ws['id']}")
             if ws["touched_files"]:
-                parts.append("Touches:")
+                ws_parts.append("Touches:")
                 for f in ws["touched_files"][:MAX_TOUCHED_FILES_IN_PROMPT]:
-                    parts.append(f"  - {f}")
+                    ws_parts.append(f"  - {f}")
                 if len(ws["touched_files"]) > MAX_TOUCHED_FILES_IN_PROMPT:
-                    parts.append(f"  ... and {len(ws['touched_files']) - MAX_TOUCHED_FILES_IN_PROMPT} more")
+                    ws_parts.append(f"  ... and {len(ws['touched_files']) - MAX_TOUCHED_FILES_IN_PROMPT} more")
             else:
-                parts.append("No files touched yet.")
-            parts.append("")
+                ws_parts.append("No files touched yet.")
+            ws_parts.append("")
+        workstreams_section = "\n".join(ws_parts)
     else:
-        parts.extend([
-            "## Active Workstreams",
-            "",
-            "No active workstreams.",
-            "",
-        ])
+        workstreams_section = "## Active Workstreams\n\nNo active workstreams.\n"
 
-    # Add REQS
+    # Build REQS section
     if context.get("reqs_content"):
-        parts.extend([
-            "## Requirements (REQS.md)",
-            "",
+        reqs_section = build_section(
             context["reqs_content"],
-            "",
-        ])
+            "## Requirements (REQS.md)"
+        )
     else:
-        parts.extend([
-            "## Requirements",
-            "",
-            f"ERROR: Could not read {context.get('reqs_path', 'REQS.md')}",
-            "",
-        ])
+        reqs_section = f"## Requirements\n\nERROR: Could not read {context.get('reqs_path', 'REQS.md')}\n"
 
-    # Add instructions
-    parts.extend([
-        "---",
-        "",
-        "## Your Response",
-        "",
-        "Analyze the requirements and propose the next chunks to build.",
-        "For each chunk:",
-        "- Give it a short name (e.g., 'cognito-auth', 'theme-management')",
-        "- Describe what it covers from the requirements",
-        "- Note which requirement sections it addresses",
-        "- Flag any missing or unclear requirements",
-        "- List likely files/directories it will touch",
-        "- Warn about potential conflicts with active workstreams",
-        "",
-        "Be thorough but succinct. The human will pick one chunk to refine into a story.",
-    ])
-
-    return "\n".join(parts)
+    return render_prompt(
+        "plan_discovery",
+        spec_section=spec_section,
+        workstreams_section=workstreams_section,
+        reqs_section=reqs_section
+    )
 
 
 def run_plan_session(
@@ -228,66 +182,30 @@ def run_plan_session(
 
 def build_refine_prompt(chunk_name: str, context: dict, existing_ws_ids: list[str] = None) -> str:
     """Build the refinement prompt for Claude."""
-    parts = [
-        f"Refine the chunk '{chunk_name}' into a proper story.",
-        "",
-        "Create a well-structured story with:",
-        "- A clear title",
-        "- A suggested workstream ID (max 16 chars, lowercase letters/numbers/underscores, must start with letter)",
-        "- Source references (which sections of REQS this covers)",
-        "- Problem statement (what problem does this solve)",
-        "- Acceptance criteria (testable conditions)",
-        "- Non-goals (what this explicitly does NOT do)",
-        "- Dependencies (what needs to exist first)",
-        "- Open questions (anything unclear)",
-        "",
-    ]
-
-    # Add existing workstream IDs to avoid duplicates
+    # Build existing workstream IDs section
+    existing_ws_ids_section = ""
     if existing_ws_ids:
-        parts.extend([
-            "## Existing Workstream IDs (DO NOT reuse these)",
-            "",
-            ", ".join(existing_ws_ids),
-            "",
-        ])
+        existing_ws_ids_section = f"## Existing Workstream IDs (DO NOT reuse these)\n\n{', '.join(existing_ws_ids)}\n"
 
-    parts.extend([
-        "Respond with ONLY valid JSON (no markdown, no explanation).",
-        "",
-        "## Required Response Format",
-        "{",
-        '  "title": "Short descriptive title",',
-        '  "suggested_ws_id": "short_id",',
-        '  "source_refs": "REQS.md Section 4.4, Section 7.2",',
-        '  "problem": "What problem this solves",',
-        '  "acceptance_criteria": ["Criterion 1", "Criterion 2"],',
-        '  "non_goals": ["Not doing X", "Not doing Y"],',
-        '  "dependencies": ["Need X first"],',
-        '  "open_questions": ["Unclear about Y"]',
-        "}",
-        "",
-    ])
+    # Build REQS section
+    reqs_section = build_section(
+        context.get("reqs_content"),
+        "## Requirements (REQS.md)"
+    )
 
-    # Add REQS
-    if context.get("reqs_content"):
-        parts.extend([
-            "## Requirements (REQS.md)",
-            "",
-            context["reqs_content"],
-            "",
-        ])
+    # Build SPEC section
+    spec_section = build_section(
+        context.get("spec_content"),
+        "## Current SPEC (what's already built)"
+    )
 
-    # Add SPEC
-    if context.get("spec_content"):
-        parts.extend([
-            "## Current SPEC (what's already built)",
-            "",
-            context["spec_content"],
-            "",
-        ])
-
-    return "\n".join(parts)
+    return render_prompt(
+        "refine_story",
+        chunk_name=chunk_name,
+        existing_ws_ids_section=existing_ws_ids_section,
+        reqs_section=reqs_section,
+        spec_section=spec_section
+    )
 
 
 def get_existing_ws_ids(ops_dir: Path) -> list[str]:

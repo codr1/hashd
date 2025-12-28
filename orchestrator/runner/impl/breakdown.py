@@ -13,6 +13,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from orchestrator.lib.prompts import render_prompt
+
 logger = logging.getLogger(__name__)
 
 # Commit ID pattern: COMMIT-<WS_ID>-NNN
@@ -43,39 +45,11 @@ def generate_breakdown(
     """
     ws_prefix = ws_id.upper()
 
-    prompt = f'''Analyze this story plan and break it down into 2-5 micro-commits.
-
-IMPORTANT: Your response must be ONLY raw JSON. No markdown fences. No prose. Just the JSON array starting with [ and ending with ].
-
-## Plan Content
-{plan_content}
-
-## Requirements
-- Each micro-commit should be a single, atomic, testable change
-- Order commits logically (foundations first, features second, polish last)
-- Keep commits small - if a step is too big, split it
-- Each commit should leave the codebase in a working state
-
-## Response Format
-[
-  {{
-    "id": "COMMIT-{ws_prefix}-001",
-    "title": "Short descriptive title",
-    "description": "What to implement in this commit. Be specific about files, functions, patterns."
-  }},
-  {{
-    "id": "COMMIT-{ws_prefix}-002",
-    "title": "Next commit title",
-    "description": "Description..."
-  }}
-]
-
-Rules:
-- Return 2-5 commits (not more, not less)
-- IDs must follow pattern COMMIT-{ws_prefix}-NNN (001, 002, etc.)
-- Titles should be concise (under 50 chars)
-- Descriptions should be actionable implementation guidance
-'''
+    prompt = render_prompt(
+        "breakdown",
+        plan_content=plan_content,
+        ws_prefix=ws_prefix
+    )
 
     cmd = ["claude", "--output-format", "json"]
 
