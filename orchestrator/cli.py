@@ -296,9 +296,10 @@ def main():
     p_plan_clone.add_argument('clone_id', help='Story ID to clone (e.g., STORY-0001)')
     p_plan_clone.set_defaults(func=cmd_plan, new=False, clone=True, edit=False)
 
-    # wf plan edit STORY-xxx
+    # wf plan edit STORY-xxx [-f "feedback"]
     p_plan_edit = plan_sub.add_parser('edit', help='Edit an existing story')
     p_plan_edit.add_argument('story_id', help='Story ID to edit (e.g., STORY-0001)')
+    p_plan_edit.add_argument('-f', '--feedback', help='Feedback to refine the story')
     p_plan_edit.set_defaults(func=cmd_plan, new=False, clone=False, edit=True)
 
     # wf list

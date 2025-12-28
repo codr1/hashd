@@ -11,10 +11,13 @@ import secrets
 from pathlib import Path
 from typing import Optional
 
+from dataclasses import asdict
+
 from orchestrator.lib.config import ProjectConfig
 from orchestrator.lib.constants import MAX_WS_ID_LEN, WS_ID_PATTERN
 from orchestrator.lib.prompts import render_prompt, build_section
 from orchestrator.pm.claude_utils import run_claude, strip_markdown_fences
+from orchestrator.pm.models import Story
 
 # Limit touched files in prompt to avoid token explosion
 MAX_TOUCHED_FILES_IN_PROMPT = 20
@@ -288,6 +291,66 @@ def run_refine_session(
         data["suggested_ws_id"] = suggested_id
 
         return True, data, "Story refined successfully"
+
+    except json.JSONDecodeError as e:
+        return False, None, f"Invalid JSON response: {e}\n\nResponse:\n{response}"
+
+
+def build_edit_prompt(story: Story, feedback: str, context: dict) -> str:
+    """Build the edit prompt for Claude."""
+    # Convert story to JSON for the prompt
+    story_dict = asdict(story)
+    story_json = json.dumps(story_dict, indent=2)
+
+    # Build REQS section
+    reqs_section = build_section(
+        context.get("reqs_content"),
+        "## Requirements (REQS.md)"
+    )
+
+    # Build SPEC section
+    spec_section = build_section(
+        context.get("spec_content"),
+        "## Current SPEC (what's already built)"
+    )
+
+    return render_prompt(
+        "edit_story",
+        story_json=story_json,
+        feedback=feedback,
+        reqs_section=reqs_section,
+        spec_section=spec_section
+    )
+
+
+def run_edit_session(
+    story: Story,
+    feedback: str,
+    project_config: ProjectConfig,
+    ops_dir: Path,
+    project_dir: Path,
+    timeout: int = 300,
+) -> tuple[bool, Optional[dict], str]:
+    """Edit a story based on user feedback.
+
+    Returns (success, updated_story_data, message).
+    updated_story_data contains fields to update (not the full story).
+    """
+    context = gather_context(project_config, ops_dir, project_dir)
+
+    prompt = build_edit_prompt(story, feedback, context)
+    success, response = run_claude(prompt, timeout)
+
+    if not success:
+        return False, None, response
+
+    # Parse JSON response
+    try:
+        text = strip_markdown_fences(response)
+        data = json.loads(text)
+
+        # Return the updated fields
+        return True, data, "Story updated successfully"
 
     except json.JSONDecodeError as e:
         return False, None, f"Invalid JSON response: {e}\n\nResponse:\n{response}"

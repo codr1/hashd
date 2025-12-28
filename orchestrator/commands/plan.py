@@ -17,9 +17,10 @@ from orchestrator.pm.stories import (
     load_story,
     clone_story,
     create_story,
+    update_story,
     is_story_locked,
 )
-from orchestrator.pm.planner import run_plan_session, run_refine_session
+from orchestrator.pm.planner import run_plan_session, run_refine_session, run_edit_session
 
 
 def cmd_plan(args, ops_dir: Path, project_config: ProjectConfig):
@@ -127,8 +128,34 @@ def cmd_plan_edit(args, ops_dir: Path, project_config: ProjectConfig, story_id: 
             print(f"  wf close {story.workstream}         # cancel implementation, unlocks story")
         return 1
 
-    # TODO: Interactive editing session
-    # For now, just show the story and hint to edit the markdown
+    # Handle feedback flag
+    feedback = getattr(args, 'feedback', None)
+    if feedback:
+        print(f"Refining {story_id} with feedback...")
+        success, updated_data, message = run_edit_session(
+            story, feedback, project_config, ops_dir, project_dir
+        )
+
+        if not success:
+            print(f"Error: {message}")
+            return 1
+
+        # Update the story with new data
+        updated_story = update_story(project_dir, story_id, updated_data)
+        if not updated_story:
+            print(f"Failed to update story")
+            return 1
+
+        print(f"Updated {story_id}: {updated_story.title}")
+        if updated_story.open_questions:
+            print(f"\nRemaining open questions: {len(updated_story.open_questions)}")
+            for i, q in enumerate(updated_story.open_questions, 1):
+                print(f"  {i}. {q}")
+        else:
+            print("\nNo remaining open questions.")
+        return 0
+
+    # No feedback - show the story and hint to edit the markdown
     story_path = project_dir / "pm" / "stories" / f"{story_id}.md"
     print(f"Story: {story_id}")
     print(f"Title: {story.title}")
@@ -142,5 +169,9 @@ def cmd_plan_edit(args, ops_dir: Path, project_config: ProjectConfig, story_id: 
 
     if not story.open_questions:
         print("  (none)")
+
+    print()
+    print("Tip: Use -f to provide feedback inline:")
+    print(f"  wf plan edit {story_id} -f \"your feedback here\"")
 
     return 0

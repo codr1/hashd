@@ -23,8 +23,46 @@ All paths implemented. Validation pending.
 
 ### Features (designed, not built)
 - `wf watch` dashboard mode (multi-workstream view with drill-down) - see PRD Appendix I
-- Autonomy levels: gatekeeper, autonomous modes - see PRD section 19
+- Autonomy levels: autonomous mode (auto-approve gates) - see PRD section 19
 - Escalation rules config - see PRD section 19
+- Interactive story Q&A (`wf plan edit` without `-f`) - see below
+
+### Interactive Story Question Answering
+
+When editing a story with open questions, provide interactive CLI flow:
+
+```
+$ wf plan edit STORY-0001
+
+Open questions:
+  1. Should facilities modify predefined themes?
+  2. Max custom themes per facility?
+  3. Theme name uniqueness?
+  X. Something else
+
+Select (1-3, X, or done): 1
+> Facilities cannot modify, only clone
+
+Select (1-3, X, or done): 1
+[Your answer: Facilities cannot modify, only clone]
+> Facilities cannot modify predefined themes. They can clone and customize.
+
+Select (1-3, X, or done): done
+
+Refining story with Claude PM...
+```
+
+**Behavior:**
+- Enumerate open questions with numbers, plus "X. Something else"
+- User selects number to answer that question
+- Input prompt appears for answer
+- Re-selecting answered question shows previous answer for editing
+- User can answer multiple questions before submitting
+- "done" sends all answers to Claude PM for story refinement
+
+### CLI Improvements
+- `--gatekeeper` / `--supervised` / `--autonomous` flags for `wf run`
+- Currently controlled by `SUPERVISED_MODE` env var only
 
 ### Ideas (not designed)
 - `wf diff` - pretty-printed diff viewer
