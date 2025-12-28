@@ -16,7 +16,7 @@ from dataclasses import asdict
 from orchestrator.lib.config import ProjectConfig
 from orchestrator.lib.constants import MAX_WS_ID_LEN, WS_ID_PATTERN
 from orchestrator.lib.prompts import render_prompt, build_section
-from orchestrator.pm.claude_utils import run_claude, strip_markdown_fences
+from orchestrator.pm.claude_utils import run_claude, strip_markdown_fences, extract_json_with_preamble
 from orchestrator.pm.models import Story
 
 # Limit touched files in prompt to avoid token explosion
@@ -330,11 +330,12 @@ def run_edit_session(
     ops_dir: Path,
     project_dir: Path,
     timeout: int = 300,
-) -> tuple[bool, Optional[dict], str]:
+) -> tuple[bool, Optional[dict], str, str]:
     """Edit a story based on user feedback.
 
-    Returns (success, updated_story_data, message).
+    Returns (success, updated_story_data, message, reasoning).
     updated_story_data contains fields to update (not the full story).
+    reasoning contains any explanatory text from Claude PM.
     """
     context = gather_context(project_config, ops_dir, project_dir)
 
@@ -342,15 +343,21 @@ def run_edit_session(
     success, response = run_claude(prompt, timeout)
 
     if not success:
-        return False, None, response
+        return False, None, response, ""
+
+    # Extract JSON and any preamble reasoning
+    preamble, json_str = extract_json_with_preamble(response)
+
+    if not json_str:
+        # No JSON found - maybe Claude just gave reasoning
+        return False, None, f"No JSON found in response. Claude said:\n\n{response}", ""
 
     # Parse JSON response
     try:
-        text = strip_markdown_fences(response)
-        data = json.loads(text)
+        data = json.loads(json_str)
 
-        # Return the updated fields
-        return True, data, "Story updated successfully"
+        # Return the updated fields plus any reasoning
+        return True, data, "Story updated successfully", preamble
 
     except json.JSONDecodeError as e:
-        return False, None, f"Invalid JSON response: {e}\n\nResponse:\n{response}"
+        return False, None, f"Invalid JSON: {e}\n\nExtracted:\n{json_str}", preamble

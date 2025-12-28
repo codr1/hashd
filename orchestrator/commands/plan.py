@@ -132,9 +132,16 @@ def cmd_plan_edit(args, ops_dir: Path, project_config: ProjectConfig, story_id: 
     feedback = getattr(args, 'feedback', None)
     if feedback:
         print(f"Refining {story_id} with feedback...")
-        success, updated_data, message = run_edit_session(
+        success, updated_data, message, reasoning = run_edit_session(
             story, feedback, project_config, ops_dir, project_dir
         )
+
+        # Show Claude PM's reasoning if any
+        if reasoning:
+            print()
+            print(reasoning)
+            print()
+            print("-" * 60)
 
         if not success:
             print(f"Error: {message}")
