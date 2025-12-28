@@ -116,9 +116,9 @@ def cmd_close_story(args, ops_dir: Path, project_config: ProjectConfig, story_id
         print(f"Story is already implemented. Cannot close.")
         return 1
 
-    # Move story to closed status
+    # Move story to abandoned status
     updated = update_story(project_dir, story_id, {
-        "status": "closed",
+        "status": "abandoned",
     })
 
     if not updated:

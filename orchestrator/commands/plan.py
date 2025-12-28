@@ -16,9 +16,10 @@ from orchestrator.pm.stories import (
     list_stories,
     load_story,
     clone_story,
+    create_story,
     is_story_locked,
 )
-from orchestrator.pm.planner import run_planning_session, run_refine_session
+from orchestrator.pm.planner import run_plan_session, run_refine_session
 
 
 def cmd_plan(args, ops_dir: Path, project_config: ProjectConfig):
@@ -31,9 +32,9 @@ def cmd_plan(args, ops_dir: Path, project_config: ProjectConfig):
     if getattr(args, 'clone', False):
         return cmd_plan_clone(args, ops_dir, project_config)
 
-    # wf plan STORY-xxx (edit existing)
-    story_id = getattr(args, 'story_id', None)
-    if story_id and story_id.startswith('STORY-'):
+    # wf plan edit STORY-xxx
+    if getattr(args, 'edit', False):
+        story_id = getattr(args, 'story_id', None)
         return cmd_plan_edit(args, ops_dir, project_config, story_id)
 
     # wf plan (discovery from REQS.md)
@@ -55,7 +56,9 @@ def cmd_plan_discover(args, ops_dir: Path, project_config: ProjectConfig):
     print(f"Reading: {reqs_path}")
     print()
 
-    return run_planning_session(project_dir, project_config)
+    success, response = run_plan_session(project_config, ops_dir, project_dir)
+    print(response)
+    return 0 if success else 1
 
 
 def cmd_plan_new(args, ops_dir: Path, project_config: ProjectConfig):
@@ -68,7 +71,17 @@ def cmd_plan_new(args, ops_dir: Path, project_config: ProjectConfig):
     else:
         print("Creating new story...")
 
-    return run_refine_session(project_dir, project_config, title or "")
+    success, story_data, message = run_refine_session(title or "", project_config, ops_dir, project_dir)
+
+    if not success:
+        print(message)
+        return 1
+
+    # Create the story
+    story = create_story(project_dir, story_data)
+    print(f"Created {story.id}: {story.title}")
+    print(f"\nTo start implementation: wf open {story.id}")
+    return 0
 
 
 def cmd_plan_clone(args, ops_dir: Path, project_config: ProjectConfig):

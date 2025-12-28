@@ -24,6 +24,7 @@ class ProjectProfile:
     """Build/test configuration from project_profile.env"""
     makefile_path: str
     make_target_test: str
+    merge_gate_test_target: str
     implement_timeout: int
     review_timeout: int
     test_timeout: int
@@ -58,9 +59,11 @@ def load_project_config(project_dir: Path) -> ProjectConfig:
 def load_project_profile(project_dir: Path) -> ProjectProfile:
     """Load project_profile.env and return ProjectProfile."""
     env = envparse.load_env(str(project_dir / "project_profile.env"))
+    make_target_test = env.get("MAKE_TARGET_TEST", "test")
     return ProjectProfile(
         makefile_path=env.get("MAKEFILE_PATH", "Makefile"),
-        make_target_test=env.get("MAKE_TARGET_TEST", "test"),
+        make_target_test=make_target_test,
+        merge_gate_test_target=env.get("MAKE_TARGET_MERGE_GATE_TEST", make_target_test),
         implement_timeout=int(env.get("IMPLEMENT_TIMEOUT", "600")),
         review_timeout=int(env.get("REVIEW_TIMEOUT", "120")),
         test_timeout=int(env.get("TEST_TIMEOUT", "300")),

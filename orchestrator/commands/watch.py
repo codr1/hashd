@@ -432,7 +432,7 @@ class WatchApp(App):
 
         def handle_feedback(feedback: str) -> None:
             try:
-                cmd = [sys.executable, "-m", "orchestrator.cli", "reset", ws_id]
+                cmd = [sys.executable, "-m", "orchestrator.cli", "reject", ws_id, "--reset"]
                 if feedback:
                     cmd.extend(["-f", feedback])
 

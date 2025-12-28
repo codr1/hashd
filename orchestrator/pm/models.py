@@ -15,7 +15,7 @@ class Story:
     """
     id: str                                    # STORY-0001
     title: str
-    status: str                                # draft, accepted, implemented
+    status: str                                # draft, accepted, implementing, implemented, abandoned
     created: str                               # ISO timestamp
     source_refs: str                           # Free text: "REQS.md Section 4.4, Issue #32"
     problem: str                               # What problem does this solve

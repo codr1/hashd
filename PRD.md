@@ -455,17 +455,23 @@ Options:
 
 wf run <id> --loop repeats --once until:
 
-    no undone micro-commits remain
-
-    tests fail
-
-    review requests changes
+    all micro-commits complete AND merge gate passes
 
     clarification is raised (blocks workstream)
 
-    UAT is pending (after all micro-commits done)
-
     HITL is enabled and requires manual approval
+
+When all micro-commits are done, the MERGE_GATE stage runs:
+
+    run full test suite (unit + integration + e2e)
+
+    check branch is rebased on main
+
+    check no file conflicts
+
+    if PASS: workstream is merge-ready
+
+    if FAIL: AI generates fix commits, loop continues
 
 11) Orchestrator requirements (Agents SDK integration)
 11.1 What the orchestrator is
@@ -1261,52 +1267,47 @@ AOS MVP is done when:
 
         answering unblocks and resumes
 
-    Documentation works:
+    Merge gate works:
 
-        docs generated alongside code
+        full test suite runs after all micro-commits complete
 
-        screenshots captured from E2E tests
+        rebase and conflict checks
 
-        asset cleanup removes orphaned images
+        AI generates fix commits on test failure
 
-    UAT works:
-
-        UAT requests generated from requirements
-
-        humans can pass/fail/block
-
-        merge blocked until UAT passes
+        human-unfixable issues (rebase, conflicts) block with clear messaging
 
 ---
 
 ## 23) Implementation plan / milestones
-Milestone 1: Finish wf + run loop (MVP)
 
-    implement wf interview
+Milestone 1: Core loop (DONE)
 
-    implement wf run --once/--loop
+    wf run --once/--loop with all stages
 
-    implement lock handling
+    lock handling
 
-    implement run dir output standards
+    run dir output standards
 
-    implement test + review gates
+    test + review gates
 
-Milestone 2: Improve QA + reporting
+    clarification queue
 
-    robust validation for JUnit XML
+    merge gate + fix generation
 
-    richer run_summary.md
+Milestone 2: Golden run validation
 
-    stable error codes and rerun behavior
+    run full cycle on real project
+
+    fix bugs and UX issues discovered
+
+    improve error messages
 
 Milestone 3: PM sifting
 
     ingest dirty requirements
 
     generate clean stories
-
-    maintain clarification queue
 
 Milestone 4: Parallelization
 
@@ -1315,6 +1316,28 @@ Milestone 4: Parallelization
     crosscutting lock policy
 
     conflict-aware scheduling
+
+---
+
+## 24) LATER (deferred from MVP)
+
+These features are documented above but deferred to future milestones.
+
+### Documentation generation (section 17)
+
+Full doc generation with E2E screenshots, asset manifests, and cleanup commands. For now: write docs manually.
+
+### Formal UAT system (section 18)
+
+File-based UAT tracking with scenarios and checklists. For now: human validates before running `wf merge`.
+
+### wf interview (section 7.3)
+
+Interactive project setup wizard. For now: manually create/edit `project.env` and `project_profile.env`.
+
+### Autonomy levels beyond supervised (section 19)
+
+Gatekeeper and autonomous modes with escalation rules. For now: supervised mode only (human approves each gate).
 
 APPENDIX A — File templates (copy/paste)
 A1) ACTIVE_WORKSTREAMS.md template
@@ -1626,60 +1649,74 @@ Last updated: <timestamp>
 └─────────────────────────────────────────────────────────────────────────────┘
 
   ┌──────────┐
-  │  CREATE  │  wf new <id>
+  │  CREATE  │  wf run STORY-xxx
+  └────┬─────┘
+       │
+       ▼
+  ┌──────────┐
+  │BREAKDOWN │  AI generates micro-commits from ACs
   └────┬─────┘
        │
        ▼
   ┌──────────┐     ┌─────────────────┐
-  │ PLANNING │────▶│ blocked:clarify │◀─────┐
-  └────┬─────┘     └────────┬────────┘      │
-       │                    │               │
-       │              (human answers)       │
-       │                    │               │
-       ▼                    ▼               │
-  ┌──────────┐                              │
-  │IMPLEMENT │──────────────────────────────┘
-  └────┬─────┘     (agent raises CLQ)
-       │
-       │  for each micro-commit:
-       │  ┌─────────────────────────────┐
-       │  │ implement → test → review   │
-       │  └─────────────────────────────┘
-       │
-       ▼
+  │  SELECT  │────▶│ blocked:clarify │◀─────────────────────┐
+  └────┬─────┘     └────────┬────────┘                      │
+       │                    │                               │
+       │              (human answers)                       │
+       ▼                    ▼                               │
+  ┌─────────────────────────────────────────┐               │
+  │         IMPLEMENTATION LOOP             │               │
+  │                                         │               │
+  │  IMPLEMENT ──► TEST ──► REVIEW ──►      │               │
+  │  HUMAN_REVIEW ──► COMMIT                │               │
+  │         │                               │               │
+  │         ▼                               │               │
+  │    more commits? ──yes──► SELECT        │               │
+  │         │                               │               │
+  │         no                              │               │
+  └─────────┼───────────────────────────────┘               │
+            │                                               │
+            ▼                                               │
+  ┌─────────────────┐                                       │
+  │   MERGE GATE    │  full test suite + rebase check       │
+  └────────┬────────┘                                       │
+           │                                                │
+      ┌────┴────┐                                           │
+      │         │                                           │
+    PASS      FAIL                                          │
+      │         │                                           │
+      ▼         ▼                                           │
+  ┌────────┐  ┌──────────────┐                              │
+  │ MERGE  │  │FIX GENERATION│  AI generates fix commits    │
+  │ READY  │  └──────┬───────┘                              │
+  └────┬───┘         │                                      │
+       │             └──────────────────────────────────────┘
+       ▼                      (back to SELECT)
   ┌──────────┐
-  │   DOCS   │  generate/update docs + screenshots
-  └────┬─────┘
-       │
-       ▼
-  ┌──────────┐     ┌─────────────────┐
-  │   UAT    │────▶│   uat:pending   │
-  └────┬─────┘     └────────┬────────┘
-       │                    │
-       │              (human validates)
-       │                    │
-       │           ┌────────┴────────┐
-       │           ▼                 ▼
-       │    ┌────────────┐    ┌────────────┐
-       │    │ uat:passed │    │ uat:failed │───▶ back to IMPLEMENT
-       │    └─────┬──────┘    └────────────┘
-       │          │
-       ▼          ▼
-  ┌──────────────────┐
-  │   MERGE-READY    │  wf merge <id>
-  └────────┬─────────┘
-           │
-           ▼
-  ┌──────────┐
-  │  CLOSED  │  wf close <id>
+  │  MERGED  │  wf merge <id>
   └──────────┘
 ```
 
 ## APPENDIX I — wf watch keyboard reference
 
-Interactive TUI for single-workstream monitoring and control. Polls artifact state every 2 seconds.
+Interactive TUI for workstream monitoring and control. Polls artifact state every 2 seconds.
 
-### Layout
+### Modes
+
+**Dashboard Mode** (`wf watch` with no args): Shows all active workstreams.
+
+```
+┌─ wf watch ──────────────────────────────────────┐
+│ Active Workstreams                              │
+│                                                 │
+│ [1] theme_crud         IMPLEMENT 2/5  running   │
+│ [2] taskfile_migrate   BREAKDOWN 0/?  waiting   │
+│                                                 │
+│ Press 1-9 to view details, q to quit            │
+└─────────────────────────────────────────────────┘
+```
+
+**Detail Mode** (`wf watch <ws>` or press 1-9 from dashboard): Single workstream view.
 
 ```
 ┌─ workstream_id ───────────────────────────────────────┐
@@ -1692,7 +1729,7 @@ Interactive TUI for single-workstream monitoring and control. Polls artifact sta
 │   14:25 [*] Run passed: COMMIT-OP-004                 │
 │   14:20 [x] Run failed at test                        │
 │                                                       │
-│ [a]pprove | [r]eject | [R]eset | [d]iff | [l]og | [q] │
+│ Esc: back  a: approve  r: reject  d: diff  q: quit    │
 └───────────────────────────────────────────────────────┘
 ```
 
@@ -1700,19 +1737,43 @@ Interactive TUI for single-workstream monitoring and control. Polls artifact sta
 
 | Key | Action | Available when |
 |-----|--------|----------------|
-| `a` | Approve pending changes and commit | `awaiting_human_review` |
-| `r` | Reject with feedback (opens input prompt) | `awaiting_human_review` |
-| `R` | Reset - discard changes, start fresh | `awaiting_human_review`, `active`, `blocked` |
+| `1-9` | Select workstream | Dashboard mode |
+| `Esc` | Back to dashboard / cancel modal | Detail mode, modals |
+| `a` | Approve | Review stages |
+| `r` | Reject with feedback (opens input) | Review stages, gate failure |
+| `e` | Edit/refine (opens input) | Planning, clarifications |
+| `R` | Reset - discard changes, start fresh | `active`, `blocked` |
 | `d` | Show full diff (scrollable) | Any state with worktree |
 | `l` | Show full timeline log | Always |
 | `g` | Trigger a run (`wf run --once`) | `active`, `blocked` |
-| `q` | Quit watch / back (in subscreen) | Always |
-| `Esc` | Back (in diff/log view) or cancel (in modal) | In subscreen |
+| `q` | Quit watch | Always |
 
-### Action bar by status
+### Context-dependent actions
+
+Key principle: **show only relevant actions per context** to reduce cognitive load.
+
+| Context | Available Actions | Notes |
+|---------|------------------|-------|
+| Story planning | `e` | Refine story, answer questions |
+| Plan breakdown | `e` | Adjust micro-commits |
+| Per-commit review | `a`, `r` | Approve or reject with feedback |
+| Clarifications | `e` | Answer questions |
+| Final review | `a`, `r` | Approve merge gate or reject |
+| Merge gate failure | `r` | Guide fix approach |
+
+### `r` vs `e` semantics
+
+- **`e` (edit)**: Proactive refinement - nothing is "wrong", just adding input
+- **`r` (reject)**: Reactive correction - blocking progress, needs fix
+
+Both open an inline input box. The prompt differs:
+- `e` → "Guidance?"
+- `r` → "What's wrong?"
+
+### Action bar by workstream status
 
 | Status | Actions shown |
 |--------|---------------|
-| `awaiting_human_review` | approve, reject, reset, diff, log, quit |
+| `awaiting_human_review` | approve, reject, diff, log, quit |
 | `active` / `blocked` | go run, reset, diff, log, quit |
 | `complete` | log, quit |

@@ -15,8 +15,8 @@ def cmd_list(args, ops_dir: Path, project_config) -> int:
 
     # Load stories
     stories = list_stories(project_dir)
-    # Filter to active stories (not implemented/closed)
-    active_stories = [s for s in stories if s.status not in ("implemented", "closed")]
+    # Filter to active stories (not implemented/abandoned)
+    active_stories = [s for s in stories if s.status not in ("implemented", "abandoned")]
 
     # Load workstreams
     workstreams = []

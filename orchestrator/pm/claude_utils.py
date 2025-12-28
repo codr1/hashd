@@ -37,7 +37,10 @@ def run_claude(prompt: str, timeout: int = 300) -> tuple[bool, str]:
         return False, "Claude CLI not found. Install: https://claude.ai/claude-code"
 
     if result.returncode != 0:
-        return False, f"Claude failed (exit {result.returncode}): {result.stderr}"
+        error_msg = result.stderr.strip() or result.stdout.strip()
+        if not error_msg:
+            error_msg = "(no output - check 'claude --version' and auth status)"
+        return False, f"Claude failed (exit {result.returncode}): {error_msg}"
 
     # Parse JSON wrapper
     try:

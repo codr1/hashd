@@ -4,18 +4,34 @@
 
 (حشد = Arabic for "crowd")
 
-An AI-assisted development workflow system that coordinates LLM agents (Claude, Codex) to implement, test, and review code changes with human oversight.
+A full-lifecycle AI development platform that coordinates LLM agents with mandatory human oversight at every gate. Not just implementation - planning, QA, review, and UAT.
 
 ## Overview
 
-Hashd breaks down development work into **workstreams** containing **micro-commits** - small, reviewable units of work. The pipeline stages are:
+Hashd orchestrates the entire development lifecycle:
 
-1. **BREAKDOWN** - Claude generates micro-commits from acceptance criteria (first run only)
-2. **IMPLEMENT** - Codex writes the code
-3. **TEST** - Automated tests run
-4. **REVIEW** - Claude reviews the changes (as a senior staff engineer)
-5. **HUMAN_REVIEW** - Human approves, rejects, or resets
-6. **COMMIT** - Changes are committed to the branch
+| Phase | Agent | What Happens |
+|-------|-------|--------------|
+| **Plan** | Claude (PM) | Analyzes REQS.md, proposes stories, generates acceptance criteria |
+| **Breakdown** | Claude (Architect) | Decomposes stories into micro-commits with implementation guidance |
+| **Implement** | Codex | Writes code in isolated worktree |
+| **Test** | Automated | Runs test suite, validates artifacts |
+| **Review** | Claude (Staff Engineer) | Structured review with approve/block/request-changes |
+| **QA Gate** | Validation | Confirms test + review artifacts before commit |
+| **Human UAT** | You | Approve, reject with feedback, or reset entirely |
+| **Merge Gate** | Claude + Tests | Full suite + rebase check; AI generates fixes if needed |
+| **Final Review** | Claude | Holistic branch review before merge |
+
+Human gates are **mandatory**, not advisory. The clarification queue blocks workstreams until you answer. Every run produces auditable artifacts in `runs/`.
+
+## Human-in-the-Loop
+
+- **Clarification Queue** - Agents raise questions; workstream blocks until you answer (`wf clarify`)
+- **Approve/Reject/Reset** - Accept changes, iterate with feedback, or discard entirely
+- **Interactive TUI** - `wf watch` for real-time monitoring with keyboard shortcuts
+- **Desktop Notifications** - Get alerted when workstreams need attention
+- **Parallel Workstreams** - Run multiple features simultaneously in isolated worktrees
+- **Conflict Detection** - `wf conflicts` warns about overlapping file changes
 
 ## Quick Start
 
@@ -152,14 +168,14 @@ wf show other_feature  # Operates on other_feature, context unchanged
 | `wf plan` | Plan stories from REQS.md (interactive discovery) |
 | `wf plan new ["title"]` | Create ad-hoc story (not from REQS.md) |
 | `wf plan clone STORY-xxx` | Clone a locked story to edit |
-| `wf plan STORY-xxx` | Edit existing story (if unlocked) |
+| `wf plan edit STORY-xxx` | Edit existing story (if unlocked) |
 | `wf run <id> [name]` | Run workstream or create from story |
 | `wf list` | List all stories and workstreams |
 | `wf show <id>` | Show story or workstream details |
 | `wf approve <id>` | Accept story or approve workstream gate |
 | `wf merge <ws>` | Merge completed workstream to main |
 | `wf close <id>` | Close story or workstream (abandon) |
-| `wf watch <ws>` | Interactive TUI for monitoring |
+| `wf watch [ws]` | Interactive TUI (dashboard if no ws, detail if ws given) |
 
 ### Supporting Commands
 
@@ -210,19 +226,25 @@ draft -> accepted -> implementing -> implemented
                     MICRO-COMMIT LOOP
                     =================
 run -> breakdown -> [implement -> test -> review -> human_review -> commit] x N
-                                                                 |
-                                                                 v
-                                                     [approve] -> next micro-commit
-                                                     [reject]  -> iterate with feedback
-                                                     [reject --reset] -> discard changes, start fresh
-
-                    COMPLETION
+                         ^                                       |
+                         |                                       v
+                         |                           [approve] -> next micro-commit
+                         |                           [reject]  -> iterate with feedback
+                         |                           [reject --reset] -> discard changes
+                         |
+                    MERGE GATE
                     ==========
-All micro-commits complete -> final branch review -> merge -> archived
+All micro-commits complete -> MERGE_GATE (full test suite + rebase check)
                                     |
-                                    v
-                              AI reviews entire branch
-                              as senior staff engineer
+                              ┌─────┴─────┐
+                              |           |
+                            PASS        FAIL
+                              |           |
+                              v           v
+                           MERGE    FIX_GENERATION
+                              |           |
+                              v           └──> AI generates fix commits
+                          archived             (loops back to SELECT)
 ```
 
 ## Requirements

@@ -283,19 +283,23 @@ def main():
 
     # wf plan
     p_plan = subparsers.add_parser('plan', help='Plan stories from REQS.md or ad-hoc')
-    p_plan.add_argument('story_id', nargs='?', help='Story ID to edit (e.g., STORY-0001)')
-    p_plan.set_defaults(func=cmd_plan, new=False, clone=False)
+    p_plan.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, story_id=None)
     plan_sub = p_plan.add_subparsers(dest='plan_cmd')
 
-    # wf plan new
+    # wf plan new "title"
     p_plan_new = plan_sub.add_parser('new', help='Create ad-hoc story')
     p_plan_new.add_argument('title', nargs='?', help='Story title hint')
-    p_plan_new.set_defaults(func=cmd_plan, new=True, clone=False)
+    p_plan_new.set_defaults(func=cmd_plan, new=True, clone=False, edit=False)
 
-    # wf plan clone
+    # wf plan clone STORY-xxx
     p_plan_clone = plan_sub.add_parser('clone', help='Clone a locked story')
     p_plan_clone.add_argument('clone_id', help='Story ID to clone (e.g., STORY-0001)')
-    p_plan_clone.set_defaults(func=cmd_plan, new=False, clone=True)
+    p_plan_clone.set_defaults(func=cmd_plan, new=False, clone=True, edit=False)
+
+    # wf plan edit STORY-xxx
+    p_plan_edit = plan_sub.add_parser('edit', help='Edit an existing story')
+    p_plan_edit.add_argument('story_id', help='Story ID to edit (e.g., STORY-0001)')
+    p_plan_edit.set_defaults(func=cmd_plan, new=False, clone=False, edit=True)
 
     # wf list
     p_list = subparsers.add_parser('list', help='List stories and workstreams')

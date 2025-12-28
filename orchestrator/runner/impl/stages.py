@@ -535,6 +535,119 @@ def stage_update_state(ctx: RunContext):
     ctx.log("State updated")
 
 
+def stage_merge_gate(ctx: RunContext) -> dict:
+    """
+    Validate branch is ready to merge.
+
+    Runs after all micro-commits are complete. Checks:
+    1. Full test suite passes
+    2. Branch is rebased on main (no merge conflicts)
+    3. No conflict markers in files
+
+    Returns:
+        Empty dict on success.
+
+    Raises:
+        StageError with details dict containing 'type' and 'output' on failure.
+    """
+    ctx.log("Running merge gate...")
+    worktree = str(ctx.workstream.worktree)
+    default_branch = ctx.project.default_branch
+
+    # 1. Run full test suite
+    makefile = ctx.workstream.worktree / ctx.profile.makefile_path
+    if makefile.exists():
+        test_target = ctx.profile.merge_gate_test_target
+        cmd = ["make", "-C", worktree, test_target]
+
+        ctx.log(f"Running full test suite: {' '.join(cmd)}")
+        start = time.time()
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=ctx.profile.test_timeout
+        )
+
+        duration = time.time() - start
+        ctx.log_command(cmd, result.returncode, duration)
+
+        # Save test output
+        log_path = ctx.run_dir / "stages" / "merge_gate_test.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            f"=== STDOUT ===\n{result.stdout}\n\n=== STDERR ===\n{result.stderr}\n"
+        )
+
+        if result.returncode != 0:
+            output = result.stdout + "\n" + result.stderr
+            raise StageError(
+                "merge_gate",
+                f"Full test suite failed (exit {result.returncode})",
+                10,
+                details={"type": "test_failure", "output": output}
+            )
+
+        ctx.log("Full test suite passed")
+
+    # 2. Check branch is up to date with main
+    # First, fetch to ensure we have latest main
+    subprocess.run(
+        ["git", "-C", worktree, "fetch", "origin", default_branch],
+        capture_output=True, text=True
+    )
+
+    # Check if main is ancestor of HEAD (meaning we're rebased on main)
+    result = subprocess.run(
+        ["git", "-C", worktree, "merge-base", "--is-ancestor",
+         f"origin/{default_branch}", "HEAD"],
+        capture_output=True, text=True
+    )
+
+    if result.returncode != 0:
+        # Get divergence info for context
+        diverge_result = subprocess.run(
+            ["git", "-C", worktree, "rev-list", "--left-right", "--count",
+             f"origin/{default_branch}...HEAD"],
+            capture_output=True, text=True
+        )
+        output = f"Branch needs rebase on {default_branch}.\n"
+        if diverge_result.returncode == 0:
+            parts = diverge_result.stdout.strip().split()
+            if len(parts) == 2:
+                output += f"Main is {parts[0]} commits ahead, branch is {parts[1]} commits ahead.\n"
+        output += f"Run: git rebase origin/{default_branch}"
+
+        raise StageError(
+            "merge_gate",
+            f"Branch needs rebase on {default_branch}",
+            11,
+            details={"type": "rebase", "output": output}
+        )
+
+    ctx.log(f"Branch is up to date with {default_branch}")
+
+    # 3. Check for conflict markers in tracked files
+    result = subprocess.run(
+        ["git", "-C", worktree, "diff", "--check", f"origin/{default_branch}...HEAD"],
+        capture_output=True, text=True
+    )
+
+    if result.returncode != 0 and result.stdout.strip():
+        raise StageError(
+            "merge_gate",
+            "Conflict markers detected in files",
+            12,
+            details={"type": "conflict", "output": result.stdout}
+        )
+
+    ctx.log("No conflict markers found")
+    ctx.log("Merge gate passed")
+
+    return {}
+
+
 def stage_human_review(ctx: RunContext):
     """Block until human approves or rejects.
 
