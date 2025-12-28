@@ -5,7 +5,7 @@ _wf_completions() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     
     # Main commands
-    commands="new list use refresh status show log watch conflicts run close merge archive open approve reject reset clarify pm review"
+    commands="plan new list use refresh status show log watch conflicts run close merge archive open approve reject reset clarify pm review"
     
     # Subcommands
     case "$prev" in
@@ -29,6 +29,24 @@ _wf_completions() {
                 fi
             done
             COMPREPLY=($(compgen -W "$ids" -- "$cur"))
+            return 0
+            ;;
+        plan)
+            COMPREPLY=($(compgen -W "new edit clone" -- "$cur"))
+            return 0
+            ;;
+        edit|clone)
+            # Complete with story IDs for wf plan edit/clone
+            if [[ "${COMP_WORDS[1]}" == "plan" ]]; then
+                local ops_dir="${WF_OPS_DIR:-$(dirname $(dirname $(realpath "${COMP_WORDS[0]}")))}"
+                local ids=""
+                for story_dir in "$ops_dir"/projects/*/pm/stories; do
+                    if [[ -d "$story_dir" ]]; then
+                        ids="$ids $(ls -1 "$story_dir" 2>/dev/null | grep '\.json$' | sed 's/\.json$//' | tr '\n' ' ')"
+                    fi
+                done
+                COMPREPLY=($(compgen -W "$ids" -- "$cur"))
+            fi
             return 0
             ;;
         clarify)
