@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 from orchestrator.runner.context import RunContext
 from orchestrator.runner.stages import StageError, StageBlocked
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit, mark_done
+from orchestrator.lib.prompts import render_prompt
+from orchestrator.lib.history import format_conversation_history
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
@@ -184,69 +186,29 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     if not ctx.microcommit:
         raise StageError("implement", "No micro-commit selected", 9)
 
-    # Build base prompt
-    prompt = f"""Implement this micro-commit:
-
-ID: {ctx.microcommit.id}
-Title: {ctx.microcommit.title}
-
-Description:
-{ctx.microcommit.block_content}
-
-Instructions:
-1. Make the necessary code changes
-2. Do NOT create a git commit - the orchestrator handles commits after review
-3. If you encounter ambiguity or need clarification, stop and explain what you need
-"""
-
-    # Add full conversation history if this is a retry
+    # Build conversation history section if this is a retry
+    conversation_history_section = ""
     if ctx.review_history:
-        prompt += "\n\n## CONVERSATION HISTORY\n"
-        prompt += "Previous review/implement cycles. Learn from what was already addressed.\n\n"
+        history_entries = format_conversation_history(ctx.review_history)
+        conversation_history_section = render_prompt(
+            "implement_history",
+            history_entries=history_entries
+        )
 
-        for entry in ctx.review_history:
-            attempt = entry.get("attempt", "?")
-
-            # Human feedback (attempt 0 is human rejection feedback)
-            if entry.get("human_feedback"):
-                prompt += f"### Human Rejection\n"
-                prompt += f"**Human said:** {entry['human_feedback']}\n\n"
-                continue
-
-            prompt += f"### Attempt {attempt}\n\n"
-
-            # What the implementer did
-            if entry.get("implement_summary"):
-                prompt += f"**Implementer said:**\n{entry['implement_summary']}\n\n"
-
-            # What the reviewer said
-            feedback = entry.get("review_feedback", {})
-            if feedback:
-                prompt += "**Reviewer feedback:**\n"
-                if feedback.get("blockers"):
-                    prompt += "Blockers:\n"
-                    for blocker in feedback["blockers"]:
-                        if isinstance(blocker, dict):
-                            prompt += f"- {blocker.get('file', 'unknown')}: {blocker.get('issue', 'unknown issue')}\n"
-                        else:
-                            prompt += f"- {blocker}\n"
-                if feedback.get("required_changes"):
-                    prompt += "Required changes:\n"
-                    for change in feedback["required_changes"]:
-                        prompt += f"- {change}\n"
-                if feedback.get("notes"):
-                    prompt += f"Notes: {feedback['notes']}\n"
-                prompt += "\n"
-
-            # Test failure output
-            if entry.get("test_failure"):
-                prompt += "**Test failure:**\n"
-                prompt += f"```\n{entry['test_failure']}\n```\n"
-                prompt += "Fix the code to make tests pass.\n\n"
-
-    # Add human feedback if provided (for first attempt, before it's in history)
+    # Build human guidance section
+    human_guidance_section = ""
     if human_feedback:
-        prompt += f"\n\n## HUMAN GUIDANCE\n\n{human_feedback}\n"
+        human_guidance_section = f"## HUMAN GUIDANCE\n\n{human_feedback}\n"
+
+    # Build the full prompt from template
+    prompt = render_prompt(
+        "implement",
+        commit_id=ctx.microcommit.id,
+        commit_title=ctx.microcommit.title,
+        commit_description=ctx.microcommit.block_content,
+        conversation_history_section=conversation_history_section,
+        human_guidance_section=human_guidance_section
+    )
 
     ctx.log(f"Running Codex for {ctx.microcommit.id}")
 

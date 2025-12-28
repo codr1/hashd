@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Optional
 
 from orchestrator.lib.validate import validate, ValidationError
+from orchestrator.lib.prompts import render_prompt
+from orchestrator.lib.history import format_review_history
 
 
 @dataclass
@@ -172,80 +174,19 @@ class ClaudeAgent:
     def build_review_prompt(self, diff: str, commit_title: str, commit_description: str,
                             review_history: list = None) -> str:
         """Build the review prompt for Claude."""
-        prompt = f'''CRITICAL: Your response must be ONLY raw JSON. No markdown fences. No prose. No "here is my review". Just the JSON object starting with {{ and ending with }}.
-
-Review these changes as a sr. staff engineer who doesn't feel like taking any shit.
-
-Make sure it is perfect - from design to implementation to documentation. You will support it when it fails at 2am. No compromises.
-
-## Commit
-Title: {commit_title}
-Description: {commit_description}
-
-## Diff
-```diff
-{diff}
-```
-'''
-
-        # Add conversation history so reviewer knows what it already asked for
+        # Build review history section if we have previous cycles
+        review_history_section = ""
         if review_history:
-            prompt += "\n## PREVIOUS REVIEW CYCLES\n"
-            prompt += "You already reviewed earlier attempts. Don't re-flag issues that were addressed.\n"
-            prompt += "IMPORTANT: If the human explicitly told you to ignore an issue, DO NOT raise it again. Human overrides are final.\n\n"
+            history_entries = format_review_history(review_history)
+            review_history_section = render_prompt(
+                "review_history",
+                history_entries=history_entries
+            )
 
-            for entry in review_history:
-                attempt = entry.get("attempt", "?")
-
-                # Human feedback (attempt 0 is human rejection feedback)
-                if entry.get("human_feedback"):
-                    prompt += f"### Human Rejection\n"
-                    prompt += f"**Human said:** {entry['human_feedback']}\n\n"
-                    continue
-
-                prompt += f"### Attempt {attempt}\n"
-
-                feedback = entry.get("review_feedback", {})
-                if feedback:
-                    prompt += "**Your previous feedback:**\n"
-                    if feedback.get("blockers"):
-                        for blocker in feedback["blockers"]:
-                            if isinstance(blocker, dict):
-                                prompt += f"- BLOCKER: {blocker.get('file', '?')}: {blocker.get('issue', '?')}\n"
-                            else:
-                                prompt += f"- BLOCKER: {blocker}\n"
-                    if feedback.get("required_changes"):
-                        for change in feedback["required_changes"]:
-                            prompt += f"- REQUIRED: {change}\n"
-
-                if entry.get("implement_summary"):
-                    prompt += f"**Implementer response:** {entry['implement_summary']}\n"
-
-                prompt += "\n"
-
-        prompt += f'''
-## Required Response Format
-{{
-  "version": 1,
-  "decision": "approve" | "request_changes",
-  "blockers": [
-    {{"file": "path/to/file.py", "line": 42, "issue": "description", "severity": "critical|major|minor"}}
-  ],
-  "required_changes": ["change 1", "change 2"],
-  "suggestions": ["optional improvement 1"],
-  "documentation": {{
-    "required": true|false,
-    "present": true|false
-  }},
-  "notes": "any other notes"
-}}
-
-Rules:
-- decision="approve" ONLY if code is production-ready with zero issues
-- decision="request_changes" if there are ANY blockers, required changes, or concerns
-- blockers: bugs, security issues, breaking changes, missing error handling, silent failures
-- required_changes: code smells, inconsistencies, missing logging, unchecked return codes
-- suggestions: improvements that would make the code more maintainable
-- If you asked for a change in a previous review and it was addressed, don't re-flag it
-'''
-        return prompt
+        return render_prompt(
+            "review",
+            commit_title=commit_title,
+            commit_description=commit_description,
+            diff=diff,
+            review_history_section=review_history_section
+        )
