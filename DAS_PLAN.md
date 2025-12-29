@@ -61,8 +61,8 @@ Refining story with Claude PM...
 - "done" sends all answers to Claude PM for story refinement
 
 ### CLI Improvements
-- `--gatekeeper` / `--supervised` / `--autonomous` flags for `wf run`
-- Currently controlled by `SUPERVISED_MODE` env var only
+- [x] `--gatekeeper` / `--supervised` flags for `wf run` (CLI override for SUPERVISED_MODE)
+- `--autonomous` flag deferred (requires skipping merge gate human review - see PRD section 19)
 
 ### Project Maintenance Commands (not designed)
 - `wf project describe` - AI-assisted update of project.yaml description field
@@ -76,7 +76,8 @@ Refining story with Claude PM...
 - Show when commits are flagged for tech stack violations
 
 ### Ideas (not designed)
-- `wf diff` - pretty-printed diff viewer
+- [x] `wf diff` - pretty-printed diff viewer
+- [x] `wf project show` - display current project configuration
 - Parallel workstream scheduling - conflict-aware concurrent execution
 - Rich run reports - HTML dashboard for run history
 

@@ -756,6 +756,12 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             supervised_mode=False,
         )
 
+    # Override supervised_mode from CLI flags
+    if getattr(args, 'gatekeeper', False):
+        profile.supervised_mode = False
+    elif getattr(args, 'supervised', False):
+        profile.supervised_mode = True
+
     # Clean up any stale lock files from crashed processes
     cleanup_stale_lock_files(ops_dir)
 

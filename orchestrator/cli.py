@@ -28,6 +28,8 @@ from orchestrator.commands import plan as cmd_plan_module
 from orchestrator.commands import open as cmd_open_module
 from orchestrator.commands import log as cmd_log_module
 from orchestrator.commands import watch as cmd_watch_module
+from orchestrator.commands import diff as cmd_diff_module
+from orchestrator.commands import project as cmd_project_module
 
 
 def get_ops_dir() -> Path:
@@ -262,6 +264,17 @@ def cmd_clarify_ask(args):
     return cmd_clarify_module.cmd_clarify_ask(args, ops_dir, project_config)
 
 
+def cmd_diff(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_diff_module.cmd_diff(args, ops_dir, project_config)
+
+
+def cmd_project_show(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_project_module.cmd_project_show(args, ops_dir, project_config)
+
+
 def main():
     # Handle --completion before parsing subcommands
     if len(sys.argv) == 2 and sys.argv[1] == '--completion':
@@ -356,6 +369,9 @@ def main():
     p_run.add_argument('--loop', action='store_true', help='Run until blocked')
     p_run.add_argument('--verbose', '-v', action='store_true', help='Show implement/review exchange')
     p_run.add_argument('--yes', '-y', action='store_true', help='Skip confirmation prompts')
+    run_mode = p_run.add_mutually_exclusive_group()
+    run_mode.add_argument('--gatekeeper', action='store_true', help='Auto-approve if tests and review pass')
+    run_mode.add_argument('--supervised', action='store_true', help='Always pause for human review')
     p_run.set_defaults(func=cmd_run)
 
     # wf close
@@ -431,6 +447,25 @@ def main():
     p_clarify_ask.add_argument('--context', '-c', help='Additional context')
     p_clarify_ask.add_argument('--urgency', '-u', choices=['blocking', 'non-blocking'], default='blocking')
     p_clarify_ask.set_defaults(func=cmd_clarify_ask)
+
+    # wf diff
+    p_diff = subparsers.add_parser('diff', help='Show workstream diff')
+    p_diff.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_diff.add_argument('--stat', action='store_true', help='Show diffstat only')
+    diff_mode = p_diff.add_mutually_exclusive_group()
+    diff_mode.add_argument('--staged', action='store_true', help='Show staged changes only')
+    diff_mode.add_argument('--branch', action='store_true', help='Show full branch diff from base')
+    p_diff.add_argument('--no-color', action='store_true', help='Disable colors')
+    p_diff.set_defaults(func=cmd_diff)
+
+    # wf project
+    p_project = subparsers.add_parser('project', help='Project management')
+    p_project.set_defaults(func=cmd_project_show)
+    project_sub = p_project.add_subparsers(dest='project_cmd')
+
+    # wf project show
+    p_project_show = project_sub.add_parser('show', help='Show project configuration')
+    p_project_show.set_defaults(func=cmd_project_show)
 
     args = parser.parse_args()
 
