@@ -8,7 +8,7 @@ _wf_completions() {
     _init_completion || return
 
     local commands="plan list use show log review watch refresh conflicts run close merge archive open approve reject clarify"
-    local plan_cmds="new clone"
+    local plan_cmds="new clone add edit"
     local archive_cmds="delete"
     local clarify_cmds="list show answer ask"
 
@@ -83,8 +83,8 @@ _wf_completions() {
         3)
             case ${words[1]} in
                 plan)
-                    if [[ "${words[2]}" == "clone" ]]; then
-                        # Story IDs for clone
+                    if [[ "${words[2]}" == "clone" || "${words[2]}" == "edit" ]]; then
+                        # Story IDs for clone/edit
                         local stories=""
                         if [[ -d "$ops_dir/projects" ]]; then
                             for f in "$ops_dir/projects"/*/pm/stories/STORY-*.json; do
@@ -92,6 +92,15 @@ _wf_completions() {
                             done
                         fi
                         COMPREPLY=($(compgen -W "$stories" -- "$cur"))
+                    elif [[ "${words[2]}" == "add" ]]; then
+                        # Workstream IDs for add
+                        local ws=""
+                        if [[ -d "$ops_dir/workstreams" ]]; then
+                            for d in "$ops_dir/workstreams"/*/; do
+                                [[ -d "$d" && ! "$(basename "$d")" =~ ^_ ]] && ws+=" $(basename "$d")"
+                            done
+                        fi
+                        COMPREPLY=($(compgen -W "$ws" -- "$cur"))
                     fi
                     ;;
                 archive)
@@ -173,7 +182,7 @@ _wf() {
             case $words[1] in
                 plan)
                     local -a plan_cmds stories
-                    plan_cmds=('new:Create ad-hoc story' 'clone:Clone a locked story')
+                    plan_cmds=('new:Create ad-hoc story' 'clone:Clone a locked story' 'edit:Edit existing story' 'add:Add micro-commit to workstream')
                     if [[ -d "$ops_dir/projects" ]]; then
                         stories=(${(@f)"$(find "$ops_dir/projects" -path '*/pm/stories/STORY-*.json' -exec basename {} .json \\; 2>/dev/null)"})
                     fi
