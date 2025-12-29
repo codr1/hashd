@@ -169,6 +169,7 @@ wf show other_feature  # Operates on other_feature, context unchanged
 | `wf plan new ["title"]` | Create ad-hoc story (not from REQS.md) |
 | `wf plan clone STORY-xxx` | Clone a locked story to edit |
 | `wf plan edit STORY-xxx` | Edit existing story (if unlocked) |
+| `wf plan add <ws> "title"` | Add micro-commit to existing workstream |
 | `wf run <id> [name]` | Run workstream or create from story |
 | `wf list` | List all stories and workstreams |
 | `wf show <id>` | Show story or workstream details |

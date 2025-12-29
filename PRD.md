@@ -358,6 +358,7 @@ wf watch <ws>
 - `wf plan new "title"` - Ad-hoc with title hint
 - `wf plan STORY-xxx` - Edit existing story (if unlocked)
 - `wf plan clone STORY-xxx` - Copy locked story to new editable story
+- `wf plan add <ws_id> "title" [-d "desc"]` - Add micro-commit to existing workstream
 
 **wf run** - Execute workstream
 - `wf run theme_crud` - Run existing workstream

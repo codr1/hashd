@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from orchestrator.lib.config import ProjectConfig
+from orchestrator.lib.planparse import parse_plan
 from orchestrator.pm.stories import (
     list_stories,
     load_story,
@@ -21,6 +22,7 @@ from orchestrator.pm.stories import (
     is_story_locked,
 )
 from orchestrator.pm.planner import run_plan_session, run_refine_session, run_edit_session
+from orchestrator.runner.impl.breakdown import append_commits_to_plan
 
 
 def cmd_plan(args, ops_dir: Path, project_config: ProjectConfig):
@@ -37,6 +39,10 @@ def cmd_plan(args, ops_dir: Path, project_config: ProjectConfig):
     if getattr(args, 'edit', False):
         story_id = getattr(args, 'story_id', None)
         return cmd_plan_edit(args, ops_dir, project_config, story_id)
+
+    # wf plan add <ws_id> "title"
+    if getattr(args, 'add', False):
+        return cmd_plan_add(args, ops_dir, project_config)
 
     # wf plan (discovery from REQS.md)
     return cmd_plan_discover(args, ops_dir, project_config)
@@ -181,4 +187,66 @@ def cmd_plan_edit(args, ops_dir: Path, project_config: ProjectConfig, story_id: 
     print("Tip: Use -f to provide feedback inline:")
     print(f"  wf plan edit {story_id} -f \"your feedback here\"")
 
+    return 0
+
+
+def cmd_plan_add(args, ops_dir: Path, project_config: ProjectConfig):
+    """Add a micro-commit to an existing workstream's plan.md."""
+    ws_id = args.ws_id
+    title = args.title
+    description = getattr(args, 'description', '') or ''
+
+    # Validate workstream exists
+    workstream_dir = ops_dir / "workstreams" / ws_id
+    if not workstream_dir.exists():
+        print(f"ERROR: Workstream '{ws_id}' not found")
+        return 1
+
+    plan_path = workstream_dir / "plan.md"
+
+    if not plan_path.exists():
+        print(f"ERROR: No plan.md found for workstream '{ws_id}'")
+        return 1
+
+    # Parse existing commits to find next number
+    commits = parse_plan(str(plan_path))
+    if not commits:
+        print(f"ERROR: No existing commits in plan.md - cannot determine prefix")
+        print("Use 'wf run' first to generate initial commits.")
+        return 1
+
+    # Extract WS prefix from existing commit ID (e.g., BUILD_TASKFILE from COMMIT-BUILD_TASKFILE-001)
+    first_id = commits[0].id  # e.g., "COMMIT-BUILD_TASKFILE-001"
+    parts = first_id.split('-')
+    if len(parts) < 3:
+        print(f"ERROR: Cannot parse commit ID format: {first_id}")
+        return 1
+
+    # Prefix is everything between COMMIT- and -NNN
+    ws_prefix = '-'.join(parts[1:-1])  # e.g., "BUILD_TASKFILE"
+
+    # Find max commit number
+    max_num = 0
+    for c in commits:
+        c_parts = c.id.split('-')
+        if len(c_parts) >= 3:
+            try:
+                num = int(c_parts[-1])
+                max_num = max(max_num, num)
+            except ValueError:
+                pass
+
+    next_num = max_num + 1
+    commit_id = f"COMMIT-{ws_prefix}-{next_num:03d}"
+
+    # Append the new commit
+    new_commit = {
+        'id': commit_id,
+        'title': title,
+        'description': description,
+    }
+    append_commits_to_plan(plan_path, [new_commit])
+
+    print(f"Added {commit_id}: {title}")
+    print(f"\nTo implement: wf run {ws_id}")
     return 0
