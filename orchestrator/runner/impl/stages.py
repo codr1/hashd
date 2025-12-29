@@ -377,7 +377,6 @@ def stage_review(ctx: RunContext):
         _verbose_footer()
 
     # Save review result
-    import json
     (ctx.run_dir / "claude_review.json").write_text(json.dumps({
         "version": 1,
         "decision": review.decision,
@@ -411,7 +410,6 @@ def stage_qa_gate(ctx: RunContext):
     # Check review result
     review_path = ctx.run_dir / "claude_review.json"
     if review_path.exists():
-        import json
         review = json.loads(review_path.read_text())
         if review.get("decision") != "approve":
             raise StageError("qa_gate", "Review not approved", 7)

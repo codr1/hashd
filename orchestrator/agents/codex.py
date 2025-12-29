@@ -52,7 +52,7 @@ class CodexAgent:
                 success=False,
                 exit_code=-1,
                 stdout="",
-                stderr="Timeout expired",
+                stderr=f"Timed out after {self.timeout}s. Retry or increase IMPLEMENT_TIMEOUT.",
             )
 
         # Log if requested

@@ -749,7 +749,7 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             makefile_path="Makefile",
             make_target_test="test",
             merge_gate_test_target="test",
-            implement_timeout=600,
+            implement_timeout=1200,
             review_timeout=300,
             test_timeout=300,
             breakdown_timeout=180,

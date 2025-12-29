@@ -44,7 +44,7 @@ Description: {commit_description}
 - Any dead code or unnecessary duplication?
 
 ## Required Response Format
-CRITICAL: When done, output ONLY raw JSON. No markdown fences. No prose. Just the JSON object:
+When done, output a JSON object with your review:
 
 {{
   "version": 1,
@@ -65,4 +65,4 @@ Rules:
 - suggestions: improvements that would make the code more maintainable
 - If you asked for a change in a previous review and it was addressed, don't re-flag it
 
-Your final output must be valid JSON and nothing else. No preamble. No commentary after.
+Your final output must include this JSON object.

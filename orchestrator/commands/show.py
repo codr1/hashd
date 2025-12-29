@@ -112,20 +112,42 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
                 try:
                     # Find JSON in stdout section
                     if "STDOUT ===" in content:
-                        stdout_section = content.split("=== STDOUT ===")[1].split("=== STDERR ===")[0]
-                        wrapper = json.loads(stdout_section.strip())
+                        stdout_section = content.split("=== STDOUT ===")[1].split("=== STDERR ===")[0].strip()
 
-                        # The result field is double-encoded JSON, possibly wrapped in markdown
+                        # Extract JSON from markdown code block (contextual review format)
+                        # Claude may output prose before the code block
+                        if "```json" in stdout_section:
+                            start = stdout_section.find("```json")
+                            stdout_section = stdout_section[start + 7:]  # Skip ```json
+                            if "```" in stdout_section:
+                                stdout_section = stdout_section.split("```")[0]
+                            stdout_section = stdout_section.strip()
+                        elif "```" in stdout_section:
+                            start = stdout_section.find("```")
+                            stdout_section = stdout_section[start + 3:]  # Skip ```
+                            if "```" in stdout_section:
+                                stdout_section = stdout_section.split("```")[0]
+                            stdout_section = stdout_section.strip()
+                        elif "{" in stdout_section:
+                            # Fallback: raw JSON after prose (no code fences)
+                            json_start = stdout_section.find("{")
+                            if json_start > 0:
+                                stdout_section = stdout_section[json_start:]
+
+                        wrapper = json.loads(stdout_section)
+
+                        # Old format: result field is double-encoded JSON
                         if "result" in wrapper and isinstance(wrapper["result"], str):
                             result_str = wrapper["result"]
                             # Strip markdown code block if present
                             if result_str.startswith("```"):
-                                result_str = result_str.split("\n", 1)[1]  # Remove first line
+                                result_str = result_str.split("\n", 1)[1]
                                 if result_str.endswith("```"):
                                     result_str = result_str[:-3]
                                 result_str = result_str.strip()
                             review = json.loads(result_str)
                         else:
+                            # New format: direct JSON (contextual review)
                             review = wrapper
 
                         decision = review.get("decision", "unknown")
