@@ -478,35 +478,47 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
     approval_file = ctx.workstream_dir / "human_approval.json"
     if approval_file.exists():
         try:
-            import json
             approval = json.loads(approval_file.read_text())
             if approval.get("action") == "approve":
-                ctx.log("Human already approved - skipping to commit")
-                approval_file.unlink()
-                # Skip straight to Phase 4
-                try:
-                    result = run_stage(ctx, "qa_gate", stage_qa_gate)
-                    if result == StageResult.BLOCKED:
-                        reason = ctx.stages.get("qa_gate", {}).get("notes", "unknown")
-                        ctx.write_result("blocked", blocked_reason=reason)
-                        return "blocked", 8, None
-                except StageError as e:
-                    ctx.write_result("failed", e.stage)
-                    return "failed", e.exit_code, e.stage
+                # Check if there are actually pending changes to commit
+                # If no changes, the previous commit was already made and we need to implement the next one
+                diff_result = subprocess.run(
+                    ["git", "-C", str(ctx.workstream.worktree), "diff", "--quiet", "HEAD"],
+                    capture_output=True
+                )
+                has_pending_changes = diff_result.returncode != 0
 
-                try:
-                    result = run_stage(ctx, "update_state", stage_update_state)
-                    if result == StageResult.BLOCKED:
-                        reason = ctx.stages.get("update_state", {}).get("notes", "unknown")
-                        ctx.write_result("blocked", blocked_reason=reason)
-                        return "blocked", 8, None
-                except StageError as e:
-                    ctx.write_result("failed", e.stage)
-                    return "failed", e.exit_code, e.stage
+                if not has_pending_changes:
+                    ctx.log("Human approved but no pending changes - previous commit already made")
+                    approval_file.unlink()
+                    # Fall through to normal implement flow
+                else:
+                    ctx.log("Human already approved - skipping to commit")
+                    approval_file.unlink()
+                    # Skip straight to Phase 4
+                    try:
+                        result = run_stage(ctx, "qa_gate", stage_qa_gate)
+                        if result == StageResult.BLOCKED:
+                            reason = ctx.stages.get("qa_gate", {}).get("notes", "unknown")
+                            ctx.write_result("blocked", blocked_reason=reason)
+                            return "blocked", 8, None
+                    except StageError as e:
+                        ctx.write_result("failed", e.stage)
+                        return "failed", e.exit_code, e.stage
 
-                ctx.write_result("passed")
-                ctx.log("Run complete: passed (fast path - human pre-approved)")
-                return "passed", 0, None
+                    try:
+                        result = run_stage(ctx, "update_state", stage_update_state)
+                        if result == StageResult.BLOCKED:
+                            reason = ctx.stages.get("update_state", {}).get("notes", "unknown")
+                            ctx.write_result("blocked", blocked_reason=reason)
+                            return "blocked", 8, None
+                    except StageError as e:
+                        ctx.write_result("failed", e.stage)
+                        return "failed", e.exit_code, e.stage
+
+                    ctx.write_result("passed")
+                    ctx.log("Run complete: passed (fast path - human pre-approved)")
+                    return "passed", 0, None
         except (json.JSONDecodeError, IOError):
             pass  # Fall through to normal flow
 
@@ -731,14 +743,14 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     try:
         profile = load_project_profile(project_dir)
     except FileNotFoundError:
-        # Use defaults
+        # Use defaults (review_timeout=300 for contextual reviews)
         from orchestrator.lib.config import ProjectProfile
         profile = ProjectProfile(
             makefile_path="Makefile",
             make_target_test="test",
             merge_gate_test_target="test",
             implement_timeout=600,
-            review_timeout=120,
+            review_timeout=300,
             test_timeout=300,
             breakdown_timeout=180,
             supervised_mode=False,

@@ -64,6 +64,17 @@ Refining story with Claude PM...
 - `--gatekeeper` / `--supervised` / `--autonomous` flags for `wf run`
 - Currently controlled by `SUPERVISED_MODE` env var only
 
+### Project Maintenance Commands (not designed)
+- `wf project describe` - AI-assisted update of project.yaml description field
+- `wf project refresh` - re-bootstrap project context from README/codebase
+- `wf project show` - display current project config including tech stack
+- `wf project stack` - view/edit tech stack (preferred, acceptable, avoid)
+- Manual edit of project.env remains the simple path for now
+
+### wf watch Enhancements (not designed)
+- Display tech stack summary in project header
+- Show when commits are flagged for tech stack violations
+
 ### Ideas (not designed)
 - `wf diff` - pretty-printed diff viewer
 - Parallel workstream scheduling - conflict-aware concurrent execution

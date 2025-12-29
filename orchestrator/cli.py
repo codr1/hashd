@@ -399,6 +399,7 @@ def main():
     p_reject.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_reject.add_argument('--feedback', '-f', help='Feedback for the implementer')
     p_reject.add_argument('--reset', action='store_true', help='Discard changes and start fresh')
+    p_reject.add_argument('--no-run', action='store_true', help='Do not auto-run after reject')
     p_reject.set_defaults(func=cmd_reject)
 
     # wf clarify

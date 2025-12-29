@@ -84,15 +84,25 @@ def cmd_reject(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print(f"  {feedback}")
         else:
             print(f"Reset workstream '{ws_id}'")
-        print(f"\nRun 'wf run {ws_id}' to start fresh")
     else:
         if feedback:
             print(f"Rejected workstream '{ws_id}' with feedback:")
             print(f"  {feedback}")
         else:
             print(f"Rejected workstream '{ws_id}'")
-        print(f"\nRun 'wf run {ws_id}' to iterate on current changes")
-    return 0
+
+    # Auto-continue unless --no-run specified
+    no_run = getattr(args, 'no_run', False)
+    if no_run:
+        print(f"\nRun 'wf run {ws_id}' to continue")
+        return 0
+
+    # Continue execution in loop mode
+    print("\nContinuing...")
+    print()
+    from orchestrator.commands.run import cmd_run
+    run_args = SimpleNamespace(id=ws_id, loop=True, once=False, verbose=False)
+    return cmd_run(run_args, ops_dir, project_config)
 
 
 def cmd_reset(args, ops_dir: Path, project_config: ProjectConfig) -> int:

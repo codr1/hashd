@@ -204,6 +204,10 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     # Build the full prompt from template
     prompt = render_prompt(
         "implement",
+        system_description=ctx.project.description or f"Project: {ctx.project.name}",
+        tech_preferred=ctx.project.tech_preferred or "Not specified",
+        tech_acceptable=ctx.project.tech_acceptable or "Not specified",
+        tech_avoid=ctx.project.tech_avoid or "Not specified",
         commit_id=ctx.microcommit.id,
         commit_title=ctx.microcommit.title,
         commit_description=ctx.microcommit.block_content,
@@ -290,102 +294,82 @@ def stage_test(ctx: RunContext):
     ctx.log("Tests passed")
 
 
+def _get_story_context(ctx: RunContext) -> str:
+    """Extract story title and description from plan.md."""
+    plan_path = ctx.workstream_dir / "plan.md"
+    if not plan_path.exists():
+        return ctx.workstream.title
+
+    content = plan_path.read_text()
+    lines = content.split("\n")
+
+    # Extract title (first # heading) and description (text before first ## or ---)
+    title = ctx.workstream.title
+    description_lines = []
+    in_description = False
+
+    for line in lines:
+        if line.startswith("# ") and not in_description:
+            title = line[2:].strip()
+            in_description = True
+        elif in_description:
+            if line.startswith("## ") or line.startswith("---") or line.startswith("### COMMIT"):
+                break
+            description_lines.append(line)
+
+    description = "\n".join(description_lines).strip()
+    if description:
+        return f"{title}\n\n{description}"
+    return title
+
+
 def stage_review(ctx: RunContext):
-    """Run Claude to review the changes."""
+    """Run Claude to review the changes with full codebase access."""
     if not ctx.microcommit:
         raise StageError("review", "No micro-commit selected", 9)
 
-    worktree = str(ctx.workstream.worktree)
-
-    # Get diff of uncommitted changes (staged + unstaged, but not untracked)
+    # Check there are changes to review
     result = subprocess.run(
-        ["git", "-C", worktree, "diff", "HEAD"],
-        capture_output=True, text=True
+        ["git", "-C", str(ctx.workstream.worktree), "diff", "--quiet", "HEAD"],
+        capture_output=True
     )
-    if result.returncode != 0:
-        raise StageError("review", "Could not get diff", 6)
+    if result.returncode == 0:
+        # Also check for untracked files
+        status = subprocess.run(
+            ["git", "-C", str(ctx.workstream.worktree), "status", "--porcelain"],
+            capture_output=True, text=True
+        )
+        if not status.stdout.strip():
+            ctx.log("No changes to review")
+            return
 
-    diff = result.stdout
+    # Get context for the reviewer
+    system_description = ctx.project.description or f"Project: {ctx.project.name}"
+    story_context = _get_story_context(ctx)
 
-    # Get untracked files and include their content
-    status_result = subprocess.run(
-        ["git", "-C", worktree, "status", "--porcelain"],
-        capture_output=True, text=True
-    )
-    MAX_UNTRACKED_FILE_SIZE = 1024 * 1024  # 1MB limit
-    if status_result.returncode == 0:
-        for line in status_result.stdout.splitlines():
-            if line.startswith("?? "):
-                filepath = line[3:].strip()
-                full_path = ctx.workstream.worktree / filepath
-
-                # Collect files to process (handle both files and directories)
-                files_to_include = []
-                if full_path.is_file():
-                    files_to_include.append((filepath, full_path))
-                elif full_path.is_dir():
-                    for child in full_path.rglob("*"):
-                        if child.is_file():
-                            rel_path = child.relative_to(ctx.workstream.worktree)
-                            files_to_include.append((str(rel_path), child))
-
-                for rel_filepath, file_full_path in files_to_include:
-                    # Skip large files
-                    try:
-                        file_size = file_full_path.stat().st_size
-                        if file_size > MAX_UNTRACKED_FILE_SIZE:
-                            logger.warning(f"Skipping large untracked file ({file_size} bytes): {rel_filepath}")
-                            continue
-                    except OSError as e:
-                        logger.warning(f"Could not stat untracked file {rel_filepath}: {e}")
-                        continue
-
-                    try:
-                        content = file_full_path.read_text()
-                        # Format as a diff for a new file
-                        diff += f"\ndiff --git a/{rel_filepath} b/{rel_filepath}\n"
-                        diff += f"new file mode 100644\n"
-                        diff += f"--- /dev/null\n"
-                        diff += f"+++ b/{rel_filepath}\n"
-                        lines = content.splitlines(keepends=True)
-                        diff += f"@@ -0,0 +1,{len(lines)} @@\n"
-                        for content_line in lines:
-                            diff += f"+{content_line}"
-                        if not content.endswith('\n'):
-                            diff += "\n\\ No newline at end of file\n"
-                    except UnicodeDecodeError:
-                        logger.warning(f"Skipping binary untracked file: {rel_filepath}")
-                    except OSError as e:
-                        logger.warning(f"Could not read untracked file {rel_filepath}: {e}")
-
-    if not diff.strip():
-        ctx.log("No changes to review")
-        return
-
-    # Save diff
-    (ctx.run_dir / "diff.patch").write_text(diff)
-
-    # Build review prompt with conversation history
+    # Build review prompt
     agent = ClaudeAgent(timeout=ctx.profile.review_timeout)
-    prompt = agent.build_review_prompt(
-        diff=diff,
+    prompt = agent.build_contextual_review_prompt(
+        system_description=system_description,
+        tech_preferred=ctx.project.tech_preferred,
+        tech_acceptable=ctx.project.tech_acceptable,
+        tech_avoid=ctx.project.tech_avoid,
+        story_context=story_context,
         commit_title=ctx.microcommit.title,
         commit_description=ctx.microcommit.block_content,
         review_history=ctx.review_history
     )
 
-    ctx.log("Running Claude review")
+    ctx.log("Running Claude review (contextual)")
 
     if ctx.verbose:
         _verbose_header("REVIEW PROMPT")
-        # Print prompt without the full diff (already saved to diff.patch)
-        prompt_preview = prompt.split("## Diff")[0] + "\n[... diff omitted, see diff.patch ...]"
-        print(prompt_preview)
+        print(prompt)
         _verbose_footer()
 
     log_file = ctx.run_dir / "stages" / "review.log"
 
-    review = agent.review(prompt, ctx.workstream.worktree, log_file)
+    review = agent.contextual_review(prompt, ctx.workstream.worktree, log_file)
 
     if ctx.verbose:
         _verbose_header("REVIEW RESULT")

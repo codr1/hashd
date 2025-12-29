@@ -115,9 +115,16 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
                         stdout_section = content.split("=== STDOUT ===")[1].split("=== STDERR ===")[0]
                         wrapper = json.loads(stdout_section.strip())
 
-                        # The result field is double-encoded JSON
+                        # The result field is double-encoded JSON, possibly wrapped in markdown
                         if "result" in wrapper and isinstance(wrapper["result"], str):
-                            review = json.loads(wrapper["result"])
+                            result_str = wrapper["result"]
+                            # Strip markdown code block if present
+                            if result_str.startswith("```"):
+                                result_str = result_str.split("\n", 1)[1]  # Remove first line
+                                if result_str.endswith("```"):
+                                    result_str = result_str[:-3]
+                                result_str = result_str.strip()
+                            review = json.loads(result_str)
                         else:
                             review = wrapper
 

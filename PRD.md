@@ -188,8 +188,20 @@ PROJECT_NAME=pickleicious
 REPO_PATH=/home/<user>/dev/pickleicious
 OPS_PATH=/home/<user>/dev/pickleicious.ops
 DEFAULT_BRANCH=main
+PROJECT_DESCRIPTION="Brief system description for agent context"
+TECH_PREFERRED="Go, HTMX, SQLite - use by default"
+TECH_ACCEPTABLE="JavaScript, npm - okay when needed"
+TECH_AVOID="Python, Ruby - don't introduce"
+```
 
-7.2 project_profile.md and project_profile.env
+**Tech Stack Fields:**
+- `TECH_PREFERRED`: Technologies agents should use by default
+- `TECH_ACCEPTABLE`: Technologies okay when needed, but prefer alternatives
+- `TECH_AVOID`: Technologies to avoid unless extraordinary justification
+
+These flow to both implementer and reviewer prompts to maintain stack consistency.
+
+### 7.2 project_profile.md and project_profile.env
 
 AOS must support a user interview step that writes these.
 
