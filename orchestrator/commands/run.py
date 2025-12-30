@@ -830,6 +830,8 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                 if status == "blocked":
                     if "human approval" in hr_notes.lower():
                         print(f"\nNext steps:")
+                        print(f"  wf show {ws_id}              # Review changes")
+                        print(f"  wf diff {ws_id}              # See the diff")
                         print(f"  wf approve {ws_id}")
                         print(f"  wf reject {ws_id} -f '...'")
                         print(f"  wf reject {ws_id} --reset")
@@ -879,6 +881,8 @@ def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, 
             if "human approval" in hr_notes.lower():
                 print("Result: waiting for human")
                 print(f"\nNext steps:")
+                print(f"  wf show {ws_id}              # Review changes")
+                print(f"  wf diff {ws_id}              # See the diff")
                 print(f"  wf approve {ws_id}")
                 print(f"  wf reject {ws_id} -f '...'")
                 print(f"  wf reject {ws_id} --reset")

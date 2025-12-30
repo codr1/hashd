@@ -9,6 +9,7 @@ Variables:
   - commit_id: e.g., COMMIT-MYWS-001
   - commit_title: Short title of the commit
   - commit_description: Detailed implementation guidance
+  - review_context_section: Previous review output (empty string if none)
   - conversation_history_section: Previous attempts (empty string if first attempt)
   - human_guidance_section: Human feedback if rejected (empty string if none)
 -->
@@ -31,4 +32,4 @@ Description:
 1. Make the necessary code changes using the preferred tech stack
 2. Do NOT create a git commit - the orchestrator handles commits after review
 3. If you encounter ambiguity or need clarification, stop and explain what you need
-{conversation_history_section}{human_guidance_section}
+{review_context_section}{conversation_history_section}{human_guidance_section}

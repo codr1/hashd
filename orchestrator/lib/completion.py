@@ -15,6 +15,33 @@ _wf_completions() {
     # Get ops dir from environment or default
     local ops_dir="${WF_OPS_DIR:-$(pwd)}"
 
+    # Flag completion - check if current word starts with -
+    if [[ "$cur" == -* ]]; then
+        local cmd="${words[1]}"
+        local flags=""
+        case "$cmd" in
+            run)      flags="--once --loop --verbose -v" ;;
+            reject)   flags="--feedback -f --reset" ;;
+            show)     flags="--brief -b" ;;
+            log)      flags="--since -s --limit -n --verbose -v --reverse -r --no-color" ;;
+            use)      flags="--clear" ;;
+            close)    flags="--force" ;;
+            merge)    flags="--push" ;;
+            open)     flags="--use --force" ;;
+            plan)
+                if [[ "${words[2]}" == "edit" ]]; then
+                    flags="--feedback -f"
+                elif [[ "${words[2]}" == "add" ]]; then
+                    flags="--description -d"
+                fi
+                ;;
+        esac
+        if [[ -n "$flags" ]]; then
+            COMPREPLY=($(compgen -W "$flags" -- "$cur"))
+            return
+        fi
+    fi
+
     case $cword in
         1)
             COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -188,8 +215,133 @@ _wf() {
                     fi
                     _describe -t plan_cmds 'plan subcommands' plan_cmds
                     _describe -t stories 'stories' stories
+                    # Flags for plan subcommands
+                    if [[ "$words[2]" == "edit" ]]; then
+                        _arguments '(-f --feedback)'{-f,--feedback}'[Feedback for refinement]:feedback:'
+                    elif [[ "$words[2]" == "add" ]]; then
+                        _arguments '(-d --description)'{-d,--description}'[Commit description]:description:'
+                    fi
                     ;;
-                run|show|use|close|approve)
+                run)
+                    _arguments \\
+                        '--once[Run single cycle]' \\
+                        '--loop[Run continuously]' \\
+                        '(-v --verbose)'{-v,--verbose}'[Verbose output]' \\
+                        '*:workstream:->ws'
+                    if [[ "$state" == "ws" ]]; then
+                        local -a ws
+                        if [[ -d "$ops_dir/workstreams" ]]; then
+                            ws=(${(@f)"$(find "$ops_dir/workstreams" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \\; 2>/dev/null)"})
+                        fi
+                        _describe -t ws 'workstreams' ws
+                    fi
+                    ;;
+                reject)
+                    _arguments \\
+                        '(-f --feedback)'{-f,--feedback}'[Feedback for iteration]:feedback:' \\
+                        '--reset[Discard changes and start fresh]' \\
+                        '*:workstream:->ws'
+                    if [[ "$state" == "ws" ]]; then
+                        local -a ws
+                        if [[ -d "$ops_dir/workstreams" ]]; then
+                            ws=(${(@f)"$(find "$ops_dir/workstreams" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \\; 2>/dev/null)"})
+                        fi
+                        _describe -t ws 'workstreams' ws
+                    fi
+                    ;;
+                show)
+                    _arguments \\
+                        '(-b --brief)'{-b,--brief}'[Brief output]' \\
+                        '*:workstream:->ws'
+                    if [[ "$state" == "ws" ]]; then
+                        local -a ws stories
+                        if [[ -d "$ops_dir/workstreams" ]]; then
+                            ws=(${(@f)"$(find "$ops_dir/workstreams" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \\; 2>/dev/null)"})
+                        fi
+                        if [[ -d "$ops_dir/projects" ]]; then
+                            stories=(${(@f)"$(find "$ops_dir/projects" -path '*/pm/stories/STORY-*.json' -exec basename {} .json \\; 2>/dev/null)"})
+                        fi
+                        _describe -t ws 'workstreams' ws
+                        _describe -t stories 'stories' stories
+                    fi
+                    ;;
+                log)
+                    _arguments \\
+                        '(-s --since)'{-s,--since}'[Show since date]:date:' \\
+                        '(-n --limit)'{-n,--limit}'[Limit entries]:count:' \\
+                        '(-v --verbose)'{-v,--verbose}'[Verbose output]' \\
+                        '(-r --reverse)'{-r,--reverse}'[Reverse order]' \\
+                        '--no-color[Disable color]' \\
+                        '*:workstream:->ws'
+                    if [[ "$state" == "ws" ]]; then
+                        local -a ws
+                        if [[ -d "$ops_dir/workstreams" ]]; then
+                            ws=(${(@f)"$(find "$ops_dir/workstreams" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \\; 2>/dev/null)"})
+                        fi
+                        _describe -t ws 'workstreams' ws
+                    fi
+                    ;;
+                use)
+                    _arguments \\
+                        '--clear[Clear current workstream]' \\
+                        '*:workstream:->ws'
+                    if [[ "$state" == "ws" ]]; then
+                        local -a ws stories
+                        if [[ -d "$ops_dir/workstreams" ]]; then
+                            ws=(${(@f)"$(find "$ops_dir/workstreams" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \\; 2>/dev/null)"})
+                        fi
+                        if [[ -d "$ops_dir/projects" ]]; then
+                            stories=(${(@f)"$(find "$ops_dir/projects" -path '*/pm/stories/STORY-*.json' -exec basename {} .json \\; 2>/dev/null)"})
+                        fi
+                        _describe -t ws 'workstreams' ws
+                        _describe -t stories 'stories' stories
+                    fi
+                    ;;
+                close)
+                    _arguments \\
+                        '--force[Force close]' \\
+                        '*:workstream:->ws'
+                    if [[ "$state" == "ws" ]]; then
+                        local -a ws stories
+                        if [[ -d "$ops_dir/workstreams" ]]; then
+                            ws=(${(@f)"$(find "$ops_dir/workstreams" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \\; 2>/dev/null)"})
+                        fi
+                        if [[ -d "$ops_dir/projects" ]]; then
+                            stories=(${(@f)"$(find "$ops_dir/projects" -path '*/pm/stories/STORY-*.json' -exec basename {} .json \\; 2>/dev/null)"})
+                        fi
+                        _describe -t ws 'workstreams' ws
+                        _describe -t stories 'stories' stories
+                    fi
+                    ;;
+                merge)
+                    _arguments \\
+                        '--push[Push after merge]' \\
+                        '*:workstream:->ws'
+                    if [[ "$state" == "ws" ]]; then
+                        local -a ws
+                        if [[ -d "$ops_dir/workstreams" ]]; then
+                            ws=(${(@f)"$(find "$ops_dir/workstreams" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \\; 2>/dev/null)"})
+                        fi
+                        _describe -t ws 'workstreams' ws
+                    fi
+                    ;;
+                open)
+                    _arguments \\
+                        '--use[Set as current after opening]' \\
+                        '--force[Force open]' \\
+                        '*:workstream:->ws'
+                    if [[ "$state" == "ws" ]]; then
+                        local -a archived
+                        if [[ -d "$ops_dir/workstreams/_closed" ]]; then
+                            archived+=(${(@f)"$(find "$ops_dir/workstreams/_closed" -mindepth 1 -maxdepth 1 -type d -exec basename {} \\; 2>/dev/null)"})
+                        fi
+                        if [[ -d "$ops_dir/workstreams/_merged" ]]; then
+                            archived+=(${(@f)"$(find "$ops_dir/workstreams/_merged" -mindepth 1 -maxdepth 1 -type d -exec basename {} \\; 2>/dev/null)"})
+                        fi
+                        _describe -t archived 'archived workstreams' archived
+                    fi
+                    ;;
+                approve)
                     local -a ws stories
                     if [[ -d "$ops_dir/workstreams" ]]; then
                         ws=(${(@f)"$(find "$ops_dir/workstreams" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \\; 2>/dev/null)"})
@@ -200,22 +352,12 @@ _wf() {
                     _describe -t ws 'workstreams' ws
                     _describe -t stories 'stories' stories
                     ;;
-                merge|conflicts|refresh|log|review|watch|reject)
+                merge|conflicts|refresh|review|watch)
                     local -a ws
                     if [[ -d "$ops_dir/workstreams" ]]; then
                         ws=(${(@f)"$(find "$ops_dir/workstreams" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \\; 2>/dev/null)"})
                     fi
                     _describe -t ws 'workstreams' ws
-                    ;;
-                open)
-                    local -a archived
-                    if [[ -d "$ops_dir/workstreams/_closed" ]]; then
-                        archived+=(${(@f)"$(find "$ops_dir/workstreams/_closed" -mindepth 1 -maxdepth 1 -type d -exec basename {} \\; 2>/dev/null)"})
-                    fi
-                    if [[ -d "$ops_dir/workstreams/_merged" ]]; then
-                        archived+=(${(@f)"$(find "$ops_dir/workstreams/_merged" -mindepth 1 -maxdepth 1 -type d -exec basename {} \\; 2>/dev/null)"})
-                    fi
-                    _describe -t archived 'archived workstreams' archived
                     ;;
             esac
             ;;

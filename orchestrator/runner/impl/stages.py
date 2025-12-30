@@ -35,6 +35,62 @@ def _verbose_footer():
     print('='*60 + "\n")
 
 
+def _load_last_review_output(ctx: RunContext) -> dict | None:
+    """Load the most recent review output for context."""
+    runs_dir = ctx.ops_dir / "runs"
+    if not runs_dir.exists():
+        return None
+
+    if not ctx.workstream:
+        return None
+
+    ws_id = ctx.workstream.id
+
+    # Find most recent run for this workstream
+    ws_runs = sorted(
+        [d for d in runs_dir.iterdir() if ws_id in d.name],
+        key=lambda d: d.stat().st_mtime,
+        reverse=True
+    )
+    for run_dir in ws_runs:
+        review_file = run_dir / "claude_review.json"
+        if review_file.exists():
+            return json.loads(review_file.read_text())
+    return None
+
+
+def _format_review_content(review: dict) -> str:
+    """Format review output as a readable string."""
+    lines = [f"**Decision:** {review.get('decision', 'unknown')}"]
+
+    blockers = review.get('blockers', [])
+    if blockers:
+        lines.append("\n**Blockers:**")
+        for b in blockers:
+            if isinstance(b, dict):
+                lines.append(f"- [{b.get('severity', '?')}] {b.get('file', '?')}:{b.get('line', '?')} - {b.get('issue', '?')}")
+            else:
+                lines.append(f"- {b}")
+
+    required = review.get('required_changes', [])
+    if required:
+        lines.append("\n**Required Changes:**")
+        for c in required:
+            lines.append(f"- {c}")
+
+    suggestions = review.get('suggestions', [])
+    if suggestions:
+        lines.append("\n**Suggestions:**")
+        for s in suggestions:
+            lines.append(f"- {s}")
+
+    notes = review.get('notes', '')
+    if notes:
+        lines.append(f"\n**Notes:** {notes}")
+
+    return "\n".join(lines)
+
+
 def _print_review_result(review):
     """Print formatted review result for verbose output."""
     print(f"Decision: {review.decision}")
@@ -201,6 +257,16 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     if human_feedback:
         human_guidance_section = f"## HUMAN GUIDANCE\n\n{human_feedback}\n"
 
+    # Build review context section from last review output
+    review_context_section = ""
+    last_review = _load_last_review_output(ctx)
+    if last_review:
+        review_content = _format_review_content(last_review)
+        review_context_section = render_prompt(
+            "implement_review_context",
+            review_content=review_content
+        )
+
     # Build the full prompt from template
     prompt = render_prompt(
         "implement",
@@ -211,6 +277,7 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         commit_id=ctx.microcommit.id,
         commit_title=ctx.microcommit.title,
         commit_description=ctx.microcommit.block_content,
+        review_context_section=review_context_section,
         conversation_history_section=conversation_history_section,
         human_guidance_section=human_guidance_section
     )
