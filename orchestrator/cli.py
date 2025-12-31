@@ -325,11 +325,11 @@ def main():
     p_plan_edit.add_argument('-f', '--feedback', help='Feedback to refine the story')
     p_plan_edit.set_defaults(func=cmd_plan, new=False, clone=False, edit=True)
 
-    # wf plan add <ws_id> "title" [-d "description"]
+    # wf plan add <ws_id> [title] [-f "feedback"]
     p_plan_add = plan_sub.add_parser('add', help='Add micro-commit to existing workstream')
     p_plan_add.add_argument('ws_id', help='Workstream ID')
-    p_plan_add.add_argument('title', help='Commit title')
-    p_plan_add.add_argument('-d', '--description', help='Commit description', default='')
+    p_plan_add.add_argument('title', nargs='?', help='Commit title (optional if -f provided)')
+    p_plan_add.add_argument('-f', '--feedback', help='Feedback/description for the commit', default='')
     p_plan_add.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, add=True)
 
     # wf list

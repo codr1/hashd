@@ -31,7 +31,7 @@ _wf_completions() {
                 if [[ "${words[2]}" == "edit" ]]; then
                     flags="--feedback -f"
                 elif [[ "${words[2]}" == "add" ]]; then
-                    flags="--description -d"
+                    flags="--feedback -f"
                 fi
                 ;;
         esac
@@ -218,7 +218,7 @@ _wf() {
                     if [[ "$words[2]" == "edit" ]]; then
                         _arguments '(-f --feedback)'{-f,--feedback}'[Feedback for refinement]:feedback:'
                     elif [[ "$words[2]" == "add" ]]; then
-                        _arguments '(-d --description)'{-d,--description}'[Commit description]:description:'
+                        _arguments '(-f --feedback)'{-f,--feedback}'[Feedback/instruction]:feedback:'
                     fi
                     ;;
                 run)

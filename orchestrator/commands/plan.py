@@ -193,8 +193,20 @@ def cmd_plan_edit(args, ops_dir: Path, project_config: ProjectConfig, story_id: 
 def cmd_plan_add(args, ops_dir: Path, project_config: ProjectConfig):
     """Add a micro-commit to an existing workstream's plan.md."""
     ws_id = args.ws_id
-    title = args.title
-    description = getattr(args, 'description', '') or ''
+    title = getattr(args, 'title', None)
+    feedback = getattr(args, 'feedback', '') or ''
+
+    # If no title but feedback provided, use feedback as the instruction
+    if not title and feedback:
+        title = feedback
+        feedback = ''
+    elif not title:
+        print("ERROR: Provide a title or use -f for feedback")
+        print("  wf plan add <ws_id> \"instruction\"")
+        print("  wf plan add <ws_id> -f \"instruction\"")
+        return 1
+
+    description = feedback
 
     # Validate workstream exists
     workstream_dir = ops_dir / "workstreams" / ws_id

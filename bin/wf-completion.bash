@@ -26,7 +26,7 @@ _wf_completions() {
                 if [[ "${words[2]}" == "edit" ]]; then
                     flags="--feedback -f"
                 elif [[ "${words[2]}" == "add" ]]; then
-                    flags="--description -d"
+                    flags="--feedback -f"
                 fi
                 ;;
         esac
