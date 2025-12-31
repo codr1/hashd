@@ -37,7 +37,7 @@ def _verbose_footer():
 
 def _load_last_review_output(ctx: RunContext) -> dict | None:
     """Load the most recent review output for context."""
-    runs_dir = ctx.ops_dir / "runs"
+    runs_dir = ctx.run_dir.parent  # run_dir is {ops_dir}/runs/{run_id}
     if not runs_dir.exists():
         return None
 

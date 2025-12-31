@@ -84,17 +84,8 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
 
         if diff_result.stdout.strip():
             print(diff_result.stdout)
-
-            # Ask if they want full diff
-            if not args.brief:
-                print()
-                print("Full Diff")
-                print("-" * 40)
-                full_diff = subprocess.run(
-                    ["git", "-C", str(workstream.worktree), "diff", "HEAD"],
-                    capture_output=True, text=True
-                )
-                print(full_diff.stdout)
+            print(f"  Use 'wf diff {args.id}' for full diff")
+            print()
         else:
             print("  No uncommitted changes")
             print()
@@ -186,6 +177,17 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
                             print()
                             print("  Notes:")
                             print(f"    {notes}")
+
+                        # Show next steps based on decision
+                        print()
+                        print("Next Steps")
+                        print("-" * 40)
+                        if decision == "approve":
+                            print(f"  wf merge {args.id}                    # Merge to main")
+                            print(f"  wf plan add {args.id} \"...\"          # Address suggestions or add requirements")
+                        else:
+                            print(f"  wf run {args.id}                      # Retry implementation")
+                            print(f"  wf plan add {args.id} \"...\"          # Add guidance for retry")
 
                 except (json.JSONDecodeError, KeyError, IndexError):
                     print("  (Unable to parse review data)")

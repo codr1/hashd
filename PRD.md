@@ -398,7 +398,8 @@ wf review <id>              # Run final AI review
 wf reject <id> [-f "..."]   # Iterate on current changes
 wf reject <id> --reset      # Discard changes and start fresh
 wf open <id>                # Resurrect archived workstream
-wf archive                  # List archived workstreams
+wf archive work             # List archived workstreams
+wf archive stories          # List archived stories
 wf clarify <subcommand>     # Manage clarifications
 ```
 

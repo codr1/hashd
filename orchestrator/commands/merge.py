@@ -19,6 +19,11 @@ from orchestrator.lib.config import (
 )
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit
 from orchestrator.agents.codex import CodexAgent
+from orchestrator.pm.stories import (
+    find_story_by_workstream,
+    mark_story_implemented,
+    archive_story,
+)
 
 
 MAX_CONFLICT_RESOLUTION_ATTEMPTS = 3
@@ -390,6 +395,14 @@ def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
     # Clear context if this was the current workstream
     if get_current_workstream(ops_dir) == ws.id:
         clear_current_workstream(ops_dir)
+
+    # Archive associated story
+    project_dir = ops_dir / "projects" / project_config.name
+    story = find_story_by_workstream(project_dir, ws.id)
+    if story:
+        mark_story_implemented(project_dir, story.id)
+        if archive_story(project_dir, story.id):
+            print(f"  Story '{story.id}' archived")
 
     print(f"\nWorkstream '{ws.id}' merged and archived.")
     print(f"  Branch '{ws.branch}' preserved in git history")

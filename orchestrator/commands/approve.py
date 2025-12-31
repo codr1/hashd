@@ -24,6 +24,8 @@ def cmd_approve(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     if workstream.status != "awaiting_human_review":
         print(f"ERROR: Workstream is not awaiting review (status: {workstream.status})")
+        print(f"  Try: wf run {ws_id}              # Continue implementation")
+        print(f"       wf plan add {ws_id} \"...\"   # Add new tasks")
         return 2
 
     # Write approval file
@@ -64,6 +66,8 @@ def cmd_reject(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     if workstream.status != "awaiting_human_review":
         print(f"ERROR: Workstream is not awaiting review (status: {workstream.status})")
+        print(f"  Try: wf run {ws_id}              # Continue implementation")
+        print(f"       wf plan add {ws_id} \"...\"   # Add new tasks")
         return 2
 
     # Write rejection file
@@ -119,6 +123,8 @@ def cmd_reset(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     if workstream.status != "awaiting_human_review":
         print(f"ERROR: Workstream is not awaiting review (status: {workstream.status})")
+        print(f"  Try: wf run {ws_id}              # Continue implementation")
+        print(f"       wf plan add {ws_id} \"...\"   # Add new tasks")
         return 2
 
     # Write reset file - discards changes, starts fresh

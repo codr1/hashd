@@ -250,6 +250,53 @@ def mark_story_implemented(project_dir: Path, story_id: str) -> Optional[Story]:
     })
 
 
+def find_story_by_workstream(project_dir: Path, workstream_id: str) -> Optional[Story]:
+    """Find a story by its linked workstream ID.
+
+    Args:
+        project_dir: Project directory
+        workstream_id: Workstream ID to search for
+
+    Returns:
+        Story if found, None otherwise
+    """
+    for story in list_stories(project_dir):
+        if story.workstream == workstream_id:
+            return story
+    return None
+
+
+def archive_story(project_dir: Path, story_id: str) -> bool:
+    """Archive a story to _implemented/ directory.
+
+    Args:
+        project_dir: Project directory
+        story_id: Story ID to archive
+
+    Returns:
+        True if archived, False otherwise
+    """
+    stories_dir = get_stories_dir(project_dir)
+    implemented_dir = stories_dir / "_implemented"
+
+    json_path = stories_dir / f"{story_id}.json"
+    md_path = stories_dir / f"{story_id}.md"
+
+    if not json_path.exists():
+        return False
+
+    implemented_dir.mkdir(exist_ok=True)
+
+    # Move JSON file
+    json_path.rename(implemented_dir / json_path.name)
+
+    # Move markdown file if exists
+    if md_path.exists():
+        md_path.rename(implemented_dir / md_path.name)
+
+    return True
+
+
 def clone_story(project_dir: Path, story_id: str) -> Optional[Story]:
     """Clone a story to create an editable copy.
 

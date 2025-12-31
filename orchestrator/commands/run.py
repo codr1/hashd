@@ -42,7 +42,7 @@ from orchestrator.runner.impl.fix_generation import generate_fix_commits
 from orchestrator.runner.impl.breakdown import append_commits_to_plan
 
 
-MAX_REVIEW_ATTEMPTS = 3
+MAX_REVIEW_ATTEMPTS = 5
 
 
 def create_workstream_from_story(
@@ -837,7 +837,11 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                         print(f"  wf reject {ws_id} --reset")
                 elif status == "failed":
                     print(f"\nFailed at stage: {failed_stage or 'unknown'}")
-                    print(f"  Check: {ctx.run_dir}/stages/{failed_stage}.log")
+                    # Show error details inline from result.json
+                    stage_notes = ctx.stages.get(failed_stage, {}).get("notes", "")
+                    if stage_notes:
+                        print(f"  Error: {stage_notes}")
+                    print(f"  Log: {ctx.run_dir}/stages/{failed_stage}.log")
 
                 return exit_code
 

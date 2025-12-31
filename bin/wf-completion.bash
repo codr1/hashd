@@ -4,7 +4,7 @@ _wf_completions() {
 
     local commands="plan list use show log review watch refresh conflicts run close merge archive open approve reject clarify"
     local plan_cmds="new clone add edit"
-    local archive_cmds="delete"
+    local archive_cmds="work stories delete"
     local clarify_cmds="list show answer ask"
 
     # Get ops dir from environment or default
@@ -17,7 +17,6 @@ _wf_completions() {
         case "$cmd" in
             run)      flags="--once --loop --verbose -v" ;;
             reject)   flags="--feedback -f --reset" ;;
-            show)     flags="--brief -b" ;;
             log)      flags="--since -s --limit -n --verbose -v --reverse -r --no-color" ;;
             use)      flags="--clear" ;;
             close)    flags="--force" ;;

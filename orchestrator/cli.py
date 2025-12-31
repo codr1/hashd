@@ -184,6 +184,16 @@ def cmd_archive(args):
     return cmd_archive_module.cmd_archive(args, ops_dir, project_config)
 
 
+def cmd_archive_work(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_archive_module.cmd_archive_work(args, ops_dir, project_config)
+
+
+def cmd_archive_stories(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_archive_module.cmd_archive_stories(args, ops_dir, project_config)
+
+
 def cmd_archive_delete(args):
     project_config, ops_dir = get_project_config(args)
     return cmd_archive_module.cmd_archive_delete(args, ops_dir, project_config)
@@ -340,7 +350,6 @@ def main():
     # wf show
     p_show = subparsers.add_parser('show', help='Show story or workstream details')
     p_show.add_argument('id', nargs='?', help='Story ID (STORY-xxxx) or workstream ID')
-    p_show.add_argument('--brief', '-b', action='store_true', help='Show only diff stats, not full diff')
     p_show.set_defaults(func=cmd_show)
 
     # wf log
@@ -394,9 +403,17 @@ def main():
     p_merge.set_defaults(func=cmd_merge)
 
     # wf archive
-    p_archive = subparsers.add_parser('archive', help='List archived workstreams')
+    p_archive = subparsers.add_parser('archive', help='View archived work and stories')
     p_archive.set_defaults(func=cmd_archive)
     archive_sub = p_archive.add_subparsers(dest='archive_cmd')
+
+    # wf archive work
+    p_archive_work = archive_sub.add_parser('work', help='List archived workstreams')
+    p_archive_work.set_defaults(func=cmd_archive_work)
+
+    # wf archive stories
+    p_archive_stories = archive_sub.add_parser('stories', help='List archived stories')
+    p_archive_stories.set_defaults(func=cmd_archive_stories)
 
     # wf archive delete
     p_archive_delete = archive_sub.add_parser('delete', help='Permanently delete archived workstream')

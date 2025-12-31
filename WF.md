@@ -285,7 +285,8 @@
 | Info | `wf list` | List all workstreams |
 | Info | `wf clarify` | List pending clarification requests |
 | Manage | `wf close` | Abandon workstream |
-| Manage | `wf archive` | List archived |
+| Manage | `wf archive work` | List archived workstreams |
+| Manage | `wf archive stories` | List archived stories |
 | Manage | `wf open <id>` | Resurrect archived |
 
 ---

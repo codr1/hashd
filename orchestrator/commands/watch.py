@@ -266,6 +266,24 @@ class WatchApp(App):
 
     def refresh_data(self) -> None:
         """Reload workstream state from files."""
+        # Check if workstream was merged or closed
+        if not self.workstream_dir.exists():
+            ws_id = self.workstream_dir.name
+            merged_dir = self.ops_dir / "workstreams" / "_merged" / ws_id
+            closed_dir = self.ops_dir / "workstreams" / "_closed" / ws_id
+
+            if merged_dir.exists():
+                self.notify("Workstream merged successfully!", severity="information")
+                self.exit(message=f"Workstream '{ws_id}' has been merged.")
+            elif closed_dir.exists():
+                self.notify("Workstream closed.", severity="warning")
+                self.exit(message=f"Workstream '{ws_id}' has been closed.")
+            else:
+                if not self._load_error_notified:
+                    self.notify("Workstream directory not found", severity="error")
+                    self._load_error_notified = True
+            return
+
         try:
             self.workstream = load_workstream(self.workstream_dir)
             self._load_error_notified = False

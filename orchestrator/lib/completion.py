@@ -9,7 +9,7 @@ _wf_completions() {
 
     local commands="plan list use show log review watch refresh conflicts run close merge archive open approve reject clarify"
     local plan_cmds="new clone add edit"
-    local archive_cmds="delete"
+    local archive_cmds="work stories delete"
     local clarify_cmds="list show answer ask"
 
     # Get ops dir from environment or default
@@ -22,7 +22,6 @@ _wf_completions() {
         case "$cmd" in
             run)      flags="--once --loop --verbose -v" ;;
             reject)   flags="--feedback -f --reset" ;;
-            show)     flags="--brief -b" ;;
             log)      flags="--since -s --limit -n --verbose -v --reverse -r --no-color" ;;
             use)      flags="--clear" ;;
             close)    flags="--force" ;;
@@ -187,7 +186,7 @@ _wf() {
         'run:Run cycle'
         'close:Close story or workstream'
         'merge:Merge workstream to main'
-        'archive:List archived workstreams'
+        'archive:View archived work and stories'
         'open:Resurrect archived workstream'
         'approve:Accept story or approve workstream gate'
         'reject:Reject and iterate on current changes'
@@ -251,7 +250,6 @@ _wf() {
                     ;;
                 show)
                     _arguments \\
-                        '(-b --brief)'{-b,--brief}'[Brief output]' \\
                         '*:workstream:->ws'
                     if [[ "$state" == "ws" ]]; then
                         local -a ws stories

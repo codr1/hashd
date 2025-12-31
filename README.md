@@ -192,7 +192,8 @@ wf show other_feature  # Operates on other_feature, context unchanged
 | `wf reject [id] --reset` | Discard changes, start fresh |
 | `wf refresh [id]` | Refresh touched files |
 | `wf conflicts [id]` | Check for file conflicts |
-| `wf archive` | List archived workstreams |
+| `wf archive work` | List archived workstreams |
+| `wf archive stories` | List archived stories |
 | `wf open <id>` | Resurrect archived workstream |
 | `wf clarify` | Manage clarification requests |
 
