@@ -108,6 +108,20 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     repo_path = project_config.repo_path
 
+    # 3.5 Check main repo for uncommitted changes BEFORE checkout
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "status", "--porcelain"],
+        capture_output=True, text=True
+    )
+    if result.stdout.strip():
+        print("ERROR: Main repo has uncommitted changes - cannot merge")
+        print(result.stdout)
+        print()
+        print("Options:")
+        print(f"  cd {repo_path} && git stash     # Save changes for later")
+        print(f"  cd {repo_path} && git checkout . # Discard changes")
+        return 2
+
     # 4. Checkout main branch
     print(f"Checking out {project_config.default_branch}...")
     result = subprocess.run(

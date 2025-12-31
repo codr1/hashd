@@ -762,6 +762,18 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     elif getattr(args, 'supervised', False):
         profile.supervised_mode = True
 
+    # Warn if main repo has uncommitted changes (will block merges)
+    result = subprocess.run(
+        ["git", "-C", str(project_config.repo_path), "status", "--porcelain"],
+        capture_output=True, text=True
+    )
+    if result.stdout.strip():
+        print("WARNING: Main repo has uncommitted changes")
+        dirty_files = result.stdout.strip()[:500]
+        print(dirty_files)
+        print(f"\nThis may block merges. Clean up: cd {project_config.repo_path} && git status")
+        print()
+
     # Clean up any stale lock files from crashed processes
     cleanup_stale_lock_files(ops_dir)
 

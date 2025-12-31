@@ -2,6 +2,7 @@
 wf list - List stories and workstreams.
 """
 
+import subprocess
 from pathlib import Path
 from orchestrator.lib.config import load_workstream
 from orchestrator.lib.validate import ValidationError
@@ -79,5 +80,15 @@ def cmd_list(args, ops_dir: Path, project_config) -> int:
         print("Get started:")
         print("  wf plan       - Plan stories from REQS.md")
         print("  wf plan new   - Create ad-hoc story")
+
+    # Warn if main repo has uncommitted changes
+    result = subprocess.run(
+        ["git", "-C", str(project_config.repo_path), "status", "--porcelain"],
+        capture_output=True, text=True
+    )
+    if result.stdout.strip():
+        print()
+        print("[!] WARNING: Main repo has uncommitted changes - may block merges")
+        print(f"    cd {project_config.repo_path} && git status")
 
     return 0

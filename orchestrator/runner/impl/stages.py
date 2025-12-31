@@ -212,6 +212,11 @@ def stage_select(ctx: RunContext):
         ctx.log("All micro-commits complete")
         raise StageBlocked("select", "all_complete")
 
+    # Transition from awaiting_human_review when we have work to do
+    if ctx.workstream.status == "awaiting_human_review":
+        ctx.log("Pending commits found - transitioning to implementing")
+        _update_workstream_status(ctx.workstream_dir, "implementing")
+
     ctx.microcommit = next_commit
     ctx.log(f"Selected micro-commit: {next_commit.id} - {next_commit.title}")
 

@@ -193,15 +193,22 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
                     print("  (Unable to parse review data)")
                     print()
 
-    # Show available actions
+    # Show available actions (only for micro-commit review, not final review)
     if workstream.status == "awaiting_human_review":
-        print()
-        print("Actions")
-        print("-" * 40)
-        print("  wf approve {id}            - Approve and commit")
-        print("  wf reject {id}             - Iterate on current changes")
-        print("  wf reject {id} -f '...'    - Iterate with feedback")
-        print("  wf reject {id} --reset     - Discard changes, start fresh")
+        # Check if all commits are done - if so, we're at final review, not micro-commit review
+        plan_path = workstream_dir / "plan.md"
+        commits = parse_plan(str(plan_path)) if plan_path.exists() else []
+        all_done = commits and all(c.done for c in commits)
+
+        if not all_done:
+            # Still have pending micro-commits - show approval actions
+            print()
+            print("Actions")
+            print("-" * 40)
+            print(f"  wf approve {args.id}            - Approve and commit")
+            print(f"  wf reject {args.id}             - Iterate on current changes")
+            print(f"  wf reject {args.id} -f '...'    - Iterate with feedback")
+            print(f"  wf reject {args.id} --reset     - Discard changes, start fresh")
 
     return 0
 
