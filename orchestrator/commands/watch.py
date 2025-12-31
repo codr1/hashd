@@ -1,26 +1,39 @@
 """
-wf watch - Single workstream control center.
+wf watch - Workstream monitoring and control.
 
-Interactive TUI for monitoring and controlling a workstream.
+Interactive TUI for monitoring and controlling workstreams.
 UI layer on hashd - observes artifacts, issues commands.
+
+Modes:
+- Dashboard Mode (no args): Shows all active workstreams, select with 1-9
+- Detail Mode (with ws id or from dashboard): Single workstream view
 """
 
 import json
+import logging
 import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
 from textual.reactive import reactive
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Header, Input, Label, Static
 
-from orchestrator.lib.config import ProjectConfig, Workstream, load_workstream
+from orchestrator.lib.config import (
+    ProjectConfig,
+    Workstream,
+    get_active_workstreams,
+    load_workstream,
+)
+from orchestrator.lib.planparse import parse_plan
 from orchestrator.lib.timeline import (
     EVENT_COLORS,
     EVENT_SYMBOLS,
@@ -36,6 +49,7 @@ TIMELINE_DISPLAY_COUNT = 6
 TIMELINE_RECENT_LIMIT = 10
 TIMELINE_FULL_LIMIT = 50
 TIMELINE_LOOKBACK_DAYS = 1
+MAX_SELECTABLE_WORKSTREAMS = 9
 
 
 def _format_event_rich(event: TimelineEvent) -> str:
@@ -58,6 +72,36 @@ def _format_event_rich_short(event: TimelineEvent) -> str:
     if color:
         return f"  [dim]{ts_str}[/dim] [{color}][{symbol}][/{color}] {event.summary}"
     return f"  [dim]{ts_str}[/dim] [{symbol}] {event.summary}"
+
+
+def _get_workstream_progress(workstream_dir: Path) -> tuple[int, int]:
+    """Get (done, total) microcommit progress for a workstream."""
+    plan_path = workstream_dir / "plan.md"
+    if not plan_path.exists():
+        return (0, 0)
+    try:
+        commits = parse_plan(str(plan_path))
+        done = sum(1 for c in commits if c.done)
+        return (done, len(commits))
+    except Exception as e:
+        logger.debug(f"Failed to parse plan at {plan_path}: {e}")
+        return (0, 0)
+
+
+def _get_workstream_stage(ws: Workstream, workstream_dir: Path) -> str:
+    """Get the current stage of a workstream."""
+    plan_path = workstream_dir / "plan.md"
+    if not plan_path.exists():
+        return "BREAKDOWN"
+
+    if ws.status == "awaiting_human_review":
+        return "REVIEW"
+    elif ws.status == "complete":
+        return "COMPLETE"
+    elif ws.status == "blocked":
+        return "BLOCKED"
+    else:
+        return "IMPLEMENT"
 
 
 class FeedbackModal(ModalScreen[str]):
@@ -119,6 +163,153 @@ class ContentScreen(ModalScreen):
         self.app.pop_screen()
 
 
+# --- Dashboard Mode ---
+
+
+class DashboardWidget(Static):
+    """Displays list of active workstreams."""
+
+    workstreams: reactive[list] = reactive(list, always_update=True)
+
+    def render(self) -> str:
+        if not self.workstreams:
+            return "[dim]No active workstreams[/dim]\n\nUse 'wf run <story>' to start one."
+
+        lines = ["[bold]Active Workstreams[/bold]\n"]
+        for i, (ws, ws_dir) in enumerate(self.workstreams[:MAX_SELECTABLE_WORKSTREAMS], 1):
+            stage = _get_workstream_stage(ws, ws_dir)
+            done, total = _get_workstream_progress(ws_dir)
+
+            # Format progress
+            if total > 0:
+                progress = f"{done}/{total}"
+            else:
+                progress = "0/?"
+
+            # Format status indicator
+            if ws.status == "awaiting_human_review":
+                status_str = "[yellow]review[/yellow]"
+            elif ws.status == "complete":
+                status_str = "[green]done[/green]"
+            elif ws.status == "blocked":
+                status_str = "[red]blocked[/red]"
+            else:
+                status_str = "[cyan]running[/cyan]"
+
+            lines.append(
+                f"  [{i}] {ws.id:<20} {stage:<10} {progress:<6} {status_str}"
+            )
+
+        lines.append("\n[dim]Press 1-9 to view details, q to quit[/dim]")
+        return "\n".join(lines)
+
+
+class DashboardScreen(Screen):
+    """Dashboard mode - shows all active workstreams."""
+
+    BINDINGS = [
+        Binding("1", "select_1", "Select 1", show=False),
+        Binding("2", "select_2", "Select 2", show=False),
+        Binding("3", "select_3", "Select 3", show=False),
+        Binding("4", "select_4", "Select 4", show=False),
+        Binding("5", "select_5", "Select 5", show=False),
+        Binding("6", "select_6", "Select 6", show=False),
+        Binding("7", "select_7", "Select 7", show=False),
+        Binding("8", "select_8", "Select 8", show=False),
+        Binding("9", "select_9", "Select 9", show=False),
+        Binding("q", "quit", "Quit"),
+    ]
+
+    CSS = """
+    #dashboard-container {
+        layout: vertical;
+        padding: 1;
+    }
+
+    #dashboard-box {
+        border: solid green;
+        padding: 1;
+        height: auto;
+    }
+
+    DashboardWidget {
+        height: auto;
+    }
+    """
+
+    def __init__(self, ops_dir: Path, project_config: ProjectConfig) -> None:
+        super().__init__()
+        self.ops_dir = ops_dir
+        self.project_config = project_config
+        self.workstreams: list[tuple[Workstream, Path]] = []
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Container(
+            Container(DashboardWidget(id="dashboard"), id="dashboard-box"),
+            id="dashboard-container",
+        )
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "wf watch"
+        self.sub_title = "Dashboard"
+        self.refresh_data()
+        self.set_interval(POLL_INTERVAL_SECONDS, self.refresh_data)
+
+    def refresh_data(self) -> None:
+        """Reload workstream list."""
+        workstreams = get_active_workstreams(self.ops_dir)
+        self.workstreams = [
+            (ws, self.ops_dir / "workstreams" / ws.id)
+            for ws in workstreams
+        ]
+
+        dashboard = self.query_one("#dashboard", DashboardWidget)
+        dashboard.workstreams = self.workstreams
+
+    def _select_workstream(self, index: int) -> None:
+        """Switch to detail mode for selected workstream."""
+        if index < len(self.workstreams):
+            _, ws_dir = self.workstreams[index]
+            self.app.push_screen(
+                DetailScreen(ws_dir, self.ops_dir, self.project_config)
+            )
+
+    def action_select_1(self) -> None:
+        self._select_workstream(0)
+
+    def action_select_2(self) -> None:
+        self._select_workstream(1)
+
+    def action_select_3(self) -> None:
+        self._select_workstream(2)
+
+    def action_select_4(self) -> None:
+        self._select_workstream(3)
+
+    def action_select_5(self) -> None:
+        self._select_workstream(4)
+
+    def action_select_6(self) -> None:
+        self._select_workstream(5)
+
+    def action_select_7(self) -> None:
+        self._select_workstream(6)
+
+    def action_select_8(self) -> None:
+        self._select_workstream(7)
+
+    def action_select_9(self) -> None:
+        self._select_workstream(8)
+
+    def action_quit(self) -> None:
+        self.app.exit()
+
+
+# --- Detail Mode ---
+
+
 class StatusWidget(Static):
     """Displays workstream status header."""
 
@@ -162,8 +353,8 @@ class TimelineWidget(Static):
         return "\n".join(lines)
 
 
-class WatchApp(App):
-    """Main watch TUI application."""
+class DetailScreen(Screen):
+    """Detail mode - single workstream view."""
 
     CSS = """
     #main-container {
@@ -191,24 +382,6 @@ class WatchApp(App):
         padding: 0 1;
     }
 
-    #feedback-dialog {
-        align: center middle;
-        width: 60;
-        height: auto;
-        border: thick $primary;
-        background: $surface;
-        padding: 1 2;
-    }
-
-    #feedback-label {
-        margin-bottom: 1;
-    }
-
-    #feedback-hint {
-        margin-top: 1;
-        color: $text-muted;
-    }
-
     #content-scroll {
         height: 1fr;
     }
@@ -227,8 +400,10 @@ class WatchApp(App):
     """
 
     BINDINGS = [
+        Binding("escape", "back_to_dashboard", "Back", show=True),
         Binding("a", "approve", "Approve", show=False),
         Binding("r", "reject", "Reject", show=False),
+        Binding("e", "edit", "Edit", show=False),
         Binding("R", "reset", "Reset", show=False),
         Binding("d", "show_diff", "Diff", show=False),
         Binding("l", "show_log", "Log", show=False),
@@ -241,11 +416,13 @@ class WatchApp(App):
         workstream_dir: Path,
         ops_dir: Path,
         project_config: ProjectConfig,
+        is_root: bool = False,
     ) -> None:
         super().__init__()
         self.workstream_dir = workstream_dir
         self.ops_dir = ops_dir
         self.project_config = project_config
+        self.is_root = is_root  # True if launched directly with workstream ID
         self.workstream: Optional[Workstream] = None
         self.last_run: Optional[dict] = None
         self._load_error_notified = False
@@ -274,10 +451,16 @@ class WatchApp(App):
 
             if merged_dir.exists():
                 self.notify("Workstream merged successfully!", severity="information")
-                self.exit(message=f"Workstream '{ws_id}' has been merged.")
+                if self.is_root:
+                    self.app.exit(message=f"Workstream '{ws_id}' has been merged.")
+                else:
+                    self.app.pop_screen()
             elif closed_dir.exists():
                 self.notify("Workstream closed.", severity="warning")
-                self.exit(message=f"Workstream '{ws_id}' has been closed.")
+                if self.is_root:
+                    self.app.exit(message=f"Workstream '{ws_id}' has been closed.")
+                else:
+                    self.app.pop_screen()
             else:
                 if not self._load_error_notified:
                     self.notify("Workstream directory not found", severity="error")
@@ -361,16 +544,26 @@ class WatchApp(App):
             return ""
 
         status = self.workstream.status
+        actions = []
+
+        # Back action if not root
+        if not self.is_root:
+            actions.append("[Esc] back")
 
         if status == "awaiting_human_review":
-            actions = ["[a]pprove", "[r]eject", "[R]eset", "[d]iff", "[l]og", "[q]uit"]
+            actions.extend(["[a]pprove", "[r]eject", "[R]eset", "[d]iff", "[l]og", "[q]uit"])
         elif status == "complete":
-            actions = ["[l]og", "[q]uit"]
+            actions.extend(["[l]og", "[q]uit"])
         else:
             # active, blocked, or any other status
-            actions = ["[g]o run", "[R]eset", "[d]iff", "[l]og", "[q]uit"]
+            actions.extend(["[e]dit", "[g]o run", "[R]eset", "[d]iff", "[l]og", "[q]uit"])
 
         return " | ".join(actions)
+
+    def action_back_to_dashboard(self) -> None:
+        """Return to dashboard (only if not root)."""
+        if not self.is_root:
+            self.app.pop_screen()
 
     def action_approve(self) -> None:
         """Approve the workstream."""
@@ -432,7 +625,46 @@ class WatchApp(App):
 
             self.refresh_data()
 
-        self.push_screen(FeedbackModal("Rejection feedback:"), handle_feedback)
+        self.push_screen(FeedbackModal("What's wrong?"), handle_feedback)
+
+    def action_edit(self) -> None:
+        """Edit/refine with guidance.
+
+        Stores guidance in human_feedback.json for the next run to pick up.
+        Unlike reject, this doesn't require awaiting_human_review status.
+        """
+        if not self.workstream:
+            self.notify("No workstream loaded", severity="warning")
+            return
+
+        # Edit is for proactive refinement - available in active/blocked states
+        if self.workstream.status in ("awaiting_human_review", "complete"):
+            self.notify("Use approve/reject for review states", severity="warning")
+            return
+
+        # Capture state before async modal
+        workstream_dir = self.workstream_dir
+
+        def handle_guidance(guidance: str) -> None:
+            if not guidance:
+                return
+
+            # Write guidance directly to human_feedback.json
+            # This is picked up by the runner on the next run
+            try:
+                feedback_file = workstream_dir / "human_feedback.json"
+                feedback_file.write_text(json.dumps({
+                    "feedback": guidance,
+                    "reset": False,
+                    "timestamp": datetime.now().isoformat()
+                }, indent=2))
+                self.notify("Guidance recorded", severity="information")
+            except Exception as e:
+                self.notify(f"Failed: {e}", severity="error")
+
+            self.refresh_data()
+
+        self.push_screen(FeedbackModal("Guidance?"), handle_guidance)
 
     def action_reset(self) -> None:
         """Reset workstream (discard changes)."""
@@ -547,16 +779,71 @@ class WatchApp(App):
             start_new_session=True,
         )
 
+    def action_quit(self) -> None:
+        """Quit the application."""
+        self.app.exit()
+
+
+# --- Main App ---
+
+
+class WatchApp(App):
+    """Main watch TUI application."""
+
+    CSS = """
+    #feedback-dialog {
+        align: center middle;
+        width: 60;
+        height: auto;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #feedback-label {
+        margin-bottom: 1;
+    }
+
+    #feedback-hint {
+        margin-top: 1;
+        color: $text-muted;
+    }
+    """
+
+    def __init__(
+        self,
+        ops_dir: Path,
+        project_config: ProjectConfig,
+        workstream_id: Optional[str] = None,
+    ) -> None:
+        super().__init__()
+        self.ops_dir = ops_dir
+        self.project_config = project_config
+        self.workstream_id = workstream_id
+
+    def on_mount(self) -> None:
+        if self.workstream_id:
+            # Detail mode - direct to workstream
+            workstream_dir = self.ops_dir / "workstreams" / self.workstream_id
+            self.push_screen(
+                DetailScreen(workstream_dir, self.ops_dir, self.project_config, is_root=True)
+            )
+        else:
+            # Dashboard mode
+            self.push_screen(DashboardScreen(self.ops_dir, self.project_config))
+
 
 def cmd_watch(args, ops_dir: Path, project_config: ProjectConfig) -> int:
-    """Watch a workstream."""
-    ws_id = args.id
-    workstream_dir = ops_dir / "workstreams" / ws_id
+    """Watch workstreams."""
+    ws_id = getattr(args, 'id', None)
 
-    if not workstream_dir.exists():
-        print(f"ERROR: Workstream '{ws_id}' not found")
-        return 2
+    if ws_id:
+        # Validate workstream exists
+        workstream_dir = ops_dir / "workstreams" / ws_id
+        if not workstream_dir.exists():
+            print(f"ERROR: Workstream '{ws_id}' not found")
+            return 2
 
-    app = WatchApp(workstream_dir, ops_dir, project_config)
+    app = WatchApp(ops_dir, project_config, workstream_id=ws_id)
     app.run()
     return 0

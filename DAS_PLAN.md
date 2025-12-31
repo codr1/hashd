@@ -22,7 +22,7 @@ All paths implemented. Validation pending.
 ## Later
 
 ### Features (designed, not built)
-- `wf watch` dashboard mode (multi-workstream view with drill-down) - see PRD Appendix I
+- [x] `wf watch` dashboard mode (multi-workstream view with drill-down) - see PRD Appendix I
 - Autonomy levels: autonomous mode (auto-approve gates) - see PRD section 19
 - Escalation rules config - see PRD section 19
 - Interactive story Q&A (`wf plan edit` without `-f`) - see below
