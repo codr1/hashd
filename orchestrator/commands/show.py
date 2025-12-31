@@ -8,6 +8,7 @@ from pathlib import Path
 
 from orchestrator.lib.config import ProjectConfig, load_workstream
 from orchestrator.lib.planparse import parse_plan
+from orchestrator.lib.stats import get_workstream_stats_summary, format_duration, format_stats_summary, load_workstream_stats
 from orchestrator.pm.stories import load_story, is_story_locked
 
 
@@ -70,6 +71,15 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
                 marker = "[x]" if c.done else "[ ]"
                 print(f"  {marker} {c.id}: {c.title}")
             print()
+
+    # Show agent stats
+    stats = get_workstream_stats_summary(workstream_dir)
+    if stats:
+        print("Agent Stats")
+        print("-" * 40)
+        for line in format_stats_summary(stats):
+            print(line)
+        print()
 
     # Show diff
     if workstream.worktree.exists():
@@ -299,5 +309,46 @@ def cmd_show_story(args, ops_dir: Path, project_config: ProjectConfig, story_id:
             print(f"  wf run {story.workstream}         - Continue implementation")
     elif story.status == "implemented":
         print(f"  wf plan clone {story_id}   - Create editable copy")
+
+    return 0
+
+
+def cmd_show_stats(args, ops_dir: Path, project_config: ProjectConfig):
+    """Show detailed agent stats for a workstream."""
+    workstream_dir = ops_dir / "workstreams" / args.id
+    if not workstream_dir.exists():
+        print(f"ERROR: Workstream '{args.id}' not found")
+        return 1
+
+    workstream = load_workstream(workstream_dir)
+
+    print(f"Agent Stats: {workstream.id}")
+    print("=" * 60)
+
+    # Load raw stats
+    stats_list = load_workstream_stats(workstream_dir)
+    if not stats_list:
+        print("No stats recorded yet.")
+        return 0
+
+    # Summary
+    summary = get_workstream_stats_summary(workstream_dir, stats=stats_list)
+    if summary:
+        print()
+        print("Summary")
+        print("-" * 40)
+        for line in format_stats_summary(summary):
+            print(line)
+
+    # Per-call breakdown
+    print()
+    print("Call History")
+    print("-" * 40)
+    for s in stats_list:
+        tokens_str = ""
+        if s.input_tokens or s.output_tokens:
+            tokens_str = f" ({s.input_tokens or 0}/{s.output_tokens or 0} tokens)"
+        mc_str = f" [{s.microcommit_id}]" if s.microcommit_id else ""
+        print(f"  {s.timestamp[:19]}  {s.agent:6}  {format_duration(s.elapsed_seconds):>8}{tokens_str}{mc_str}")
 
     return 0

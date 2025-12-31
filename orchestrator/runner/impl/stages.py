@@ -21,6 +21,7 @@ from orchestrator.lib.history import format_conversation_history
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
+from orchestrator.lib.stats import AgentStats, record_agent_stats
 
 
 def _verbose_header(title: str):
@@ -299,6 +300,15 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
 
     result = agent.implement(prompt, ctx.workstream.worktree, log_file)
 
+    # Record stats
+    record_agent_stats(ctx.workstream_dir, AgentStats(
+        timestamp=datetime.now().isoformat(),
+        run_id=ctx.run_id,
+        agent="codex",
+        elapsed_seconds=result.elapsed_seconds,
+        microcommit_id=ctx.microcommit.id if ctx.microcommit else None,
+    ))
+
     if ctx.verbose and result.stdout:
         _verbose_header("IMPLEMENT OUTPUT")
         print(result.stdout)
@@ -442,6 +452,17 @@ def stage_review(ctx: RunContext):
     log_file = ctx.run_dir / "stages" / "review.log"
 
     review = agent.contextual_review(prompt, ctx.workstream.worktree, log_file)
+
+    # Record stats
+    record_agent_stats(ctx.workstream_dir, AgentStats(
+        timestamp=datetime.now().isoformat(),
+        run_id=ctx.run_id,
+        agent="claude",
+        elapsed_seconds=review.elapsed_seconds,
+        input_tokens=review.input_tokens,
+        output_tokens=review.output_tokens,
+        microcommit_id=ctx.microcommit.id if ctx.microcommit else None,
+    ))
 
     if ctx.verbose:
         _verbose_header("REVIEW RESULT")

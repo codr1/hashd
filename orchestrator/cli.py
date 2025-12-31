@@ -236,6 +236,12 @@ def cmd_show(args):
     return cmd_show_module.cmd_show(args, ops_dir, project_config)
 
 
+def cmd_show_stats(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_show_module.cmd_show_stats(args, ops_dir, project_config)
+
+
 def cmd_log(args):
     project_config, ops_dir = get_project_config(args)
     args.id = resolve_workstream_id(args, ops_dir)
@@ -351,6 +357,12 @@ def main():
     p_show = subparsers.add_parser('show', help='Show story or workstream details')
     p_show.add_argument('id', nargs='?', help='Story ID (STORY-xxxx) or workstream ID')
     p_show.set_defaults(func=cmd_show)
+    show_sub = p_show.add_subparsers(dest='show_cmd')
+
+    # wf show stats
+    p_show_stats = show_sub.add_parser('stats', help='Show agent stats for workstream')
+    p_show_stats.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_show_stats.set_defaults(func=cmd_show_stats)
 
     # wf log
     p_log = subparsers.add_parser('log', help='Show workstream timeline')
