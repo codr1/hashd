@@ -22,7 +22,6 @@ All paths implemented. Validation pending.
 ## Later
 
 ### Features (designed, not built)
-- [x] `wf watch` dashboard mode (multi-workstream view with drill-down) - see PRD Appendix I
 - Autonomy levels: autonomous mode (auto-approve gates) - see PRD section 19
 - Escalation rules config - see PRD section 19
 - Interactive story Q&A (`wf plan edit` without `-f`) - see below
@@ -61,7 +60,6 @@ Refining story with Claude PM...
 - "done" sends all answers to Claude PM for story refinement
 
 ### CLI Improvements
-- [x] `--gatekeeper` / `--supervised` flags for `wf run` (CLI override for SUPERVISED_MODE)
 - `--autonomous` flag deferred (requires skipping merge gate human review - see PRD section 19)
 
 ### Project Maintenance Commands (not designed)
@@ -76,8 +74,6 @@ Refining story with Claude PM...
 - Show when commits are flagged for tech stack violations
 
 ### Ideas (not designed)
-- [x] `wf diff` - pretty-printed diff viewer
-- [x] `wf project show` - display current project configuration
 - Parallel workstream scheduling - conflict-aware concurrent execution
 - Rich run reports - HTML dashboard for run history
 
