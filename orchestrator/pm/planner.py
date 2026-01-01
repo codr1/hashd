@@ -16,8 +16,9 @@ from dataclasses import asdict
 from orchestrator.lib.config import ProjectConfig
 from orchestrator.lib.constants import MAX_WS_ID_LEN, WS_ID_PATTERN
 from orchestrator.lib.prompts import render_prompt, build_section
-from orchestrator.pm.claude_utils import run_claude, strip_markdown_fences, extract_json_with_preamble
+from orchestrator.pm.claude_utils import run_claude, extract_json_with_preamble
 from orchestrator.pm.models import Story
+from orchestrator.pm.stories import list_stories
 
 # Limit touched files in prompt to avoid token explosion
 MAX_TOUCHED_FILES_IN_PROMPT = 20
@@ -72,6 +73,7 @@ def gather_context(
       - reqs_content: Contents of REQS.md
       - spec_content: Contents of SPEC.md (or None)
       - workstreams: List of active workstream info with touched files
+      - stories: List of active Story objects (not implemented/abandoned)
     """
     context = {}
 
@@ -84,12 +86,16 @@ def gather_context(
         context["reqs_content"] = None
         context["reqs_path"] = str(reqs_path)
 
-    # Read SPEC if exists
-    spec_path = project_dir / "SPEC.md"
+    # Read SPEC if exists (in project repo, alongside REQS.md)
+    spec_path = project_config.repo_path / "SPEC.md"
     if spec_path.exists():
         context["spec_content"] = spec_path.read_text()
     else:
         context["spec_content"] = None
+
+    # Get active stories (not implemented/abandoned)
+    all_stories = list_stories(project_dir)
+    context["stories"] = [s for s in all_stories if s.status not in ("implemented", "abandoned")]
 
     # Get active workstreams with touched files
     workstreams_dir = ops_dir / "workstreams"
@@ -147,6 +153,20 @@ def build_plan_prompt(context: dict) -> str:
     else:
         workstreams_section = "## Active Workstreams\n\nNo active workstreams.\n"
 
+    # Build active stories section
+    stories_section = ""
+    if context.get("stories"):
+        stories_parts = ["## Active Stories (being refined/implemented)\n"]
+        for s in context["stories"]:
+            stories_parts.append(f"### {s.id}: {s.title}")
+            stories_parts.append(f"Status: {s.status}")
+            if s.workstream:
+                stories_parts.append(f"Workstream: {s.workstream}")
+            stories_parts.append("")
+        stories_section = "\n".join(stories_parts)
+    else:
+        stories_section = "## Active Stories\n\nNo active stories.\n"
+
     # Build REQS section
     if context.get("reqs_content"):
         reqs_section = build_section(
@@ -159,6 +179,7 @@ def build_plan_prompt(context: dict) -> str:
     return render_prompt(
         "plan_discovery",
         spec_section=spec_section,
+        stories_section=stories_section,
         workstreams_section=workstreams_section,
         reqs_section=reqs_section
     )
@@ -170,7 +191,10 @@ def run_plan_session(
     project_dir: Path,
     timeout: int = 300,
 ) -> tuple[bool, str]:
-    """Run interactive planning session with Claude.
+    """Run planning session with Claude Code.
+
+    Claude has file access to explore the codebase and can verify
+    which features are already implemented.
 
     Returns (success, response_text).
     """
@@ -180,7 +204,7 @@ def run_plan_session(
         return False, f"Cannot read requirements file: {context.get('reqs_path')}"
 
     prompt = build_plan_prompt(context)
-    return run_claude(prompt, timeout)
+    return run_claude(prompt, cwd=project_config.repo_path, timeout=timeout)
 
 
 def build_refine_prompt(chunk_name: str, context: dict, existing_ws_ids: list[str] = None) -> str:
@@ -241,6 +265,8 @@ def run_refine_session(
 ) -> tuple[bool, Optional[dict], str]:
     """Refine a chunk into a story.
 
+    Claude has file access to explore the codebase.
+
     Returns (success, story_data, message).
     story_data is a dict ready for create_story() if successful.
     """
@@ -253,15 +279,17 @@ def run_refine_session(
     existing_ws_ids = get_existing_ws_ids(ops_dir)
 
     prompt = build_refine_prompt(chunk_name, context, existing_ws_ids)
-    success, response = run_claude(prompt, timeout)
+    success, response = run_claude(prompt, cwd=project_config.repo_path, timeout=timeout)
 
     if not success:
         return False, None, response
 
-    # Parse JSON response
+    # Parse JSON response (may have preamble text from Claude's exploration)
     try:
-        text = strip_markdown_fences(response)
-        data = json.loads(text)
+        _, json_str = extract_json_with_preamble(response)
+        if not json_str:
+            return False, None, f"No JSON found in response:\n\n{response}"
+        data = json.loads(json_str)
 
         # Validate required fields
         required = ["title", "source_refs", "problem", "acceptance_criteria"]
@@ -333,6 +361,8 @@ def run_edit_session(
 ) -> tuple[bool, Optional[dict], str, str]:
     """Edit a story based on user feedback.
 
+    Claude has file access to explore the codebase.
+
     Returns (success, updated_story_data, message, reasoning).
     updated_story_data contains fields to update (not the full story).
     reasoning contains any explanatory text from Claude PM.
@@ -340,7 +370,7 @@ def run_edit_session(
     context = gather_context(project_config, ops_dir, project_dir)
 
     prompt = build_edit_prompt(story, feedback, context)
-    success, response = run_claude(prompt, timeout)
+    success, response = run_claude(prompt, cwd=project_config.repo_path, timeout=timeout)
 
     if not success:
         return False, None, response, ""

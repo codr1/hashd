@@ -11,6 +11,8 @@ Note: {{ and }} are escaped braces for literal JSON output
 -->
 Refine this story based on the provided feedback.
 
+You have access to the codebase. Use Read/Grep/Glob if the feedback requires checking implementation details.
+
 ## Current Story
 ```json
 {story_json}
@@ -30,7 +32,7 @@ Based on the feedback, update the story fields as needed. You may:
 
 {spec_section}
 
-Respond with ONLY valid JSON (no markdown, no explanation).
+Respond with valid JSON matching this format:
 
 ## Required Response Format
 Return the full story with updated fields:

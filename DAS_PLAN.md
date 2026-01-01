@@ -21,6 +21,159 @@ All paths implemented. Validation pending.
 
 ## Later
 
+### Architecture: Hashd as Central Tool
+**Status:** [ ] Designed, not started
+
+Current sister directory model is clumsy. Target: hashd is the central tool, projects register with it.
+
+```
+~/tools/hashd/                    # Clone once, this IS the tool
+  orchestrator/
+  bin/wf
+  projects/                       # All ops state lives HERE
+    pickleicious/
+      project.env                 # repo_path=/path/to/pickleicious
+      pm/stories/
+      workstreams/
+      runs/
+
+~/wherever/pickleicious/          # Project repo (anywhere)
+  REQS.md
+  SPEC.md
+```
+
+**Commands:**
+- `wf project add /path/to/repo` - Register project
+- `wf project list` - Show registered projects
+- `wf project use <name>` - Select active project
+
+---
+
+### Requirements Lifecycle (IN PROGRESS)
+
+**Goal:** REQS.md shrinks as requirements are consumed by stories, SPEC.md grows on merge.
+
+```
+REQS.md (shrinks) → Stories (WIP) → SPEC.md (grows)
+```
+
+**Key Constraints:**
+- REQS.md is unstructured garbage prose - no reliable sections
+- Stories stay clean - NO changes to Story model
+- Annotation is semantic - Claude decides which text is covered, not string matching
+- REQS sections get DELETED on merge, not marked "IMPLEMENTED"
+
+See `/home/vess/.claude/plans/valiant-hopping-barto.md` for full design details.
+
+---
+
+#### Phase 1: Stories Visible to Planning Agent
+**Status:** [x] COMPLETE
+
+Make stories visible to `wf plan` so Claude avoids proposing duplicate work.
+
+- [x] `orchestrator/pm/planner.py` - `gather_context()`: Add active stories to context
+- [x] `orchestrator/pm/planner.py` - `build_plan_prompt()`: Build stories section
+- [x] `prompts/plan_discovery.md` - Add `{stories_section}` variable
+
+---
+
+#### Phase 1.5: Codebase Access for Planning Agent
+**Status:** [x] COMPLETE
+
+Planning agent now runs via Claude Code with full file access.
+
+- [x] `run_claude_code()` function in `claude_utils.py`
+- [x] `run_plan_session()` uses Claude Code with project repo as cwd
+- [x] `run_refine_session()` uses Claude Code similarly
+- [x] `plan_discovery.md` instructs Claude to grep/read codebase before proposing
+- [x] `refine_story.md` instructs Claude to explore before creating story
+
+---
+
+#### Phase 2: REQS Annotation During Refine
+**Status:** [ ] Not started
+
+When story is created via `wf plan refine`, Claude does second pass to annotate REQS.md.
+
+**Flow:**
+1. `wf plan refine <chunk>` - Claude API returns story JSON (existing)
+2. Python creates story file (existing)
+3. **NEW:** Claude does semantic pass through REQS.md with story in hand
+4. **NEW:** Claude Code directly edits REQS.md, wrapping relevant text:
+   ```markdown
+   <!-- BEGIN WIP: theme_crud -->
+   Users should be able to create custom themes...
+   <!-- END WIP -->
+   ```
+5. One story may have multiple scattered annotations
+
+- [ ] `orchestrator/pm/reqs_annotate.py` - NEW: semantic annotation function
+- [ ] `orchestrator/pm/planner.py` - `run_refine_session()`: Call annotation after story creation
+- [ ] `prompts/annotate_reqs.md` - NEW: prompt for semantic annotation
+
+---
+
+#### Phase 3: `wf docs` Command
+**Status:** [ ] Not started
+
+**Runs BEFORE merge** (after final review passes), so docs are part of the merge commit.
+
+**Flow:**
+1. Final review passes
+2. `wf docs` runs (auto in gatekeeper mode, prompted in supervised mode)
+3. Find `<!-- BEGIN WIP: xxx -->` blocks in REQS.md
+4. Extract content + implementation details from workstream
+5. Claude generates SPEC.md section
+6. Append to SPEC.md
+7. DELETE WIP blocks from REQS.md
+8. Commit docs changes to branch
+9. Then merge proceeds
+
+**Mode behavior:**
+- **Supervised:** Prompt user, show diff, ask for approval
+- **Gatekeeper/Autonomous:** Just do it
+
+**Commands:**
+- `wf docs` - update SPEC.md, trim REQS.md (main use)
+- `wf docs show` - preview what would be generated
+- `wf docs diff` - show changes between REQS and SPEC
+
+**NOTE:** When this feature is complete, update PRD.md to document the `wf docs` command and the documentation lifecycle.
+
+- [ ] `orchestrator/commands/docs.py` - NEW: `wf docs` command
+- [ ] `orchestrator/cli.py` - Wire up `wf docs`, `wf docs show`, `wf docs diff`
+- [ ] `prompts/update_spec.md` - NEW: prompt for SPEC generation
+- [ ] Integrate into `wf run` / `wf merge` flow (after final review, before merge)
+
+---
+
+#### Phase 4: Documentation
+**Status:** [ ] Not started
+
+- [ ] `PRD.md` - Add requirements lifecycle section
+
+---
+
+**Files Summary:**
+
+| File | Change | Phase |
+|------|--------|-------|
+| `orchestrator/pm/planner.py` | Add stories to context, call annotation | 1, 2 |
+| `prompts/plan_discovery.md` | Add `{stories_section}` | 1 |
+| `orchestrator/pm/reqs_annotate.py` | NEW: semantic annotation | 2 |
+| `prompts/annotate_reqs.md` | NEW: annotation prompt | 2 |
+| `orchestrator/commands/docs.py` | NEW: `wf docs` command | 3 |
+| `orchestrator/cli.py` | Wire `wf docs` | 3 |
+| `prompts/update_spec.md` | NEW: spec generation prompt | 3 |
+| `PRD.md` | Requirements lifecycle + `wf docs` docs | 4 |
+
+**NO changes to:**
+- `orchestrator/pm/models.py` - Story model stays clean
+- `prompts/refine_story.md` - Refine output unchanged
+
+---
+
 ### Features (designed, not built)
 - `wf watch` dashboard mode (multi-workstream view with drill-down) - see PRD Appendix I
 - Autonomy levels: autonomous mode (auto-approve gates) - see PRD section 19

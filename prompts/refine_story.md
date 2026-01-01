@@ -11,6 +11,8 @@ Note: {{ and }} are escaped braces for literal JSON output
 -->
 Refine the chunk '{chunk_name}' into a proper story.
 
+You have access to the codebase. Before creating the story, use Read/Grep/Glob tools to understand what already exists. This helps you write accurate acceptance criteria and identify real dependencies.
+
 Create a well-structured story with:
 - A clear title
 - A suggested workstream ID (max 16 chars, lowercase letters/numbers/underscores, must start with letter)
@@ -23,7 +25,7 @@ Create a well-structured story with:
 
 {existing_ws_ids_section}
 
-Respond with ONLY valid JSON (no markdown, no explanation).
+After exploring the codebase, respond with valid JSON matching this format:
 
 ## Required Response Format
 {{
