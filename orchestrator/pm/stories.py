@@ -33,9 +33,11 @@ def generate_story_id(project_dir: Path) -> str:
     """Generate next story ID for project."""
     stories_dir = get_stories_dir(project_dir)
 
-    existing = []
-    if stories_dir.exists():
-        existing = [f.stem for f in stories_dir.glob("STORY-*.json")]
+    if not stories_dir.exists():
+        return "STORY-0001"
+
+    # Find all stories recursively (includes _implemented/, _abandoned/, etc.)
+    existing = [f.stem for f in stories_dir.glob("**/STORY-*.json")]
 
     if not existing:
         return "STORY-0001"

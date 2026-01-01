@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from orchestrator.lib.prompts import render_prompt
+from orchestrator.pm.claude_utils import extract_json_with_preamble
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,9 @@ def generate_breakdown(
         ws_prefix=ws_prefix
     )
 
-    cmd = ["claude", "--output-format", "json"]
+    # Use -p (print mode) for non-interactive + file access (Read, Grep, Glob)
+    # --output-format json wraps response for parsing
+    cmd = ["claude", "-p", "--output-format", "json"]
 
     # Remove ANTHROPIC_API_KEY so Claude uses OAuth credentials
     env = os.environ.copy()
@@ -91,20 +94,13 @@ def generate_breakdown(
         wrapper = json.loads(result.stdout.strip())
         inner = wrapper.get("result", "")
 
-        # Extract JSON from markdown blocks if present
-        inner = inner.strip()
-        if "```" in inner:
-            start_match = inner.find("```json")
-            if start_match == -1:
-                start_match = inner.find("```")
-            if start_match != -1:
-                newline_after_open = inner.find("\n", start_match)
-                if newline_after_open != -1:
-                    close_match = inner.find("\n```", newline_after_open)
-                    if close_match != -1:
-                        inner = inner[newline_after_open + 1:close_match].strip()
+        # Extract JSON array from response (may have preamble from codebase exploration)
+        _, json_str = extract_json_with_preamble(inner)
+        if not json_str:
+            logger.error(f"No JSON found in breakdown response: {inner[:200]}...")
+            return []
 
-        commits = json.loads(inner)
+        commits = json.loads(json_str)
 
         # Validate structure
         if not isinstance(commits, list):

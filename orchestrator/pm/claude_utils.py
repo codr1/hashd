@@ -66,8 +66,8 @@ def run_claude(
         cmd = ["claude", "--print"]
         return _run_claude_subprocess(cmd, prompt, timeout, cwd)
     else:
-        # Without cwd, use JSON output mode (no tools)
-        cmd = ["claude", "--output-format", "json"]
+        # Without cwd, use JSON output mode (no tools needed)
+        cmd = ["claude", "-p", "--output-format", "json"]
         success, output = _run_claude_subprocess(cmd, prompt, timeout)
         if not success:
             return success, output
@@ -96,15 +96,18 @@ def strip_markdown_fences(text: str) -> str:
 
 
 def _find_json_end(text: str) -> int:
-    """Find the end index of a JSON object starting at position 0.
+    """Find the end index of a JSON object or array starting at position 0.
 
-    Properly handles braces inside strings and escaped characters.
-    Returns -1 if no complete JSON object found.
+    Properly handles braces/brackets inside strings and escaped characters.
+    Returns -1 if no complete JSON found.
     """
-    if not text or text[0] != '{':
+    if not text or text[0] not in '{[':
         return -1
 
-    brace_count = 0
+    open_char = text[0]
+    close_char = '}' if open_char == '{' else ']'
+
+    depth = 0
     in_string = False
     i = 0
 
@@ -120,11 +123,11 @@ def _find_json_end(text: str) -> int:
         else:
             if char == '"':
                 in_string = True
-            elif char == '{':
-                brace_count += 1
-            elif char == '}':
-                brace_count -= 1
-                if brace_count == 0:
+            elif char in '{[':
+                depth += 1
+            elif char in '}]':
+                depth -= 1
+                if depth == 0 and char == close_char:
                     return i
 
         i += 1
@@ -142,20 +145,20 @@ def extract_json_with_preamble(text: str) -> tuple[str, str]:
     """
     text = text.strip()
 
-    # Try to find JSON in markdown code fence first
-    fence_match = re.search(r'```(?:json)?\s*\n(\{[\s\S]*?\})\s*\n```', text)
+    # Try to find JSON in markdown code fence first (object or array)
+    fence_match = re.search(r'```(?:json)?\s*\n([\{\[][\s\S]*?[\}\]])\s*\n```', text)
     if fence_match:
         json_str = fence_match.group(1)
         # Everything before the fence is preamble
         preamble = text[:fence_match.start()].strip()
         return preamble, json_str
 
-    # Try to find bare JSON object
-    # Look for a line that starts with { and find the matching }
+    # Try to find bare JSON object or array
+    # Look for a line that starts with { or [ and find the matching close
     lines = text.split('\n')
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith('{'):
+        if stripped.startswith(('{', '[')):
             # Found potential JSON start
             candidate = '\n'.join(lines[i:])
             end_idx = _find_json_end(candidate)

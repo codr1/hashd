@@ -57,6 +57,7 @@ class ClaudeAgent:
         """
         cmd = [
             "claude",
+            "-p",
             "--output-format", "json",
         ]
 
