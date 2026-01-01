@@ -8,6 +8,7 @@ and removes annotations when stories are abandoned or merged.
 import logging
 import re
 from pathlib import Path
+from typing import Optional
 
 from orchestrator.lib.config import ProjectConfig
 from orchestrator.pm.claude_utils import run_claude
@@ -129,6 +130,7 @@ def remove_reqs_annotations(
 def delete_reqs_sections(
     story_id: str,
     project_config: ProjectConfig,
+    base_path: Optional[Path] = None,
 ) -> tuple[bool, str, str]:
     """
     Delete annotated sections for a story from REQS.md.
@@ -138,11 +140,13 @@ def delete_reqs_sections(
     Args:
         story_id: The story ID
         project_config: Project configuration
+        base_path: Optional base path override (e.g., worktree path)
 
     Returns:
         Tuple of (success, message, extracted_content)
     """
-    reqs_path = project_config.repo_path / project_config.reqs_path
+    base = base_path or project_config.repo_path
+    reqs_path = base / project_config.reqs_path
 
     if not reqs_path.exists():
         return True, "No REQS.md", ""
