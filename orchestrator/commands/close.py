@@ -13,7 +13,8 @@ from orchestrator.lib.config import (
     get_current_workstream,
     clear_current_workstream,
 )
-from orchestrator.pm.stories import load_story, update_story, list_stories, unlock_story
+from orchestrator.pm.stories import load_story, update_story, list_stories, unlock_story, archive_story
+from orchestrator.pm.reqs_annotate import remove_reqs_annotations
 
 
 def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
@@ -116,6 +117,11 @@ def cmd_close_story(args, ops_dir: Path, project_config: ProjectConfig, story_id
         print(f"Story is already implemented. Cannot close.")
         return 1
 
+    # Remove REQS annotations for this story
+    success, msg = remove_reqs_annotations(story_id, project_config)
+    if success and "Removed" in msg:
+        print(f"  {msg}")
+
     # Move story to abandoned status
     updated = update_story(project_dir, story_id, {
         "status": "abandoned",
@@ -124,6 +130,12 @@ def cmd_close_story(args, ops_dir: Path, project_config: ProjectConfig, story_id
     if not updated:
         print(f"Failed to close story {story_id}")
         return 1
+
+    # Archive to _abandoned/
+    if archive_story(project_dir, story_id, "_abandoned"):
+        print(f"Archived story to _abandoned/")
+    else:
+        print(f"Warning: Failed to archive story (may already be archived)")
 
     print(f"Closed story: {story_id}")
     return 0

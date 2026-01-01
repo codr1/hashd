@@ -268,18 +268,19 @@ def find_story_by_workstream(project_dir: Path, workstream_id: str) -> Optional[
     return None
 
 
-def archive_story(project_dir: Path, story_id: str) -> bool:
-    """Archive a story to _implemented/ directory.
+def archive_story(project_dir: Path, story_id: str, subdir: str = "_implemented") -> bool:
+    """Archive a story to a subdirectory.
 
     Args:
         project_dir: Project directory
         story_id: Story ID to archive
+        subdir: Subdirectory name (default: "_implemented", also: "_abandoned")
 
     Returns:
         True if archived, False otherwise
     """
     stories_dir = get_stories_dir(project_dir)
-    implemented_dir = stories_dir / "_implemented"
+    archive_dir = stories_dir / subdir
 
     json_path = stories_dir / f"{story_id}.json"
     md_path = stories_dir / f"{story_id}.md"
@@ -287,14 +288,14 @@ def archive_story(project_dir: Path, story_id: str) -> bool:
     if not json_path.exists():
         return False
 
-    implemented_dir.mkdir(exist_ok=True)
+    archive_dir.mkdir(exist_ok=True)
 
     # Move JSON file
-    json_path.rename(implemented_dir / json_path.name)
+    json_path.rename(archive_dir / json_path.name)
 
     # Move markdown file if exists
     if md_path.exists():
-        md_path.rename(implemented_dir / md_path.name)
+        md_path.rename(archive_dir / md_path.name)
 
     return True
 

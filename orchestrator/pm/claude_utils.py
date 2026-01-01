@@ -3,11 +3,14 @@ Shared Claude invocation utilities for PM module.
 """
 
 import json
+import logging
 import os
 import re
 import subprocess
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _run_claude_subprocess(
@@ -49,6 +52,7 @@ def run_claude(
     prompt: str,
     cwd: Optional[Path] = None,
     timeout: int = 300,
+    accept_edits: bool = False,
 ) -> tuple[bool, str]:
     """Run Claude with a prompt.
 
@@ -57,6 +61,7 @@ def run_claude(
         cwd: Working directory. If provided, Claude runs with file access
              (Read, Grep, Glob tools). If None, runs without file access.
         timeout: Timeout in seconds (default 300)
+        accept_edits: If True, auto-accept file edits (requires cwd)
 
     Returns:
         Tuple of (success, response_text)
@@ -64,22 +69,27 @@ def run_claude(
     if cwd:
         # With cwd, use --print mode which gives Claude tool access
         cmd = ["claude", "--print"]
+        if accept_edits:
+            cmd.extend(["--permission-mode", "acceptEdits"])
         return _run_claude_subprocess(cmd, prompt, timeout, cwd)
-    else:
-        # Without cwd, use JSON output mode (no tools needed)
-        cmd = ["claude", "-p", "--output-format", "json"]
-        success, output = _run_claude_subprocess(cmd, prompt, timeout)
-        if not success:
-            return success, output
 
-        # Parse JSON wrapper from --output-format json
-        try:
-            wrapper = json.loads(output.strip())
-            response = wrapper.get("result", output)
-        except json.JSONDecodeError:
-            response = output
+    if accept_edits:
+        logger.warning("accept_edits=True ignored without cwd")
 
-        return True, response
+    # Without cwd, use JSON output mode (no tools needed)
+    cmd = ["claude", "-p", "--output-format", "json"]
+    success, output = _run_claude_subprocess(cmd, prompt, timeout)
+    if not success:
+        return success, output
+
+    # Parse JSON wrapper from --output-format json
+    try:
+        wrapper = json.loads(output.strip())
+        response = wrapper.get("result", output)
+    except json.JSONDecodeError:
+        response = output
+
+    return True, response
 
 
 def strip_markdown_fences(text: str) -> str:

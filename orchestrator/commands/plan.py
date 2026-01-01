@@ -22,6 +22,7 @@ from orchestrator.pm.stories import (
     is_story_locked,
 )
 from orchestrator.pm.planner import run_plan_session, run_refine_session, run_edit_session
+from orchestrator.pm.reqs_annotate import annotate_reqs_for_story
 from orchestrator.runner.impl.breakdown import append_commits_to_plan
 
 
@@ -87,7 +88,21 @@ def cmd_plan_new(args, ops_dir: Path, project_config: ProjectConfig):
     # Create the story
     story = create_story(project_dir, story_data)
     print(f"Created {story.id}: {story.title}")
-    print(f"\nTo start implementation: wf open {story.id}")
+
+    # Annotate REQS.md with WIP markers
+    print("Annotating REQS.md...")
+    success, msg = annotate_reqs_for_story(story, project_config)
+    if success:
+        # Truncate at word boundary if too long
+        if len(msg) > 80:
+            truncated = msg[:80].rsplit(' ', 1)[0]
+            print(f"  {truncated}...")
+        else:
+            print(f"  {msg}")
+    else:
+        print(f"  Warning: {msg}")
+
+    print(f"\nTo start implementation: wf run {story.id}")
     return 0
 
 
