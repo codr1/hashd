@@ -233,13 +233,12 @@ def cmd_show(args):
 
     # Otherwise show workstream
     args.id = resolve_workstream_id(args, ops_dir)
+
+    # Handle --stats flag
+    if getattr(args, 'stats', False):
+        return cmd_show_module.cmd_show_stats(args, ops_dir, project_config)
+
     return cmd_show_module.cmd_show(args, ops_dir, project_config)
-
-
-def cmd_show_stats(args):
-    project_config, ops_dir = get_project_config(args)
-    args.id = resolve_workstream_id(args, ops_dir)
-    return cmd_show_module.cmd_show_stats(args, ops_dir, project_config)
 
 
 def cmd_log(args):
@@ -256,7 +255,7 @@ def cmd_review(args):
 
 def cmd_watch(args):
     project_config, ops_dir = get_project_config(args)
-    args.id = resolve_workstream_id(args, ops_dir)
+    # Don't resolve - None is valid for dashboard mode
     return cmd_watch_module.cmd_watch(args, ops_dir, project_config)
 
 
@@ -312,31 +311,36 @@ def main():
 
     # wf plan
     p_plan = subparsers.add_parser('plan', help='Plan stories from REQS.md or ad-hoc')
-    p_plan.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, story_id=None)
+    p_plan.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, resurrect=False, story_id=None)
     plan_sub = p_plan.add_subparsers(dest='plan_cmd')
 
     # wf plan new "title"
     p_plan_new = plan_sub.add_parser('new', help='Create ad-hoc story')
     p_plan_new.add_argument('title', nargs='?', help='Story title hint')
-    p_plan_new.set_defaults(func=cmd_plan, new=True, clone=False, edit=False)
+    p_plan_new.set_defaults(func=cmd_plan, new=True, clone=False, edit=False, resurrect=False)
 
     # wf plan clone STORY-xxx
     p_plan_clone = plan_sub.add_parser('clone', help='Clone a locked story')
     p_plan_clone.add_argument('clone_id', help='Story ID to clone (e.g., STORY-0001)')
-    p_plan_clone.set_defaults(func=cmd_plan, new=False, clone=True, edit=False)
+    p_plan_clone.set_defaults(func=cmd_plan, new=False, clone=True, edit=False, resurrect=False)
 
     # wf plan edit STORY-xxx [-f "feedback"]
     p_plan_edit = plan_sub.add_parser('edit', help='Edit an existing story')
     p_plan_edit.add_argument('story_id', help='Story ID to edit (e.g., STORY-0001)')
     p_plan_edit.add_argument('-f', '--feedback', help='Feedback to refine the story')
-    p_plan_edit.set_defaults(func=cmd_plan, new=False, clone=False, edit=True)
+    p_plan_edit.set_defaults(func=cmd_plan, new=False, clone=False, edit=True, resurrect=False)
 
     # wf plan add <ws_id> [title] [-f "feedback"]
     p_plan_add = plan_sub.add_parser('add', help='Add micro-commit to existing workstream')
     p_plan_add.add_argument('ws_id', help='Workstream ID')
     p_plan_add.add_argument('title', nargs='?', help='Commit title (optional if -f provided)')
     p_plan_add.add_argument('-f', '--feedback', help='Feedback/description for the commit', default='')
-    p_plan_add.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, add=True)
+    p_plan_add.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, add=True, resurrect=False)
+
+    # wf plan resurrect STORY-xxx
+    p_plan_resurrect = plan_sub.add_parser('resurrect', help='Resurrect abandoned story')
+    p_plan_resurrect.add_argument('resurrect_id', help='Story ID to resurrect')
+    p_plan_resurrect.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, add=False, resurrect=True)
 
     # wf list
     p_list = subparsers.add_parser('list', help='List stories and workstreams')
@@ -356,13 +360,8 @@ def main():
     # wf show
     p_show = subparsers.add_parser('show', help='Show story or workstream details')
     p_show.add_argument('id', nargs='?', help='Story ID (STORY-xxxx) or workstream ID')
+    p_show.add_argument('--stats', action='store_true', help='Show agent stats for workstream')
     p_show.set_defaults(func=cmd_show)
-    show_sub = p_show.add_subparsers(dest='show_cmd')
-
-    # wf show stats
-    p_show_stats = show_sub.add_parser('stats', help='Show agent stats for workstream')
-    p_show_stats.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
-    p_show_stats.set_defaults(func=cmd_show_stats)
 
     # wf log
     p_log = subparsers.add_parser('log', help='Show workstream timeline')

@@ -300,6 +300,51 @@ def archive_story(project_dir: Path, story_id: str, subdir: str = "_implemented"
     return True
 
 
+def resurrect_story(project_dir: Path, story_id: str) -> Optional[Story]:
+    """Move story from _abandoned/ back to main stories/, set status to draft.
+
+    Args:
+        project_dir: Project directory
+        story_id: Story ID to resurrect
+
+    Returns:
+        Story if resurrected, None if not found in _abandoned/
+    """
+    stories_dir = get_stories_dir(project_dir)
+    abandoned_dir = stories_dir / "_abandoned"
+
+    json_src = abandoned_dir / f"{story_id}.json"
+    md_src = abandoned_dir / f"{story_id}.md"
+
+    if not json_src.exists():
+        return None
+
+    json_dest = stories_dir / json_src.name
+    md_dest = stories_dir / md_src.name
+
+    # Check if destination already exists
+    if json_dest.exists():
+        logger.warning(f"Cannot resurrect {story_id}: already exists in stories/")
+        return None
+
+    # Move files back
+    try:
+        json_src.rename(json_dest)
+    except OSError as e:
+        logger.warning(f"Failed to move {json_src}: {e}")
+        return None
+
+    if md_src.exists():
+        try:
+            md_src.rename(md_dest)
+        except OSError as e:
+            logger.warning(f"Failed to move markdown file: {e}")
+            # JSON already moved, continue anyway
+
+    # Update status to draft
+    return update_story(project_dir, story_id, {"status": "draft"})
+
+
 def clone_story(project_dir: Path, story_id: str) -> Optional[Story]:
     """Clone a story to create an editable copy.
 

@@ -8,6 +8,7 @@ Commands:
   wf plan STORY-xxx        - Edit existing story (if unlocked)
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from orchestrator.pm.stories import (
     create_story,
     update_story,
     is_story_locked,
+    resurrect_story,
 )
 from orchestrator.pm.planner import run_plan_session, run_refine_session, run_edit_session
 from orchestrator.pm.reqs_annotate import annotate_reqs_for_story
@@ -44,6 +46,10 @@ def cmd_plan(args, ops_dir: Path, project_config: ProjectConfig):
     # wf plan add <ws_id> "title"
     if getattr(args, 'add', False):
         return cmd_plan_add(args, ops_dir, project_config)
+
+    # wf plan resurrect STORY-xxx
+    if getattr(args, 'resurrect', False):
+        return cmd_plan_resurrect(args, ops_dir, project_config)
 
     # wf plan (discovery from REQS.md)
     return cmd_plan_discover(args, ops_dir, project_config)
@@ -99,6 +105,26 @@ def cmd_plan_new(args, ops_dir: Path, project_config: ProjectConfig):
             print(f"  {truncated}...")
         else:
             print(f"  {msg}")
+
+        # Commit the annotation
+        reqs_file = project_config.reqs_path
+        repo_path = project_config.repo_path
+        add_result = subprocess.run(
+            ["git", "-C", str(repo_path), "add", reqs_file],
+            capture_output=True, text=True
+        )
+        if add_result.returncode == 0:
+            commit_result = subprocess.run(
+                ["git", "-C", str(repo_path), "commit", "-m",
+                 f"Mark requirements as WIP for {story.id}\n\n{story.title}"],
+                capture_output=True, text=True
+            )
+            if commit_result.returncode == 0:
+                print("  Committed REQS annotation")
+            elif "nothing to commit" in (commit_result.stdout + commit_result.stderr):
+                pass  # No changes to commit
+            else:
+                print(f"  Warning: commit failed: {commit_result.stderr.strip()}")
     else:
         print(f"  Warning: {msg}")
 
@@ -125,6 +151,41 @@ def cmd_plan_clone(args, ops_dir: Path, project_config: ProjectConfig):
 
     print(f"Created {clone.id}: {clone.title}")
     print(f"(cloned from {story_id})")
+    return 0
+
+
+def cmd_plan_resurrect(args, ops_dir: Path, project_config: ProjectConfig):
+    """Resurrect an abandoned story."""
+    project_dir = ops_dir / "projects" / project_config.name
+    story_id = args.resurrect_id
+
+    # Check if story exists in main directory first
+    existing = load_story(project_dir, story_id)
+    if existing:
+        print(f"Story {story_id} is not abandoned (status: {existing.status})")
+        return 1
+
+    story = resurrect_story(project_dir, story_id)
+    if not story:
+        print(f"Story not found: {story_id}")
+        print("  Check 'wf archive stories' for available abandoned stories")
+        return 1
+
+    print(f"Resurrected {story_id}: {story.title}")
+
+    # Re-annotate REQS
+    print("Re-annotating REQS.md...")
+    success, msg = annotate_reqs_for_story(story, project_config)
+    if success:
+        if len(msg) > 80:
+            truncated = msg[:80].rsplit(' ', 1)[0]
+            print(f"  {truncated}...")
+        else:
+            print(f"  {msg}")
+    else:
+        print(f"  Warning: {msg}")
+
+    print(f"\nTo edit: wf plan edit {story_id}")
     return 0
 
 
