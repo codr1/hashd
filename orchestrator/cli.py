@@ -30,6 +30,7 @@ from orchestrator.commands import log as cmd_log_module
 from orchestrator.commands import watch as cmd_watch_module
 from orchestrator.commands import diff as cmd_diff_module
 from orchestrator.commands import project as cmd_project_module
+from orchestrator.commands import docs as cmd_docs_module
 
 
 def get_ops_dir() -> Path:
@@ -290,6 +291,24 @@ def cmd_project_show(args):
     return cmd_project_module.cmd_project_show(args, ops_dir, project_config)
 
 
+def cmd_docs(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_docs_module.cmd_docs(args, ops_dir, project_config)
+
+
+def cmd_docs_show(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_docs_module.cmd_docs_show(args, ops_dir, project_config)
+
+
+def cmd_docs_diff(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_docs_module.cmd_docs_diff(args, ops_dir, project_config)
+
+
 def main():
     # Handle --completion before parsing subcommands
     if len(sys.argv) == 2 and sys.argv[1] == '--completion':
@@ -502,6 +521,22 @@ def main():
     # wf project show
     p_project_show = project_sub.add_parser('show', help='Show project configuration')
     p_project_show.set_defaults(func=cmd_project_show)
+
+    # wf docs
+    p_docs = subparsers.add_parser('docs', help='Update SPEC.md from workstream')
+    p_docs.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_docs.set_defaults(func=cmd_docs)
+    docs_sub = p_docs.add_subparsers(dest='docs_cmd')
+
+    # wf docs show
+    p_docs_show = docs_sub.add_parser('show', help='Preview SPEC update without writing')
+    p_docs_show.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_docs_show.set_defaults(func=cmd_docs_show)
+
+    # wf docs diff
+    p_docs_diff = docs_sub.add_parser('diff', help='Show diff between current and proposed SPEC')
+    p_docs_diff.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_docs_diff.set_defaults(func=cmd_docs_diff)
 
     args = parser.parse_args()
 

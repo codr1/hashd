@@ -7,10 +7,11 @@ _wf_completions() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="plan list use show log review watch refresh conflicts run close merge archive open approve reject clarify"
+    local commands="plan list use show log review watch refresh conflicts run close merge archive open approve reject clarify docs project diff"
     local plan_cmds="new clone add edit"
     local archive_cmds="work stories delete"
     local clarify_cmds="list show answer ask"
+    local docs_cmds="show diff"
 
     # Get ops dir from environment or default
     local ops_dir="${WF_OPS_DIR:-$(pwd)}"
@@ -89,6 +90,16 @@ _wf_completions() {
                 clarify)
                     COMPREPLY=($(compgen -W "$clarify_cmds" -- "$cur"))
                     ;;
+                docs)
+                    # Subcommands or workstream IDs
+                    local ws=""
+                    if [[ -d "$ops_dir/workstreams" ]]; then
+                        for d in "$ops_dir/workstreams"/*/; do
+                            [[ -d "$d" && ! "$(basename "$d")" =~ ^_ ]] && ws+=" $(basename "$d")"
+                        done
+                    fi
+                    COMPREPLY=($(compgen -W "$docs_cmds $ws" -- "$cur"))
+                    ;;
                 open)
                     # Archived workstream IDs
                     local archived=""
@@ -160,6 +171,18 @@ _wf_completions() {
                             ;;
                     esac
                     ;;
+                docs)
+                    if [[ "${words[2]}" == "show" || "${words[2]}" == "diff" ]]; then
+                        # Workstream IDs for docs show/diff
+                        local ws=""
+                        if [[ -d "$ops_dir/workstreams" ]]; then
+                            for d in "$ops_dir/workstreams"/*/; do
+                                [[ -d "$d" && ! "$(basename "$d")" =~ ^_ ]] && ws+=" $(basename "$d")"
+                            done
+                        fi
+                        COMPREPLY=($(compgen -W "$ws" -- "$cur"))
+                    fi
+                    ;;
             esac
             ;;
     esac
@@ -191,6 +214,9 @@ _wf() {
         'approve:Accept story or approve workstream gate'
         'reject:Reject and iterate on current changes'
         'clarify:Manage clarification requests'
+        'docs:Update SPEC.md from workstream'
+        'project:Project management'
+        'diff:Show workstream diff'
     )
 
     local ops_dir="${WF_OPS_DIR:-$(pwd)}"
@@ -357,6 +383,15 @@ _wf() {
                     fi
                     _describe -t ws 'workstreams' ws
                     ;;
+                docs)
+                    local -a docs_cmds ws
+                    docs_cmds=('show:Preview SPEC update' 'diff:Show SPEC diff')
+                    if [[ -d "$ops_dir/workstreams" ]]; then
+                        ws=(${(@f)"$(find "$ops_dir/workstreams" -mindepth 1 -maxdepth 1 -type d ! -name '_*' -exec basename {} \\; 2>/dev/null)"})
+                    fi
+                    _describe -t docs_cmds 'docs subcommands' docs_cmds
+                    _describe -t ws 'workstreams' ws
+                    ;;
             esac
             ;;
     esac
@@ -403,6 +438,9 @@ complete -c wf -n "__fish_use_subcommand" -a open -d "Resurrect archived workstr
 complete -c wf -n "__fish_use_subcommand" -a approve -d "Accept story or approve gate"
 complete -c wf -n "__fish_use_subcommand" -a reject -d "Reject and iterate"
 complete -c wf -n "__fish_use_subcommand" -a clarify -d "Manage clarifications"
+complete -c wf -n "__fish_use_subcommand" -a docs -d "Update SPEC.md from workstream"
+complete -c wf -n "__fish_use_subcommand" -a project -d "Project management"
+complete -c wf -n "__fish_use_subcommand" -a diff -d "Show workstream diff"
 '''.strip()
     else:
         raise ValueError(f"Unknown shell: {shell}")

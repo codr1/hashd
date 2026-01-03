@@ -346,6 +346,7 @@ wf list
 wf show <id>
 wf approve <id>
 wf merge <ws>
+wf docs [ws]
 wf close <id>
 wf watch [ws]
 ```
@@ -383,6 +384,13 @@ wf watch [ws]
 
 **wf merge** - Complete workstream
 - `wf merge theme_crud` - Merge branch to main, archive workstream
+- Auto-runs SPEC.md update and REQS.md cleanup before merge
+
+**wf docs** - Update SPEC.md from workstream
+- `wf docs theme_crud` - Generate and write SPEC update (usually auto-run by merge)
+- `wf docs show theme_crud` - Preview SPEC update without writing
+- `wf docs diff theme_crud` - Show diff between current and proposed SPEC
+- Uses story + micro-commits + code diff as source of truth
 
 **wf watch** - Interactive TUI
 - `wf watch` - Dashboard showing all active workstreams (see Appendix I)
@@ -426,6 +434,30 @@ draft -> accepted -> implementing -> implemented
   - `wf close <workstream>` - Cancel implementation, unlocks story
 - `wf close <workstream>` unlocks the linked story (returns to `accepted`)
 - `wf merge <workstream>` marks story as `implemented`
+
+### 10.6.1 Requirements Lifecycle
+
+Requirements flow from REQS.md through stories into SPEC.md:
+
+```
+REQS.md (shrinks) -> Stories -> SPEC.md (grows)
+```
+
+**On story creation (`wf plan refine`):**
+- Claude annotates REQS.md with WIP markers around consumed text
+- Format: `<!-- BEGIN WIP: STORY-xxxx --> ... <!-- END WIP: STORY-xxxx -->`
+
+**On merge (`wf merge`):**
+1. SPEC.md is updated with documentation generated from:
+   - Story details (problem, acceptance criteria)
+   - Micro-commit plan and descriptions
+   - Actual code diff (what was implemented)
+2. WIP-marked sections are deleted from REQS.md
+3. Both changes committed to branch before merge
+
+**Manual SPEC preview (`wf docs`):**
+- `wf docs show <ws>` - Preview without writing
+- `wf docs diff <ws>` - Show diff against current SPEC
 
 ### 10.7 Shell Completion
 
