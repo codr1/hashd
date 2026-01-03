@@ -260,7 +260,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             make_target_test="test",
             merge_gate_test_target="test",
             implement_timeout=1200,
-            review_timeout=300,
+            review_timeout=600,
             test_timeout=300,
             breakdown_timeout=180,
             supervised_mode=False,

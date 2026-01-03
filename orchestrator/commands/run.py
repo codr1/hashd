@@ -739,7 +739,7 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     try:
         profile = load_project_profile(project_dir)
     except FileNotFoundError:
-        # Use defaults (review_timeout=300 for contextual reviews)
+        # Use defaults
         from orchestrator.lib.config import ProjectProfile
         from orchestrator.lib.github import get_default_merge_mode
         profile = ProjectProfile(
@@ -747,7 +747,7 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             make_target_test="test",
             merge_gate_test_target="test",
             implement_timeout=1200,
-            review_timeout=300,
+            review_timeout=600,
             test_timeout=300,
             breakdown_timeout=180,
             supervised_mode=False,
