@@ -8,6 +8,7 @@ from pathlib import Path
 
 from orchestrator.lib.config import ProjectConfig, load_workstream
 from orchestrator.lib.planparse import parse_plan
+from orchestrator.lib.review import load_review
 from orchestrator.lib.stats import get_workstream_stats_summary, format_duration, format_stats_summary, load_workstream_stats
 from orchestrator.pm.stories import load_story, is_story_locked
 
@@ -102,106 +103,58 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
 
     # Show review feedback if exists
     if matching_runs:
-        review_file = matching_runs[0] / "stages" / "review.log"
-        if review_file.exists():
-            content = review_file.read_text()
-            if "decision" in content:
+        review = load_review(matching_runs[0])
+        if review:
+            print()
+            print("Review Feedback")
+            print("-" * 40)
+            decision = review.get("decision", "unknown")
+            print(f"  Decision: {decision}")
+
+            # Show blockers
+            blockers = review.get("blockers", [])
+            if blockers:
                 print()
-                print("Review Feedback")
-                print("-" * 40)
-                # Try to extract structured feedback
-                try:
-                    # Find JSON in stdout section
-                    if "STDOUT ===" in content:
-                        stdout_section = content.split("=== STDOUT ===")[1].split("=== STDERR ===")[0].strip()
+                print("  Blockers:")
+                for blocker in blockers:
+                    severity = blocker.get("severity", "issue")
+                    file_loc = f"{blocker.get('file', '?')}:{blocker.get('line', '?')}"
+                    print(f"    [{severity}] {file_loc}")
+                    print(f"           {blocker.get('issue', '?')}")
 
-                        # Extract JSON from markdown code block (contextual review format)
-                        # Claude may output prose before the code block
-                        if "```json" in stdout_section:
-                            start = stdout_section.find("```json")
-                            stdout_section = stdout_section[start + 7:]  # Skip ```json
-                            if "```" in stdout_section:
-                                stdout_section = stdout_section.split("```")[0]
-                            stdout_section = stdout_section.strip()
-                        elif "```" in stdout_section:
-                            start = stdout_section.find("```")
-                            stdout_section = stdout_section[start + 3:]  # Skip ```
-                            if "```" in stdout_section:
-                                stdout_section = stdout_section.split("```")[0]
-                            stdout_section = stdout_section.strip()
-                        elif "{" in stdout_section:
-                            # Fallback: raw JSON after prose (no code fences)
-                            json_start = stdout_section.find("{")
-                            if json_start > 0:
-                                stdout_section = stdout_section[json_start:]
+            # Show required changes
+            changes = review.get("required_changes", [])
+            if changes:
+                print()
+                print("  Required Changes:")
+                for change in changes:
+                    print(f"    - {change}")
 
-                        wrapper = json.loads(stdout_section)
+            # Show suggestions
+            suggestions = review.get("suggestions", [])
+            if suggestions:
+                print()
+                print("  Suggestions:")
+                for suggestion in suggestions:
+                    print(f"    - {suggestion}")
 
-                        # Old format: result field is double-encoded JSON
-                        if "result" in wrapper and isinstance(wrapper["result"], str):
-                            result_str = wrapper["result"]
-                            # Strip markdown code block if present
-                            if result_str.startswith("```"):
-                                result_str = result_str.split("\n", 1)[1]
-                                if result_str.endswith("```"):
-                                    result_str = result_str[:-3]
-                                result_str = result_str.strip()
-                            review = json.loads(result_str)
-                        else:
-                            # New format: direct JSON (contextual review)
-                            review = wrapper
+            # Show notes
+            notes = review.get("notes", "")
+            if notes:
+                print()
+                print("  Notes:")
+                print(f"    {notes}")
 
-                        decision = review.get("decision", "unknown")
-                        print(f"  Decision: {decision}")
-
-                        # Show blockers
-                        blockers = review.get("blockers", [])
-                        if blockers:
-                            print()
-                            print("  Blockers:")
-                            for blocker in blockers:
-                                severity = blocker.get("severity", "issue")
-                                file_loc = f"{blocker.get('file', '?')}:{blocker.get('line', '?')}"
-                                print(f"    [{severity}] {file_loc}")
-                                print(f"           {blocker.get('issue', '?')}")
-
-                        # Show required changes
-                        changes = review.get("required_changes", [])
-                        if changes:
-                            print()
-                            print("  Required Changes:")
-                            for change in changes:
-                                print(f"    - {change}")
-
-                        # Show suggestions
-                        suggestions = review.get("suggestions", [])
-                        if suggestions:
-                            print()
-                            print("  Suggestions:")
-                            for suggestion in suggestions:
-                                print(f"    - {suggestion}")
-
-                        # Show notes
-                        notes = review.get("notes", "")
-                        if notes:
-                            print()
-                            print("  Notes:")
-                            print(f"    {notes}")
-
-                        # Show next steps based on decision
-                        print()
-                        print("Next Steps")
-                        print("-" * 40)
-                        if decision == "approve":
-                            print(f"  wf merge {args.id}                    # Merge to main")
-                            print(f"  wf plan add {args.id} \"...\"          # Address suggestions or add requirements")
-                        else:
-                            print(f"  wf run {args.id}                      # Retry implementation")
-                            print(f"  wf plan add {args.id} \"...\"          # Add guidance for retry")
-
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    print("  (Unable to parse review data)")
-                    print()
+            # Show next steps based on decision
+            print()
+            print("Next Steps")
+            print("-" * 40)
+            if decision == "approve":
+                print(f"  wf merge {args.id}                    # Merge to main")
+                print(f"  wf plan add {args.id} \"...\"          # Address suggestions or add requirements")
+            else:
+                print(f"  wf run {args.id}                      # Retry implementation")
+                print(f"  wf plan add {args.id} \"...\"          # Add guidance for retry")
 
     # Show available actions (only for micro-commit review, not final review)
     if workstream.status == "awaiting_human_review":

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from orchestrator.lib.config import ProjectConfig, load_project_profile, load_workstream
 from orchestrator.lib.constants import MAX_WS_ID_LEN, WS_ID_PATTERN
+from orchestrator.lib.review import load_review
 from orchestrator.pm.stories import load_story, lock_story, is_story_locked
 from orchestrator.pm.planner import slugify_for_ws_id
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit
@@ -595,10 +596,11 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
             ctx.log(f"Review approved on attempt {attempt}")
             break
         except StageError as e:
-            if e.stage == "review" and attempt < MAX_REVIEW_ATTEMPTS:
+            # Only retry on review rejection, not process failures (timeouts, crashes)
+            if e.stage == "review" and attempt < MAX_REVIEW_ATTEMPTS and "Review rejected" in e.message:
                 # Review rejected - capture feedback, add to history, and retry
                 ctx.log(f"Review rejected on attempt {attempt}, will retry")
-                review_feedback = _load_review_feedback(ctx.run_dir)
+                review_feedback = load_review(ctx.run_dir)
                 implement_summary = _load_implement_summary(ctx.run_dir)
                 ctx.review_history.append({
                     "attempt": attempt,
@@ -607,8 +609,10 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
                 })
                 continue
             else:
-                # Final attempt failed or non-review error
-                if attempt >= MAX_REVIEW_ATTEMPTS:
+                # Process failure (timeout, crash) or final attempt - don't retry
+                if "Review failed" in e.message:
+                    ctx.log(f"Review process failed (not retrying): {e.message}")
+                elif attempt >= MAX_REVIEW_ATTEMPTS:
                     ctx.log(f"Review failed after {MAX_REVIEW_ATTEMPTS} attempts")
                 ctx.write_result("failed", e.stage)
                 # Don't return - fall through to human review
@@ -652,24 +656,6 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
     ctx.write_result("passed")
     ctx.log("Run complete: passed")
     return "passed", 0, None
-
-
-def _load_review_feedback(run_dir: Path) -> dict:
-    """Load review feedback from claude_review.json."""
-    review_path = run_dir / "claude_review.json"
-    if not review_path.exists():
-        return None
-    try:
-        data = json.loads(review_path.read_text())
-        return {
-            "blockers": data.get("blockers", []),
-            "required_changes": data.get("required_changes", []),
-            "suggestions": data.get("suggestions", []),
-            "notes": data.get("notes", ""),
-        }
-    except (json.JSONDecodeError, IOError) as e:
-        logger.warning(f"Failed to load review feedback from {review_path}: {e}")
-        return None
 
 
 def _load_implement_summary(run_dir: Path) -> str:

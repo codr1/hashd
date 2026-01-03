@@ -405,6 +405,7 @@ def main():
     p_close = subparsers.add_parser('close', help='Close story or workstream (abandon)')
     p_close.add_argument('id', nargs='?', help='Story ID (STORY-xxxx) or workstream ID')
     p_close.add_argument('--force', action='store_true', help='Close even with uncommitted changes')
+    p_close.add_argument('--keep-branch', action='store_true', help='Keep git branch for potential resurrection')
     p_close.set_defaults(func=cmd_close)
 
     # wf merge

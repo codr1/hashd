@@ -41,7 +41,7 @@ def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print("\nUse --force to close anyway, or commit/discard changes first")
             return 2
 
-    # Remove worktree (but keep branch for potential resurrection)
+    # Remove worktree
     if ws.worktree.exists():
         print(f"Removing worktree at {ws.worktree}...")
         result = subprocess.run(
@@ -57,6 +57,16 @@ def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             if result.returncode != 0:
                 print(f"ERROR: Failed to remove worktree: {result.stderr}")
                 return 1
+
+    # Delete the branch unless --keep-branch specified
+    if not getattr(args, 'keep_branch', False):
+        print(f"Deleting branch {ws.branch}...")
+        result = subprocess.run(
+            ["git", "-C", str(project_config.repo_path), "branch", "-D", ws.branch],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f"Warning: Failed to delete branch: {result.stderr.strip()}")
 
     # Update meta.env with closed status
     meta_path = workstream_dir / "meta.env"
@@ -90,8 +100,9 @@ def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                 print(f"Unlocked story: {story.id}")
 
     print(f"Workstream '{ws_id}' closed (not merged).")
-    print(f"  Branch '{ws.branch}' preserved for potential resurrection")
-    print(f"  Use 'wf open {ws_id}' to resurrect")
+    if getattr(args, 'keep_branch', False):
+        print(f"  Branch '{ws.branch}' preserved for potential resurrection")
+        print(f"  Use 'wf open {ws_id}' to resurrect")
     print(f"  Use 'wf archive delete {ws_id} --confirm' to permanently delete")
 
     return 0

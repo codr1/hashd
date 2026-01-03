@@ -14,6 +14,7 @@ from pathlib import Path
 
 from orchestrator.lib.config import ProjectConfig
 from orchestrator.lib.planparse import parse_plan
+from orchestrator.lib.review import load_review
 from orchestrator.pm.stories import (
     list_stories,
     load_story,
@@ -283,6 +284,25 @@ def cmd_plan_add(args, ops_dir: Path, project_config: ProjectConfig):
         return 1
 
     description = feedback
+
+    # Load latest review suggestions if available
+    runs_dir = ops_dir / "runs"
+    if runs_dir.exists():
+        ws_runs = sorted(
+            [d for d in runs_dir.iterdir() if ws_id in d.name],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True
+        )
+        for run_dir in ws_runs:
+            review = load_review(run_dir)
+            if review and review.get('suggestions'):
+                suggestions = review['suggestions']
+                suggestions_text = "\n".join(f"- {s}" for s in suggestions)
+                if description:
+                    description = f"{description}\n\nReviewer suggestions:\n{suggestions_text}"
+                else:
+                    description = f"Reviewer suggestions:\n{suggestions_text}"
+                break
 
     # Validate workstream exists
     workstream_dir = ops_dir / "workstreams" / ws_id

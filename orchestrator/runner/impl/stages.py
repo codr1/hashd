@@ -18,6 +18,7 @@ from orchestrator.runner.stages import StageError, StageBlocked
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit, mark_done
 from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.history import format_conversation_history
+from orchestrator.lib.review import load_review, format_review, print_review
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
@@ -54,42 +55,10 @@ def _load_last_review_output(ctx: RunContext) -> dict | None:
         reverse=True
     )
     for run_dir in ws_runs:
-        review_file = run_dir / "claude_review.json"
-        if review_file.exists():
-            return json.loads(review_file.read_text())
+        review = load_review(run_dir)
+        if review:
+            return review
     return None
-
-
-def _format_review_content(review: dict) -> str:
-    """Format review output as a readable string."""
-    lines = [f"**Decision:** {review.get('decision', 'unknown')}"]
-
-    blockers = review.get('blockers', [])
-    if blockers:
-        lines.append("\n**Blockers:**")
-        for b in blockers:
-            if isinstance(b, dict):
-                lines.append(f"- [{b.get('severity', '?')}] {b.get('file', '?')}:{b.get('line', '?')} - {b.get('issue', '?')}")
-            else:
-                lines.append(f"- {b}")
-
-    required = review.get('required_changes', [])
-    if required:
-        lines.append("\n**Required Changes:**")
-        for c in required:
-            lines.append(f"- {c}")
-
-    suggestions = review.get('suggestions', [])
-    if suggestions:
-        lines.append("\n**Suggestions:**")
-        for s in suggestions:
-            lines.append(f"- {s}")
-
-    notes = review.get('notes', '')
-    if notes:
-        lines.append(f"\n**Notes:** {notes}")
-
-    return "\n".join(lines)
 
 
 def _print_review_result(review):
@@ -267,7 +236,7 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     review_context_section = ""
     last_review = _load_last_review_output(ctx)
     if last_review:
-        review_content = _format_review_content(last_review)
+        review_content = format_review(last_review)
         review_context_section = render_prompt(
             "implement_review_context",
             review_content=review_content
