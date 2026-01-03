@@ -135,7 +135,6 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print(f"  Warning: SPEC update failed: {spec_content}")
 
     # 2.5 Delete REQS sections for this story (before merge, so it's in the commit)
-    story = find_story_by_workstream(project_dir, ws.id) if not story else story
     if story and ws.worktree.exists():
         # Delete from worktree so changes are included in merge
         success, msg, extracted = delete_reqs_sections(story.id, project_config, ws.worktree)
