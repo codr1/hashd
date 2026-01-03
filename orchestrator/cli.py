@@ -333,9 +333,10 @@ def main():
     p_plan.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, resurrect=False, story_id=None)
     plan_sub = p_plan.add_subparsers(dest='plan_cmd')
 
-    # wf plan new "title"
+    # wf plan new "title" [-f "feedback"]
     p_plan_new = plan_sub.add_parser('new', help='Create ad-hoc story')
     p_plan_new.add_argument('title', nargs='?', help='Story title hint')
+    p_plan_new.add_argument('-f', '--feedback', help='Detailed requirements for the story')
     p_plan_new.set_defaults(func=cmd_plan, new=True, clone=False, edit=False, resurrect=False)
 
     # wf plan clone STORY-xxx

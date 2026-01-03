@@ -207,8 +207,13 @@ def run_plan_session(
     return run_claude(prompt, cwd=project_config.repo_path, timeout=timeout)
 
 
-def build_refine_prompt(chunk_name: str, context: dict, existing_ws_ids: list[str] = None) -> str:
+def build_refine_prompt(chunk_name: str, context: dict, existing_ws_ids: list[str] = None, feedback: str = None) -> str:
     """Build the refinement prompt for Claude."""
+    # Build feedback section if provided
+    feedback_section = ""
+    if feedback:
+        feedback_section = f"\n\n## User Requirements\n\n{feedback}\n\nUse these requirements as the primary source of truth for this story. Do not guess or make assumptions beyond what the user specified."
+
     # Build existing workstream IDs section
     existing_ws_ids_section = ""
     if existing_ws_ids:
@@ -229,6 +234,7 @@ def build_refine_prompt(chunk_name: str, context: dict, existing_ws_ids: list[st
     return render_prompt(
         "refine_story",
         chunk_name=chunk_name,
+        feedback_section=feedback_section,
         existing_ws_ids_section=existing_ws_ids_section,
         reqs_section=reqs_section,
         spec_section=spec_section
@@ -262,6 +268,7 @@ def run_refine_session(
     ops_dir: Path,
     project_dir: Path,
     timeout: int = 300,
+    feedback: str = None,
 ) -> tuple[bool, Optional[dict], str]:
     """Refine a chunk into a story.
 
@@ -278,7 +285,7 @@ def run_refine_session(
     # Get existing workstream IDs to avoid duplicates
     existing_ws_ids = get_existing_ws_ids(ops_dir)
 
-    prompt = build_refine_prompt(chunk_name, context, existing_ws_ids)
+    prompt = build_refine_prompt(chunk_name, context, existing_ws_ids, feedback=feedback)
     success, response = run_claude(prompt, cwd=project_config.repo_path, timeout=timeout)
 
     if not success:

@@ -22,6 +22,29 @@ class LockTimeout(Exception):
 CONCURRENCY_WARNING_THRESHOLD = 3
 
 
+def is_workstream_locked(ops_dir: Path, workstream_id: str) -> bool:
+    """Check if a workstream lock is currently held by a running process."""
+    lock_file = ops_dir / "locks" / "workstreams" / f"{workstream_id}.lock"
+    if not lock_file.exists():
+        return False
+
+    try:
+        fd = open(lock_file, 'r')
+        try:
+            # Try non-blocking exclusive lock
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Got lock - means no one else has it, release immediately
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        except BlockingIOError:
+            # Could not get lock - workstream is running
+            return True
+        finally:
+            fd.close()
+    except (IOError, OSError):
+        return False
+
+
 def count_running_workstreams(ops_dir: Path) -> int:
     """Count how many workstreams are currently locked (running)."""
     lock_dir = ops_dir / "locks" / "workstreams"

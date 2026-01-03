@@ -33,6 +33,7 @@ from orchestrator.lib.config import (
     get_active_workstreams,
     load_workstream,
 )
+from orchestrator.runner.locking import is_workstream_locked
 from orchestrator.lib.planparse import parse_plan
 from orchestrator.lib.timeline import (
     EVENT_COLORS,
@@ -176,7 +177,7 @@ class DashboardWidget(Static):
             return "[dim]No active workstreams[/dim]\n\nUse 'wf run <story>' to start one."
 
         lines = ["[bold]Active Workstreams[/bold]\n"]
-        for i, (ws, ws_dir) in enumerate(self.workstreams[:MAX_SELECTABLE_WORKSTREAMS], 1):
+        for i, (ws, ws_dir, is_running) in enumerate(self.workstreams[:MAX_SELECTABLE_WORKSTREAMS], 1):
             stage = _get_workstream_stage(ws, ws_dir)
             done, total = _get_workstream_progress(ws_dir)
 
@@ -193,8 +194,10 @@ class DashboardWidget(Static):
                 status_str = "[green]done[/green]"
             elif ws.status == "blocked":
                 status_str = "[red]blocked[/red]"
-            else:
+            elif is_running:
                 status_str = "[cyan]running[/cyan]"
+            else:
+                status_str = "[dim]idle[/dim]"
 
             lines.append(
                 f"  [{i}] {ws.id:<20} {stage:<10} {progress:<6} {status_str}"
@@ -261,7 +264,7 @@ class DashboardScreen(Screen):
         """Reload workstream list."""
         workstreams = get_active_workstreams(self.ops_dir)
         self.workstreams = [
-            (ws, self.ops_dir / "workstreams" / ws.id)
+            (ws, self.ops_dir / "workstreams" / ws.id, is_workstream_locked(self.ops_dir, ws.id))
             for ws in workstreams
         ]
 
@@ -271,7 +274,7 @@ class DashboardScreen(Screen):
     def _select_workstream(self, index: int) -> None:
         """Switch to detail mode for selected workstream."""
         if index < len(self.workstreams):
-            _, ws_dir = self.workstreams[index]
+            _, ws_dir, _ = self.workstreams[index]
             self.app.push_screen(
                 DetailScreen(ws_dir, self.ops_dir, self.project_config)
             )

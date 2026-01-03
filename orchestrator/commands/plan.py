@@ -84,13 +84,16 @@ def cmd_plan_new(args, ops_dir: Path, project_config: ProjectConfig):
     """Create an ad-hoc story not from REQS.md."""
     project_dir = ops_dir / "projects" / project_config.name
     title = getattr(args, 'title', None)
+    feedback = getattr(args, 'feedback', None)
 
     if title:
         print(f"Creating story: {title}")
     else:
         print("Creating new story...")
 
-    success, story_data, message = run_refine_session(title or "", project_config, ops_dir, project_dir)
+    success, story_data, message = run_refine_session(
+        title or "", project_config, ops_dir, project_dir, feedback=feedback
+    )
 
     if not success:
         print(message)
