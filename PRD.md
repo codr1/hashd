@@ -347,7 +347,7 @@ wf show <id>
 wf approve <id>
 wf merge <ws>
 wf close <id>
-wf watch <ws>
+wf watch [ws]
 ```
 
 ### 10.3 Command Details
@@ -385,7 +385,8 @@ wf watch <ws>
 - `wf merge theme_crud` - Merge branch to main, archive workstream
 
 **wf watch** - Interactive TUI
-- `wf watch theme_crud` - Monitor workstream in real-time (see Appendix I)
+- `wf watch` - Dashboard showing all active workstreams (see Appendix I)
+- `wf watch theme_crud` - Monitor single workstream in real-time
 
 ### 10.4 Supporting Commands
 
@@ -1730,7 +1731,7 @@ Interactive TUI for workstream monitoring and control. Polls artifact state ever
 └─────────────────────────────────────────────────┘
 ```
 
-**Detail Mode** (`wf watch <ws>` or press 1-9 from dashboard): Single workstream view.
+**Detail Mode** (`wf watch [ws]` or press 1-9 from dashboard): Single workstream view.
 
 ```
 ┌─ workstream_id ───────────────────────────────────────┐
