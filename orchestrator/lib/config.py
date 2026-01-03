@@ -76,8 +76,9 @@ def load_project_profile(project_dir: Path) -> ProjectProfile:
     env = envparse.load_env(str(project_dir / "project_profile.env"))
     make_target_test = env.get("MAKE_TARGET_TEST", "test")
 
-    # Validate merge mode
-    merge_mode = env.get("MERGE_MODE", "local")
+    # Validate merge mode - default based on environment
+    from orchestrator.lib.github import get_default_merge_mode, VALID_MERGE_MODES
+    merge_mode = env.get("MERGE_MODE") or get_default_merge_mode()
     if merge_mode not in VALID_MERGE_MODES:
         logger.warning(
             f"Unknown MERGE_MODE '{merge_mode}', defaulting to 'local'. "

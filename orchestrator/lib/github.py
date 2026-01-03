@@ -51,6 +51,21 @@ def check_gh_cli() -> bool:
         return False
 
 
+def get_default_merge_mode() -> str:
+    """
+    Determine default merge mode based on environment.
+
+    Returns "github_pr" if gh CLI is available and authenticated,
+    otherwise "local".
+
+    User can always override to "local" in project_profile.env.
+    GitLab and other providers are TODO.
+    """
+    if check_gh_cli():
+        return MERGE_MODE_GITHUB_PR
+    return MERGE_MODE_LOCAL
+
+
 def get_pr_status(repo_path: Path, pr_number: int) -> PRStatus:
     """
     Get PR status including review state and CI checks.

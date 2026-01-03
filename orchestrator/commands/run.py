@@ -731,6 +731,7 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     except FileNotFoundError:
         # Use defaults (review_timeout=300 for contextual reviews)
         from orchestrator.lib.config import ProjectProfile
+        from orchestrator.lib.github import get_default_merge_mode
         profile = ProjectProfile(
             makefile_path="Makefile",
             make_target_test="test",
@@ -740,6 +741,7 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             test_timeout=300,
             breakdown_timeout=180,
             supervised_mode=False,
+            merge_mode=get_default_merge_mode(),
         )
 
     # Override supervised_mode from CLI flags
