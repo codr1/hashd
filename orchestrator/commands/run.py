@@ -726,14 +726,13 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     # Inject CLI feedback if provided (same mechanism as wf reject)
     if getattr(args, 'feedback', None):
-        import json
         approval_file = workstream_dir / "human_approval.json"
         approval_file.write_text(json.dumps({
             "action": "reject",
             "feedback": args.feedback,
             "reset": False
         }))
-        print(f"Injected feedback for this run")
+        print("Injected feedback for this run")
 
     # Load project profile
     project_dir = ops_dir / "projects" / project_config.name
