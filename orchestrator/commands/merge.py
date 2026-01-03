@@ -27,6 +27,7 @@ from orchestrator.pm.stories import (
     archive_story,
 )
 from orchestrator.pm.reqs_annotate import delete_reqs_sections
+from orchestrator.commands.docs import run_docs_update
 
 
 MAX_CONFLICT_RESOLUTION_ATTEMPTS = 3
@@ -96,9 +97,45 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print(result.stdout)
             return 2
 
-    # 2.5 Delete REQS sections for this story (before merge, so it's in the commit)
+    # 2.4 Update SPEC.md (before merge, so it's in the commit)
     # Find story now and pass to _archive_workstream to avoid duplicate lookup
+    # Note: If SPEC update succeeds but later steps fail, the SPEC commit remains
+    # in the branch. This is acceptable - the commit is valid, merge just didn't complete.
     story = find_story_by_workstream(project_dir, ws.id)
+    if ws.worktree.exists():
+        print(f"Updating SPEC.md...")
+        spec_ok, spec_content = run_docs_update(
+            ws.id, ops_dir, project_config,
+            timeout=300,
+            spec_source_dir=ws.worktree,  # Read from worktree, not main repo
+        )
+        if spec_ok:
+            # Write to worktree so it's part of the merge
+            spec_path = ws.worktree / "SPEC.md"
+            spec_path.write_text(spec_content)
+            # Stage and commit
+            add_result = subprocess.run(
+                ["git", "-C", str(ws.worktree), "add", "SPEC.md"],
+                capture_output=True, text=True
+            )
+            if add_result.returncode == 0:
+                story_ref = f"Story: {story.id}" if story else f"Workstream: {ws.id}"
+                commit_result = subprocess.run(
+                    ["git", "-C", str(ws.worktree), "commit", "-m",
+                     f"Update SPEC.md with implemented functionality\n\n{story_ref}"],
+                    capture_output=True, text=True
+                )
+                if commit_result.returncode == 0:
+                    print("  Committed SPEC update")
+                elif "nothing to commit" in commit_result.stdout:
+                    print("  SPEC unchanged")
+                else:
+                    print(f"  Warning: git commit failed: {commit_result.stderr.strip()}")
+        else:
+            print(f"  Warning: SPEC update failed: {spec_content}")
+
+    # 2.5 Delete REQS sections for this story (before merge, so it's in the commit)
+    story = find_story_by_workstream(project_dir, ws.id) if not story else story
     if story and ws.worktree.exists():
         # Delete from worktree so changes are included in merge
         success, msg, extracted = delete_reqs_sections(story.id, project_config, ws.worktree)

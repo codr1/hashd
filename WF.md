@@ -2,147 +2,149 @@
 
 ## Modes
 
-| Mode | Description |
-|------|-------------|
-| **supervised** | Human approves at each gate (current default) |
-| **gatekeeper** | AI runs autonomously, human approves only at merge |
+| Mode | Flag | Description |
+|------|------|-------------|
+| **supervised** | `--supervised` | Human approves at each gate (default) |
+| **gatekeeper** | `--gatekeeper` | AI runs autonomously, human approves only at merge |
+
+Mode is set per-run: `wf run --gatekeeper` or `wf run --supervised`
 
 ---
 
 ## Phase 1: Planning
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                         PLANNING                             │
-└─────────────────────────────────────────────────────────────┘
-
 [Human] Start with requirements
         - Write REQS.md (dirty requirements)
         - Or have existing feature requests
 
 [Human/AI] Plan chunks
-        $ wf pm plan
-        - Claude reads REQS.md, SPEC.md, active workstreams
+        $ wf plan
+        - Claude reads REQS.md, SPEC.md, active stories
         - Proposes logical chunks to build
+        - Creates STORY-xxxx with acceptance criteria
 
-[Human/AI] Refine into stories
-        $ wf pm refine "<chunk>"
-        - Creates STORY-xxxx with:
-          - Acceptance criteria
-          - Non-goals
-          - Dependencies
-          - Open questions
+[Human/AI] Or create ad-hoc story
+        $ wf plan new ["title"]
+        - Story not tied to REQS.md
 
-[Human] Create workstream from story
-        $ wf new <id> "<title>" --stories STORY-xxxx
+[Human] Review and accept story
+        $ wf show STORY-xxxx
+        $ wf approve STORY-xxxx     # draft -> accepted
 
-[Human] Write plan.md with micro-commits
-        - Manual, or AI-assisted
+[Human] Edit story if needed
+        $ wf plan edit STORY-xxxx [-f "feedback"]
 
 [Human] Set context (optional)
-        $ wf use <id>
+        $ wf use <workstream_id>
 
-                              │
-                              ▼
+                              |
+                              v
 ```
 
 ---
 
-## Phase 2: Micro-Commit Loop
+## Phase 2: Implementation
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    MICRO-COMMIT LOOP                         │
-└─────────────────────────────────────────────────────────────┘
+[Human] Start run (creates workstream from story if needed)
+        $ wf run STORY-xxxx              # Creates workstream, starts run
+        $ wf run STORY-xxxx custom_name  # Override workstream name
+        $ wf run <workstream_id>         # Run existing workstream
 
-[Human] Start run
-        $ wf run --loop              # or --once for single cycle
+Options:
+        --once        Single micro-commit cycle
+        --loop        Run until blocked/complete (default behavior)
+        --gatekeeper  Auto-approve if tests and review pass
+        --supervised  Always pause for human review
+        -v            Show AI implement/review exchange
 
-              ┌──────────────────────────────────────┐
-              │         FOR EACH MICRO-COMMIT        │
-              │                                      │
-              │  ┌─────────┐                         │
-              │  │  LOAD   │ Validate config         │
-              │  └────┬────┘                         │
-              │       │                              │
-              │       ▼                              │
-              │  ┌─────────┐                         │
-              │  │ SELECT  │ Pick next Done: [ ]     │
-              │  └────┬────┘                         │
-              │       │                              │
-              │       ▼                              │
-              │  ┌─────────────────────────────────┐ │
-              │  │      IMPLEMENT/TEST/REVIEW      │ │
-              │  │           (up to 3x)            │ │
-              │  │                                 │ │
-              │  │  ┌─────────┐                    │ │
-              │  │  │IMPLEMENT│ Codex writes code  │ │
-              │  │  └────┬────┘                    │ │
-              │  │       │                         │ │
-              │  │       ▼                         │ │
-              │  │  ┌─────────┐                    │ │
-              │  │  │  TEST   │ make test          │ │
-              │  │  └────┬────┘                    │ │
-              │  │       │                         │ │
-              │  │       ├── FAIL ──┐              │ │
-              │  │       │          │ (retry with  │ │
-              │  │       ▼          │  test output)│ │
-              │  │  ┌─────────┐     │              │ │
-              │  │  │ REVIEW  │     │              │ │
-              │  │  └────┬────┘     │              │ │
-              │  │       │          │              │ │
-              │  │       ├── REJECT─┘              │ │
-              │  │       │   (retry with feedback) │ │
-              │  │       │                         │ │
-              │  │       ▼ APPROVE                 │ │
-              │  └─────────────────────────────────┘ │
-              │       │                              │
-              │       │ 3x exhaust → [HITL]          │
-              │       ▼                              │
-              │  ┌──────────────┐                    │
-              │  │ HUMAN_REVIEW │ Gate (see below)   │
-              │  └──────────────┘                    │
-              │                                      │
-              └──────────────────────────────────────┘
+              +--------------------------------------+
+              |         FOR EACH MICRO-COMMIT        |
+              |                                      |
+              |  +----------+                        |
+              |  |  LOAD    | Validate config        |
+              |  +----+-----+                        |
+              |       |                              |
+              |       v                              |
+              |  +----------+                        |
+              |  | SELECT   | Pick next Done: [ ]    |
+              |  +----+-----+                        |
+              |       |                              |
+              |       v                              |
+              |  +---------------------------------+ |
+              |  |      IMPLEMENT/TEST/REVIEW      | |
+              |  |           (up to 3x)            | |
+              |  |                                 | |
+              |  |  +----------+                   | |
+              |  |  |IMPLEMENT | Codex writes code | |
+              |  |  +----+-----+                   | |
+              |  |       |                         | |
+              |  |       v                         | |
+              |  |  +----------+                   | |
+              |  |  |   TEST   | make test         | |
+              |  |  +----+-----+                   | |
+              |  |       |                         | |
+              |  |       +-- FAIL --+              | |
+              |  |       |          | (retry with  | |
+              |  |       v          |  test output)| |
+              |  |  +----------+    |              | |
+              |  |  |  REVIEW  |    |              | |
+              |  |  +----+-----+    |              | |
+              |  |       |          |              | |
+              |  |       +-- REJECT-+              | |
+              |  |       |   (retry with feedback) | |
+              |  |       |                         | |
+              |  |       v APPROVE                 | |
+              |  +---------------------------------+ |
+              |       |                              |
+              |       | 3x exhaust -> [HITL]         |
+              |       v                              |
+              |  +--------------+                    |
+              |  | HUMAN_REVIEW | Gate (see below)   |
+              |  +--------------+                    |
+              |                                      |
+              +--------------------------------------+
 
-                              │
-                              ▼
+                              |
+                              v
 
-┌─────────────────────────────────────────────────────────────┐
-│                    HUMAN_REVIEW GATE                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  SUPERVISED MODE:                                            │
-│  ────────────────                                            │
-│  [Human] Review changes                                      │
-│          $ wf show                                           │
-│                                                              │
-│  [Human] Decision:                                           │
-│          $ wf approve        → commit, next micro-commit     │
-│          $ wf reject -f ".." → iterate with feedback         │
-│          $ wf reset          → discard, start fresh          │
-│                                                              │
-│  ─────────────────────────────────────────────────────────── │
-│                                                              │
-│  GATEKEEPER MODE:                                            │
-│  ────────────────                                            │
-│  [AI] Auto-approve if:                                       │
-│       - Tests pass                                           │
-│       - Review decision = "approve"                          │
-│       - No blockers                                          │
-│                                                              │
-│  [AI] Auto-reject + iterate if:                              │
-│       - Review decision = "request_changes"                  │
-│       - Retry up to 3 times                                  │
-│                                                              │
-│  [AI] Escalate to HITL if:                                   │
-│       - 3 retries exhausted (test or review failures)        │
-│       - Clarification needed                                 │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------+
+|                    HUMAN_REVIEW GATE                         |
++-------------------------------------------------------------+
+|                                                              |
+|  SUPERVISED MODE:                                            |
+|  ----------------                                            |
+|  [Human] Review changes                                      |
+|          $ wf show <ws>                                      |
+|          $ wf diff <ws>                                      |
+|                                                              |
+|  [Human] Decision:                                           |
+|          $ wf approve             -> commit, next micro      |
+|          $ wf reject -f ".."      -> iterate with feedback   |
+|          $ wf reject --reset      -> discard, start fresh    |
+|                                                              |
+|  ----------------------------------------------------------- |
+|                                                              |
+|  GATEKEEPER MODE:                                            |
+|  ----------------                                            |
+|  [AI] Auto-approve if:                                       |
+|       - Tests pass                                           |
+|       - Review decision = "approve"                          |
+|       - No blockers                                          |
+|                                                              |
+|  [AI] Auto-reject + iterate if:                              |
+|       - Review decision = "request_changes"                  |
+|       - Retry up to 3 times                                  |
+|                                                              |
+|  [AI] Escalate to HITL if:                                   |
+|       - 3 retries exhausted                                  |
+|       - Clarification needed                                 |
+|                                                              |
++-------------------------------------------------------------+
 
-                              │
-                              ▼ (all micro-commits done)
+                              |
+                              v (all micro-commits done)
 ```
 
 ---
@@ -150,56 +152,53 @@
 ## Phase 3: Final Branch Review
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                   FINAL BRANCH REVIEW                        │
-└─────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------+
+|                   FINAL BRANCH REVIEW                        |
++-------------------------------------------------------------+
 
 [Auto] Triggered when all micro-commits complete
-       - Or manually: $ wf review
+       - Or manually: $ wf review <ws>
 
 [AI] Reviews entire branch diff as senior staff engineer
      - Holistic assessment
      - Cross-cutting concerns
      - Verdict: APPROVE or CONCERNS
 
-                              │
-              ┌───────────────┴───────────────┐
-              │                               │
-              ▼                               ▼
+                              |
+              +---------------+---------------+
+              |                               |
+              v                               v
          [APPROVE]                       [CONCERNS]
-              │                               │
-              │                               ▼
-              │               ┌─────────────────────────────┐
-              │               │     FINAL REVIEW REJECT     │
-              │               ├─────────────────────────────┤
-              │               │                             │
-              │               │  SUPERVISED MODE:           │
-              │               │  [Human] Review concerns    │
-              │               │          $ wf reject -f ".."│
-              │               │                             │
-              │               │  [AI] Generate fix commit   │
-              │               │       COMMIT-OP-NNN         │
-              │               │       (Final Review Fix)    │
-              │               │                             │
-              │               │  [Human] Review plan.md     │
-              │               │          Edit if needed     │
-              │               │                             │
-              │               │  [Human] $ wf run --loop    │
-              │               │          Back to Phase 2    │
-              │               │                             │
-              │               │  ─────────────────────────  │
-              │               │                             │
-              │               │  GATEKEEPER MODE:           │
-              │               │  [AI] Auto-generate fix     │
-              │               │  [AI] Auto-run (up to 3x)   │
-              │               │  [AI] Escalate if 3x fail   │
-              │               │                             │
-              │               └─────────────────────────────┘
-              │                               │
-              │                               │ (fix succeeds)
-              │◄──────────────────────────────┘
-              │
-              ▼
+              |                               |
+              |                               v
+              |               +-----------------------------+
+              |               |     FINAL REVIEW REJECT     |
+              |               +-----------------------------+
+              |               |                             |
+              |               |  SUPERVISED MODE:           |
+              |               |  [Human] Review concerns    |
+              |               |          $ wf reject -f ".."|
+              |               |                             |
+              |               |  [AI] Generate fix commit   |
+              |               |       COMMIT-OP-NNN         |
+              |               |       (Final Review Fix)    |
+              |               |                             |
+              |               |  [Human] $ wf run --loop    |
+              |               |          Back to Phase 2    |
+              |               |                             |
+              |               |  -------------------------  |
+              |               |                             |
+              |               |  GATEKEEPER MODE:           |
+              |               |  [AI] Auto-generate fix     |
+              |               |  [AI] Auto-run (up to 3x)   |
+              |               |  [AI] Escalate if 3x fail   |
+              |               |                             |
+              |               +-----------------------------+
+              |                               |
+              |                               | (fix succeeds)
+              |<------------------------------+
+              |
+              v
 ```
 
 ---
@@ -207,185 +206,226 @@
 ## Phase 4: Merge
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                          MERGE                               │
-└─────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------+
+|                          MERGE                               |
++-------------------------------------------------------------+
 
          [READY TO MERGE]
-              │
-              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       MERGE GATE                             │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  SUPERVISED MODE:                                            │
-│  [Human] $ wf merge                                          │
-│                                                              │
-│  ─────────────────────────────────────────────────────────── │
-│                                                              │
-│  GATEKEEPER MODE:                                            │
-│  [Human] $ wf merge                                          │
-│                                                              │
-│  [AI] Escalation check (informational):                      │
-│       - Final review = APPROVE?                              │
-│       - Lines changed < threshold?                           │
-│       - No sensitive paths?                                  │
-│       - No unresolved conflicts?                             │
-│                                                              │
-│  [AI] If any fail → warn human before merge                  │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
+              |
+              v
++-------------------------------------------------------------+
+|                       MERGE GATE                             |
++-------------------------------------------------------------+
+|                                                              |
+|  [Human] $ wf merge <ws>                                     |
+|          $ wf merge <ws> --push    # Also push to remote     |
+|                                                              |
+|  [Auto] SPEC.md update                                       |
+|         - Claude generates from story + commits + code diff  |
+|         - Committed to branch before merge                   |
+|                                                              |
+|  [Auto] REQS.md cleanup                                      |
+|         - WIP-marked sections deleted                        |
+|         - Committed to branch before merge                   |
+|                                                              |
+|  [Auto] Merge to main                                        |
+|         - Conflict resolution (up to 3 AI attempts)          |
+|         - If conflicts unresolvable -> HITL                  |
+|                                                              |
+|  [Auto] Archive workstream                                   |
+|         - Worktree removed                                   |
+|         - Moved to _closed/                                  |
+|         - Story marked implemented                           |
+|                                                              |
++-------------------------------------------------------------+
 
-              │
-              ▼
+              |
+              v
 
-[Auto] Merge to main branch
-       - Conflict resolution (up to 3 attempts)
-       - If conflicts unresolvable → HITL
-
-[Auto] Archive workstream
-       $ wf archive (automatic after merge)
-
-[Human/AI] Update SPEC
-       $ wf pm spec <workstream>
-       - Claude updates SPEC.md to reflect implementation
-
-                              │
-                              ▼
-
-                         [COMPLETE]
+         [COMPLETE]
 ```
 
 ---
 
-## Command Summary
+## Command Reference
 
-| Phase | Command | Description |
-|-------|---------|-------------|
-| Plan | `wf pm plan` | AI proposes chunks from REQS.md |
-| Plan | `wf pm refine <chunk>` | Create STORY-xxxx from chunk |
-| Plan | `wf pm status` | Show PM status (stories, SPEC) |
-| Plan | `wf pm list` | List all stories |
-| Plan | `wf pm show <id>` | Show story details |
-| Plan | `wf new <id> "<title>"` | Create workstream |
-| Plan | `wf use <id>` | Set current workstream |
-| Run | `wf run --loop` | Run until blocked/complete |
-| Run | `wf run --once` | Single micro-commit cycle |
-| Run | `wf run -v` | Verbose (show AI exchange) |
-| Gate | `wf show` | View pending changes |
-| Gate | `wf approve` | Approve micro-commit |
-| Gate | `wf reject -f "..."` | Reject with feedback |
-| Gate | `wf reset` | Discard and restart |
-| Review | `wf review` | Run final branch review |
-| Review | `wf reject -f "..."` | Reject final review (generates fix commit) |
-| Merge | `wf merge` | Merge to main |
-| Merge | `wf merge --push` | Merge and push to remote |
-| Merge | `wf pm spec <ws>` | Update SPEC.md after merge |
-| Info | `wf status` | Show workstream status |
-| Info | `wf list` | List all workstreams |
-| Info | `wf clarify` | List pending clarification requests |
-| Manage | `wf close` | Abandon workstream |
-| Manage | `wf archive work` | List archived workstreams |
-| Manage | `wf archive stories` | List archived stories |
-| Manage | `wf open <id>` | Resurrect archived |
+### Core Commands
+
+| Command | Description |
+|---------|-------------|
+| `wf plan` | Discovery from REQS.md, proposes stories |
+| `wf plan new ["title"]` | Create ad-hoc story |
+| `wf plan edit STORY-xxx [-f ".."]` | Edit existing story |
+| `wf plan clone STORY-xxx` | Clone a locked story |
+| `wf plan add <ws> "title" [-f ".."]` | Add micro-commit to workstream |
+| `wf plan resurrect STORY-xxx` | Resurrect abandoned story |
+| `wf run [id] [--once\|--loop] [--gatekeeper\|--supervised]` | Run workstream |
+| `wf list` | List stories and workstreams |
+| `wf show <id> [--stats]` | Show story or workstream details |
+| `wf approve <id> [--no-run]` | Accept story or approve gate |
+| `wf reject [id] [-f ".."] [--reset] [--no-run]` | Reject with feedback |
+| `wf merge [id] [--push]` | Merge to main and archive |
+| `wf close [id] [--force] [--keep-branch]` | Abandon story or workstream |
+
+### Supporting Commands
+
+| Command | Description |
+|---------|-------------|
+| `wf use [id] [--clear]` | Set/show/clear current workstream |
+| `wf watch [id]` | Interactive TUI (dashboard or single ws) |
+| `wf review [id]` | Run final branch review |
+| `wf diff [id] [--stat\|--staged\|--branch]` | Show workstream diff |
+| `wf log [id] [-s since] [-n limit] [-v] [-r]` | Show workstream timeline |
+| `wf docs [id]` | Update SPEC.md from workstream |
+| `wf docs show [id]` | Preview SPEC update |
+| `wf docs diff [id]` | Show SPEC diff |
+| `wf refresh [id]` | Refresh touched files |
+| `wf conflicts [id]` | Check file conflicts |
+
+### Clarification Commands
+
+| Command | Description |
+|---------|-------------|
+| `wf clarify` | List pending clarifications |
+| `wf clarify show <ws> <id>` | Show clarification details |
+| `wf clarify answer <ws> <id> [-a ".."]` | Answer a clarification |
+
+### Archive Commands
+
+| Command | Description |
+|---------|-------------|
+| `wf archive work` | List archived workstreams |
+| `wf archive stories` | List archived stories |
+| `wf archive delete <id> --confirm` | Permanently delete |
+| `wf open <id> [--use] [--force]` | Resurrect archived workstream |
+
+### Other Commands
+
+| Command | Description |
+|---------|-------------|
+| `wf project show` | Show project configuration |
+| `wf --completion bash\|zsh\|fish` | Generate shell completion |
 
 ---
 
 ## State Diagram
 
 ```
-                    ┌────────────────┐
-                    │     active     │◄──────────────────────┐
-                    └───────┬────────┘                       │
-                            │ wf run                         │
-                            ▼                                │
-                    ┌────────────────┐                       │
-              ┌────►│  implementing  │                       │
-              │     └───────┬────────┘                       │
-              │             │                                │
-              │             ▼                                │
-              │     ┌────────────────┐                       │
-              │     │    testing     │                       │
-              │     └───────┬────────┘                       │
-              │             │                                │
-              │             ▼                                │
-              │     ┌────────────────┐                       │
-              │     │   reviewing    │                       │
-              │     └───────┬────────┘                       │
-              │             │                                │
-              │             ▼                                │
-              │     ┌────────────────────┐                   │
-              │     │awaiting_human_review│                  │
-              │     └───────┬────────────┘                   │
-              │             │                                │
-              │   ┌─────────┼─────────┐                      │
-              │   │         │         │                      │
-              │ reject    approve   reset                    │
-              │   │         │         │                      │
-              └───┘         │         └──────────────────────┘
-                            │
-                            ▼ (more commits?)
-                    ┌────────────────┐
-                    │ final_review   │
-                    └───────┬────────┘
-                            │
-              ┌─────────────┴─────────────┐
-              │                           │
+                    +----------------+
+                    |     active     |<---------------------+
+                    +-------+--------+                      |
+                            | wf run                        |
+                            v                               |
+                    +----------------+                      |
+              +---->|  implementing  |                      |
+              |     +-------+--------+                      |
+              |             |                               |
+              |             v                               |
+              |     +----------------+                      |
+              |     |    testing     |                      |
+              |     +-------+--------+                      |
+              |             |                               |
+              |             v                               |
+              |     +----------------+                      |
+              |     |   reviewing    |                      |
+              |     +-------+--------+                      |
+              |             |                               |
+              |             v                               |
+              |     +--------------------+                  |
+              |     |awaiting_human_review|                 |
+              |     +-------+------------+                  |
+              |             |                               |
+              |   +---------+---------+                     |
+              |   |         |         |                     |
+              | reject    approve   reset                   |
+              |   |         |         |                     |
+              +---+         |         +---------------------+
+                            |
+                            v (more commits?)
+                    +----------------+
+                    | final_review   |
+                    +-------+--------+
+                            |
+              +-------------+-------------+
+              |                           |
            APPROVE                    CONCERNS
-              │                           │
-              │         ┌─────────────────┴─────────────────┐
-              │         │                                   │
-              │    [supervised]                        [gatekeeper]
-              │         │                                   │
-              │         ▼                                   ▼
-              │  ┌──────────────────┐              ┌──────────────┐
-              │  │awaiting_final_   │              │ auto_retry   │◄──┐
-              │  │    decision      │              │  (up to 3x)  │───┤
-              │  └────────┬─────────┘              └──────┬───────┘   │
-              │           │                               │           │
-              │   ┌───────┼───────┐                       │ still     │
-              │   │       │       │                       │ CONCERNS  │
-              │ reject  approve  reset                    └───────────┘
-              │   │       │       │                               │
-              │   │       │       │                         3x exhausted
-              │   ▼       │       │                               │
-              │ (fix      │       │                               ▼
-              │ commit)   │       │                     ┌──────────────────┐
-              │   │       │       │                     │awaiting_final_   │
-              │   │       │       │                     │    decision      │
-              │   │       │       │                     └────────┬─────────┘
-              │   │       │       │                              │
-              │   ▼       ▼       ▼                       (same as supervised)
-              │ active  ready  active
-              │        to_merge
-              │           │
-              └───────────┘
-                    │
-                    ▼
-             ┌────────────────┐
-             │ ready_to_merge │
-             └───────┬────────┘
-                     │
-                     │ wf merge (human)
-                     ▼
-             ┌────────────────┐
-             │    merging     │
-             └───────┬────────┘
-                     │
-           ┌─────────┴─────────┐
-           │                   │
+              |                           |
+              |         +-----------------+
+              |         |                 |
+              |    [supervised]      [gatekeeper]
+              |         |                 |
+              |         v                 v
+              |  +----------------+  +------------+
+              |  |awaiting_final_ |  | auto_retry |<--+
+              |  |    decision    |  |  (up to 3x)|---+
+              |  +-------+--------+  +------+-----+
+              |          |                  |
+              |  +-------+-------+          | 3x exhausted
+              |  |       |       |          |
+              | reject approve reset        v
+              |  |       |       |   +----------------+
+              |  |       |       |   |awaiting_final_ |
+              |  v       |       |   |    decision    |
+              | (fix     |       |   +-------+--------+
+              | commit)  |       |           |
+              |  |       |       |    (same as supervised)
+              |  v       v       v
+              | active ready  active
+              |       to_merge
+              |          |
+              +----------+
+                    |
+                    v
+             +----------------+
+             | ready_to_merge |
+             +-------+--------+
+                     |
+                     | wf merge (human)
+                     v
+             +----------------+
+             |    merging     |
+             +-------+--------+
+                     |
+           +---------+---------+
+           |                   |
         conflicts           success
-           │                   │
-           ▼                   ▼
-   ┌──────────────┐      ┌────────┐
-   │merge_conflicts│      │ merged │
-   └──────────────┘      └───┬────┘
-                             │
-                             ▼
-                      ┌────────────┐
-                      │  archived  │
-                      └────────────┘
+           |                   |
+           v                   v
+   +---------------+      +--------+
+   |merge_conflicts|      | merged |
+   +---------------+      +---+----+
+                              |
+                              v
+                       +------------+
+                       |  archived  |
+                       +------------+
 ```
+
+---
+
+## Story Lifecycle
+
+```
+draft -> accepted -> implementing -> implemented
+         (editable)    (LOCKED)       (LOCKED)
+```
+
+- `wf approve STORY-xxx` moves draft -> accepted
+- `wf run STORY-xxx` moves accepted -> implementing (LOCKS story)
+- `wf merge <ws>` moves implementing -> implemented
+- `wf close <ws>` unlocks story (returns to accepted)
+- `wf plan clone STORY-xxx` creates editable copy of locked story
+
+---
+
+## Requirements Lifecycle
+
+```
+REQS.md (shrinks) -> Stories -> SPEC.md (grows)
+```
+
+- **Story creation**: WIP markers added to REQS.md
+- **Merge**: SPEC.md updated, WIP sections deleted from REQS.md
 
 ---
 
@@ -408,3 +448,4 @@
 | `final_review.md` | `workstreams/<id>/` | Latest final review output |
 | `final_review_history/` | `workstreams/<id>/` | Previous review attempts |
 | `touched_files.txt` | `workstreams/<id>/` | Files changed in branch |
+| `stats/` | `workstreams/<id>/` | Agent timing stats |

@@ -49,7 +49,7 @@ Current sister directory model is clumsy. Target: hashd is the central tool, pro
 
 ---
 
-### Requirements Lifecycle (IN PROGRESS)
+### Requirements Lifecycle (COMPLETE)
 
 **Goal:** REQS.md shrinks as requirements are consumed by stories, SPEC.md grows on merge.
 
@@ -108,54 +108,33 @@ When story is created via `wf plan refine`, Claude annotates REQS.md with WIP ma
 ---
 
 #### Phase 3: `wf docs` Command
-**Status:** [ ] Not started
+**Status:** [x] COMPLETE
 
 **Runs BEFORE merge** (after final review passes), so docs are part of the merge commit.
 
 **Flow:**
 1. Final review passes
-2. `wf docs` runs (auto in gatekeeper mode, prompted in supervised mode)
-3. Find `<!-- BEGIN WIP: xxx -->` blocks in REQS.md
-4. Extract content + implementation details from workstream
-5. Claude generates SPEC.md section
-6. Append to SPEC.md
-7. DELETE WIP blocks from REQS.md
-8. Commit docs changes to branch
-9. Then merge proceeds
-
-**Mode behavior:**
-- **Supervised:** Prompt user, show diff, ask for approval
-- **Gatekeeper/Autonomous:** Just do it
+2. `wf merge` auto-runs SPEC update (integrated, not separate command)
+3. Claude generates SPEC.md from story + micro-commits + code diff
+4. DELETE WIP blocks from REQS.md
+5. Commit docs changes to branch
+6. Then merge proceeds
 
 **Commands:**
-- `wf docs` - update SPEC.md, trim REQS.md (main use)
-- `wf docs show` - preview what would be generated
-- `wf docs diff` - show changes between REQS and SPEC
+- `wf docs [ws]` - update SPEC.md manually
+- `wf docs show [ws]` - preview what would be generated
+- `wf docs diff [ws]` - show diff between current and proposed SPEC
 
-**NOTE:** When this feature is complete, update PRD.md to document the `wf docs` command and the documentation lifecycle.
-
-- [ ] `orchestrator/commands/docs.py` - NEW: `wf docs` command
-- [ ] `orchestrator/cli.py` - Wire up `wf docs`, `wf docs show`, `wf docs diff`
-- [ ] `prompts/update_spec.md` - NEW: prompt for SPEC generation
-- [ ] Integrate into `wf run` / `wf merge` flow (after final review, before merge)
+- [x] `orchestrator/commands/docs.py` - `wf docs` command (prompt inline)
+- [x] `orchestrator/cli.py` - Wire up `wf docs`, `wf docs show`, `wf docs diff`
+- [x] `orchestrator/commands/merge.py` - Integrated SPEC update before merge
 
 ---
 
 #### Phase 4: Documentation
-**Status:** [ ] Not started
+**Status:** [x] COMPLETE
 
-- [ ] `PRD.md` - Add requirements lifecycle section
-
----
-
-**Remaining Files (Phase 3 & 4):**
-
-| File | Change | Phase |
-|------|--------|-------|
-| `orchestrator/commands/docs.py` | NEW: `wf docs` command | 3 |
-| `orchestrator/cli.py` | Wire `wf docs` | 3 |
-| `prompts/update_spec.md` | NEW: spec generation prompt | 3 |
-| `PRD.md` | Requirements lifecycle + `wf docs` docs | 4 |
+- [x] `PRD.md` - Add requirements lifecycle section (10.6.1) and `wf docs` command
 
 ---
 
