@@ -14,6 +14,8 @@
     "CREATED_AT": { "type": "string" },
     "LAST_REFRESHED": { "type": "string" },
     "LAST_RUN_ID": { "type": "string" },
-    "LAST_COMMIT_SHA": { "type": "string", "pattern": "^[a-f0-9]{7,40}$" }
+    "LAST_COMMIT_SHA": { "type": "string", "pattern": "^[a-f0-9]{7,40}$" },
+    "PR_URL": { "type": "string" },
+    "PR_NUMBER": { "type": "string", "pattern": "^[0-9]+$" }
   }
 }

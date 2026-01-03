@@ -138,6 +138,39 @@ When story is created via `wf plan refine`, Claude annotates REQS.md with WIP ma
 
 ---
 
+### GitHub PR Workflow
+**Status:** [ ] Designed, not started
+
+Optional PR-based merge workflow for projects using GitHub.
+
+**Config:**
+```env
+MERGE_MODE=local          # default - current behavior (git merge)
+MERGE_MODE=github_pr      # create PR, merge via gh pr merge
+```
+
+**Flow (when `MERGE_MODE=github_pr`):**
+1. All micro-commits complete
+2. Final review (Claude) passes
+3. Human approves final review
+4. **PR created automatically** (branch pushed, `gh pr create`)
+5. External review (CodeRabbit, humans, CI) - new status: `pr_open`
+6. If changes requested → same as reject, back to active state
+7. When approved → `wf merge` does `gh pr merge`
+
+**`wf watch` integration:**
+- Show PR status, URL, CI checks in workstream detail view
+- `a` key triggers merge when PR is approved (reuses existing approve action)
+- `o` key opens PR in browser (new)
+
+**Requirements:**
+- `gh` CLI must be configured
+- Falls back to error if `gh` unavailable
+
+See PRD.md section 10.6.2 for full spec.
+
+---
+
 ### Features (designed, not built)
 - Autonomy levels: autonomous mode (auto-approve gates) - see PRD section 19
 - Escalation rules config - see PRD section 19

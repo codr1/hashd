@@ -13,6 +13,7 @@ import json
 import logging
 import subprocess
 import sys
+import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -32,6 +33,11 @@ from orchestrator.lib.config import (
     Workstream,
     get_active_workstreams,
     load_workstream,
+)
+from orchestrator.lib.github import (
+    get_pr_status,
+    STATUS_PR_OPEN,
+    STATUS_PR_APPROVED,
 )
 from orchestrator.runner.locking import is_workstream_locked
 from orchestrator.lib.planparse import parse_plan
@@ -190,6 +196,10 @@ class DashboardWidget(Static):
             # Format status indicator
             if ws.status == "awaiting_human_review":
                 status_str = "[yellow]review[/yellow]"
+            elif ws.status == STATUS_PR_OPEN:
+                status_str = "[magenta]PR open[/magenta]"
+            elif ws.status == STATUS_PR_APPROVED:
+                status_str = "[green]PR ready[/green]"
             elif ws.status == "complete":
                 status_str = "[green]done[/green]"
             elif ws.status == "blocked":
@@ -319,6 +329,7 @@ class StatusWidget(Static):
     workstream: reactive[Optional[Workstream]] = reactive(None)
     last_run: reactive[Optional[dict]] = reactive(None)
     file_stats: reactive[str] = reactive("")
+    pr_status: reactive[Optional[dict]] = reactive(None)
 
     def render(self) -> str:
         if not self.workstream:
@@ -329,6 +340,14 @@ class StatusWidget(Static):
             f"[bold]{ws.id}[/bold]",
             f"Status: [cyan]{ws.status}[/cyan]",
         ]
+
+        # Show PR info if in PR workflow
+        if ws.status in (STATUS_PR_OPEN, STATUS_PR_APPROVED) and ws.pr_url:
+            lines.append(f"PR: [link={ws.pr_url}]{ws.pr_url}[/link]")
+            if self.pr_status:
+                review = self.pr_status.get("review_decision") or "pending"
+                checks = self.pr_status.get("checks_status") or "none"
+                lines.append(f"  Review: {review} | Checks: {checks}")
 
         if self.last_run:
             microcommit = self.last_run.get("microcommit", "none")
@@ -411,6 +430,7 @@ class DetailScreen(Screen):
         Binding("d", "show_diff", "Diff", show=False),
         Binding("l", "show_log", "Log", show=False),
         Binding("g", "go_run", "Run", show=False),
+        Binding("o", "open_pr", "Open PR", show=False),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -501,6 +521,16 @@ class DetailScreen(Screen):
         if self.workstream.worktree and self.workstream.worktree.exists():
             file_stats = self._get_file_stats(self.workstream.worktree)
 
+        # Get PR status if in PR workflow
+        pr_status = None
+        if self.workstream.status in (STATUS_PR_OPEN, STATUS_PR_APPROVED) and self.workstream.pr_number:
+            status = get_pr_status(self.project_config.repo_path, self.workstream.pr_number)
+            if not status.error:
+                pr_status = {
+                    "review_decision": status.review_decision,
+                    "checks_status": status.checks_status,
+                }
+
         # Get timeline events
         events = get_workstream_timeline(
             workstream_dir=self.workstream_dir,
@@ -515,6 +545,7 @@ class DetailScreen(Screen):
         status_widget.workstream = self.workstream
         status_widget.last_run = self.last_run
         status_widget.file_stats = file_stats
+        status_widget.pr_status = pr_status
 
         timeline_widget = self.query_one("#timeline", TimelineWidget)
         timeline_widget.events = events
@@ -555,6 +586,10 @@ class DetailScreen(Screen):
 
         if status == "awaiting_human_review":
             actions.extend(["[a]pprove", "[r]eject", "[R]eset", "[d]iff", "[l]og", "[q]uit"])
+        elif status == STATUS_PR_OPEN:
+            actions.extend(["[o]pen PR", "[a] merge", "[d]iff", "[l]og", "[q]uit"])
+        elif status == STATUS_PR_APPROVED:
+            actions.extend(["[a] merge", "[o]pen PR", "[d]iff", "[l]og", "[q]uit"])
         elif status == "complete":
             actions.extend(["[l]og", "[q]uit"])
         else:
@@ -569,13 +604,42 @@ class DetailScreen(Screen):
             self.app.pop_screen()
 
     def action_approve(self) -> None:
-        """Approve the workstream."""
-        if not self.workstream or self.workstream.status != "awaiting_human_review":
-            self.notify("Nothing to approve", severity="warning")
+        """Approve the workstream or merge PR."""
+        if not self.workstream:
+            self.notify("No workstream loaded", severity="warning")
             return
 
         ws_id = self.workstream.id
         ops_dir = self.ops_dir
+
+        # Handle PR workflow - trigger merge
+        if self.workstream.status in (STATUS_PR_OPEN, STATUS_PR_APPROVED):
+            self.notify("Checking PR status and merging...", severity="information")
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "orchestrator.cli", "merge", ws_id],
+                    capture_output=True,
+                    text=True,
+                    cwd=ops_dir,
+                    timeout=60,  # Longer timeout for merge
+                )
+
+                if result.returncode == 0:
+                    self.notify("PR merged successfully!", severity="information")
+                else:
+                    # Show truncated stderr
+                    stderr = result.stderr.strip()[:200] if result.stderr else result.stdout[:200]
+                    self.notify(f"Merge: {stderr}", severity="warning")
+            except subprocess.TimeoutExpired:
+                self.notify("Merge timed out", severity="error")
+
+            self.refresh_data()
+            return
+
+        # Normal approval for awaiting_human_review
+        if self.workstream.status != "awaiting_human_review":
+            self.notify("Nothing to approve", severity="warning")
+            return
 
         try:
             result = subprocess.run(
@@ -781,6 +845,19 @@ class DetailScreen(Screen):
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+
+    def action_open_pr(self) -> None:
+        """Open PR in browser."""
+        if not self.workstream:
+            self.notify("No workstream loaded", severity="warning")
+            return
+
+        if not self.workstream.pr_url:
+            self.notify("No PR URL available", severity="warning")
+            return
+
+        webbrowser.open(self.workstream.pr_url)
+        self.notify("Opened PR in browser", severity="information")
 
     def action_quit(self) -> None:
         """Quit the application."""
