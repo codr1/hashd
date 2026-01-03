@@ -419,6 +419,7 @@ def main():
     run_mode = p_run.add_mutually_exclusive_group()
     run_mode.add_argument('--gatekeeper', action='store_true', help='Auto-approve if tests and review pass')
     run_mode.add_argument('--supervised', action='store_true', help='Always pause for human review')
+    p_run.add_argument('--feedback', '-f', help='Provide feedback/guidance for this run')
     p_run.set_defaults(func=cmd_run)
 
     # wf close
