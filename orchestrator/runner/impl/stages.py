@@ -307,6 +307,12 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         capture_output=True, text=True
     )
     if not git_status.stdout.strip():
+        # If Codex had something to say but made no changes, surface it
+        if result.stdout and result.stdout.strip():
+            msg = result.stdout.strip()
+            if len(msg) > 500:
+                msg = msg[:500] + "..."
+            raise StageError("implement", f"Codex made no changes. Output:\n{msg}", 4)
         raise StageError("implement", "Codex made no changes", 4)
 
     ctx.log(f"Implementation complete, {len(git_status.stdout.strip().splitlines())} files changed")
