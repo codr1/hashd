@@ -92,25 +92,18 @@ Planning agent now runs via Claude Code with full file access.
 ---
 
 #### Phase 2: REQS Annotation During Refine
-**Status:** [ ] Not started
+**Status:** [x] COMPLETE
 
-When story is created via `wf plan refine`, Claude does second pass to annotate REQS.md.
+When story is created via `wf plan refine`, Claude annotates REQS.md with WIP markers.
 
 **Flow:**
-1. `wf plan refine <chunk>` - Claude API returns story JSON (existing)
-2. Python creates story file (existing)
-3. **NEW:** Claude does semantic pass through REQS.md with story in hand
-4. **NEW:** Claude Code directly edits REQS.md, wrapping relevant text:
-   ```markdown
-   <!-- BEGIN WIP: theme_crud -->
-   Users should be able to create custom themes...
-   <!-- END WIP -->
-   ```
-5. One story may have multiple scattered annotations
+1. `wf plan refine <chunk>` creates story
+2. `annotate_reqs_for_story()` runs Claude Code to wrap relevant REQS text
+3. Git commits the annotation
 
-- [ ] `orchestrator/pm/reqs_annotate.py` - NEW: semantic annotation function
-- [ ] `orchestrator/pm/planner.py` - `run_refine_session()`: Call annotation after story creation
-- [ ] `prompts/annotate_reqs.md` - NEW: prompt for semantic annotation
+- [x] `orchestrator/pm/reqs_annotate.py` - semantic annotation (inline prompt)
+- [x] `orchestrator/commands/plan.py` - calls annotation after story creation
+- [x] Also has `remove_reqs_annotations()` and `delete_reqs_sections()` for cleanup
 
 ---
 
@@ -155,22 +148,14 @@ When story is created via `wf plan refine`, Claude does second pass to annotate 
 
 ---
 
-**Files Summary:**
+**Remaining Files (Phase 3 & 4):**
 
 | File | Change | Phase |
 |------|--------|-------|
-| `orchestrator/pm/planner.py` | Add stories to context, call annotation | 1, 2 |
-| `prompts/plan_discovery.md` | Add `{stories_section}` | 1 |
-| `orchestrator/pm/reqs_annotate.py` | NEW: semantic annotation | 2 |
-| `prompts/annotate_reqs.md` | NEW: annotation prompt | 2 |
 | `orchestrator/commands/docs.py` | NEW: `wf docs` command | 3 |
 | `orchestrator/cli.py` | Wire `wf docs` | 3 |
 | `prompts/update_spec.md` | NEW: spec generation prompt | 3 |
 | `PRD.md` | Requirements lifecycle + `wf docs` docs | 4 |
-
-**NO changes to:**
-- `orchestrator/pm/models.py` - Story model stays clean
-- `prompts/refine_story.md` - Refine output unchanged
 
 ---
 
