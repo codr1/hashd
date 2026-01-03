@@ -136,7 +136,7 @@ def cmd_plan_new(args, ops_dir: Path, project_config: ProjectConfig):
     else:
         print(f"  Warning: {msg}")
 
-    print(f"\nTo start implementation: wf run {story.id}")
+    print(f"\nTo start implementation: wf approve {story.id}")
     return 0
 
 

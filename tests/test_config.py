@@ -25,11 +25,19 @@ class TestMergeModeValidation:
         profile = load_project_profile(Path("/fake/project"))
         assert profile.merge_mode == "github_pr"
 
+    @patch("orchestrator.lib.github.check_gh_cli", return_value=False)
     @patch("orchestrator.lib.config.envparse.load_env")
-    def test_defaults_to_local(self, mock_load_env):
+    def test_defaults_to_local_when_no_gh(self, mock_load_env, mock_gh):
         mock_load_env.return_value = {}
         profile = load_project_profile(Path("/fake/project"))
         assert profile.merge_mode == "local"
+
+    @patch("orchestrator.lib.github.check_gh_cli", return_value=True)
+    @patch("orchestrator.lib.config.envparse.load_env")
+    def test_defaults_to_github_pr_when_gh_available(self, mock_load_env, mock_gh):
+        mock_load_env.return_value = {}
+        profile = load_project_profile(Path("/fake/project"))
+        assert profile.merge_mode == "github_pr"
 
     @patch("orchestrator.lib.config.envparse.load_env")
     def test_invalid_mode_defaults_to_local_with_warning(self, mock_load_env, caplog):
