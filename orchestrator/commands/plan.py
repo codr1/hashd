@@ -8,13 +8,17 @@ Commands:
   wf plan STORY-xxx        - Edit existing story (if unlocked)
 """
 
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-from orchestrator.lib.config import ProjectConfig
+from orchestrator.lib.config import ProjectConfig, load_workstream
 from orchestrator.lib.planparse import parse_plan
+from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.review import load_review
+from orchestrator.pm.claude_utils import extract_json_with_preamble
 from orchestrator.pm.stories import (
     list_stories,
     load_story,
@@ -270,39 +274,17 @@ def cmd_plan_edit(args, ops_dir: Path, project_config: ProjectConfig, story_id: 
 def cmd_plan_add(args, ops_dir: Path, project_config: ProjectConfig):
     """Add a micro-commit to an existing workstream's plan.md."""
     ws_id = args.ws_id
-    title = getattr(args, 'title', None)
+    instruction = getattr(args, 'title', None)
     feedback = getattr(args, 'feedback', '') or ''
 
     # If no title but feedback provided, use feedback as the instruction
-    if not title and feedback:
-        title = feedback
-        feedback = ''
-    elif not title:
-        print("ERROR: Provide a title or use -f for feedback")
+    if not instruction and feedback:
+        instruction = feedback
+    elif not instruction:
+        print("ERROR: Provide an instruction")
         print("  wf plan add <ws_id> \"instruction\"")
         print("  wf plan add <ws_id> -f \"instruction\"")
         return 1
-
-    description = feedback
-
-    # Load latest review suggestions if available
-    runs_dir = ops_dir / "runs"
-    if runs_dir.exists():
-        ws_runs = sorted(
-            [d for d in runs_dir.iterdir() if ws_id in d.name],
-            key=lambda d: d.stat().st_mtime,
-            reverse=True
-        )
-        for run_dir in ws_runs:
-            review = load_review(run_dir)
-            if review and review.get('suggestions'):
-                suggestions = review['suggestions']
-                suggestions_text = "\n".join(f"- {s}" for s in suggestions)
-                if description:
-                    description = f"{description}\n\nReviewer suggestions:\n{suggestions_text}"
-                else:
-                    description = f"Reviewer suggestions:\n{suggestions_text}"
-                break
 
     # Validate workstream exists
     workstream_dir = ops_dir / "workstreams" / ws_id
@@ -311,10 +293,12 @@ def cmd_plan_add(args, ops_dir: Path, project_config: ProjectConfig):
         return 1
 
     plan_path = workstream_dir / "plan.md"
-
     if not plan_path.exists():
         print(f"ERROR: No plan.md found for workstream '{ws_id}'")
         return 1
+
+    # Load workstream to get worktree path
+    ws = load_workstream(workstream_dir)
 
     # Parse existing commits to find next number
     commits = parse_plan(str(plan_path))
@@ -323,15 +307,13 @@ def cmd_plan_add(args, ops_dir: Path, project_config: ProjectConfig):
         print("Use 'wf run' first to generate initial commits.")
         return 1
 
-    # Extract WS prefix from existing commit ID (e.g., BUILD_TASKFILE from COMMIT-BUILD_TASKFILE-001)
-    first_id = commits[0].id  # e.g., "COMMIT-BUILD_TASKFILE-001"
+    # Extract WS prefix from existing commit ID
+    first_id = commits[0].id
     parts = first_id.split('-')
     if len(parts) < 3:
         print(f"ERROR: Cannot parse commit ID format: {first_id}")
         return 1
-
-    # Prefix is everything between COMMIT- and -NNN
-    ws_prefix = '-'.join(parts[1:-1])  # e.g., "BUILD_TASKFILE"
+    ws_prefix = '-'.join(parts[1:-1])
 
     # Find max commit number
     max_num = 0
@@ -347,14 +329,89 @@ def cmd_plan_add(args, ops_dir: Path, project_config: ProjectConfig):
     next_num = max_num + 1
     commit_id = f"COMMIT-{ws_prefix}-{next_num:03d}"
 
+    # Load latest review suggestions if available
+    suggestions_section = ""
+    runs_dir = ops_dir / "runs"
+    if runs_dir.exists():
+        ws_runs = sorted(
+            [d for d in runs_dir.iterdir() if ws_id in d.name],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True
+        )
+        for run_dir in ws_runs:
+            review = load_review(run_dir)
+            if review and review.get('suggestions'):
+                suggestions = review['suggestions']
+                suggestions_text = "\n".join(f"- {s}" for s in suggestions)
+                suggestions_section = f"## Reviewer Suggestions to Address\n{suggestions_text}"
+                break
+
+    # Build prompt
+    plan_content = plan_path.read_text()
+    prompt = render_prompt(
+        "plan_add",
+        instruction=instruction,
+        commit_id=commit_id,
+        suggestions_section=suggestions_section,
+        plan_content=plan_content,
+    )
+
+    print(f"Generating commit spec for: {instruction}")
+
+    # Call Claude
+    cmd = ["claude", "-p", "--output-format", "json"]
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(ws.worktree),
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        print("ERROR: Claude timed out")
+        return 1
+
+    if result.returncode != 0:
+        print(f"ERROR: Claude failed: {result.stderr}")
+        return 1
+
+    # Parse response
+    try:
+        wrapper = json.loads(result.stdout.strip())
+        response_text = wrapper.get("result", result.stdout)
+
+        # extract_json_with_preamble returns (preamble, json_str)
+        _, json_str = extract_json_with_preamble(response_text)
+        if json_str:
+            commit_data = json.loads(json_str)
+        else:
+            # Try parsing response_text directly as JSON
+            commit_data = json.loads(response_text)
+    except (json.JSONDecodeError, TypeError) as e:
+        print(f"ERROR: Failed to parse response: {e}")
+        print(f"Raw output: {result.stdout[:500]}")
+        return 1
+
+    # Validate commit data
+    if not isinstance(commit_data, dict) or 'title' not in commit_data:
+        print(f"ERROR: Invalid commit data: {commit_data}")
+        return 1
+
     # Append the new commit
     new_commit = {
         'id': commit_id,
-        'title': title,
-        'description': description,
+        'title': commit_data.get('title', instruction),
+        'description': commit_data.get('description', ''),
     }
     append_commits_to_plan(plan_path, [new_commit])
 
-    print(f"Added {commit_id}: {title}")
+    print(f"\nAdded {commit_id}: {new_commit['title']}")
+    print(f"\nDescription:\n{new_commit['description'][:200]}..." if len(new_commit['description']) > 200 else f"\nDescription:\n{new_commit['description']}")
     print(f"\nTo implement: wf run {ws_id}")
     return 0
