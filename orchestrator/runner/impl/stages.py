@@ -320,12 +320,20 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
 
 def stage_test(ctx: RunContext):
     """Run tests."""
-    makefile = ctx.workstream.worktree / ctx.profile.makefile_path
-    if not makefile.exists():
-        ctx.log("No Makefile found, skipping tests")
-        return
+    # Validate runner binary is available
+    valid, error = ctx.profile.validate_runner()
+    if not valid:
+        raise StageError("test", error, 5)
 
-    cmd = ["make", "-C", str(ctx.workstream.worktree), ctx.profile.make_target_test]
+    build_file = ctx.profile.get_build_file(ctx.workstream.worktree)
+    if not build_file.exists():
+        raise StageError(
+            "test",
+            f"Build file not found: {build_file} (runner: {ctx.profile.build_runner})",
+            5
+        )
+
+    cmd = ctx.profile.get_build_command(ctx.workstream.worktree, ctx.profile.test_target)
 
     ctx.log(f"Running: {' '.join(cmd)}")
     start = time.time()
@@ -583,42 +591,54 @@ def stage_merge_gate(ctx: RunContext) -> dict:
     worktree = str(ctx.workstream.worktree)
     default_branch = ctx.project.default_branch
 
+    # Validate runner binary is available
+    valid, error = ctx.profile.validate_runner()
+    if not valid:
+        raise StageError("merge_gate", error, 10, details={"type": "missing_runner"})
+
     # 1. Run full test suite
-    makefile = ctx.workstream.worktree / ctx.profile.makefile_path
-    if makefile.exists():
-        test_target = ctx.profile.merge_gate_test_target
-        cmd = ["make", "-C", worktree, test_target]
-
-        ctx.log(f"Running full test suite: {' '.join(cmd)}")
-        start = time.time()
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=ctx.profile.test_timeout
+    build_file = ctx.profile.get_build_file(ctx.workstream.worktree)
+    if not build_file.exists():
+        raise StageError(
+            "merge_gate",
+            f"Build file not found: {build_file} (runner: {ctx.profile.build_runner})",
+            10,
+            details={"type": "missing_build_file"}
         )
 
-        duration = time.time() - start
-        ctx.log_command(cmd, result.returncode, duration)
+    test_target = ctx.profile.merge_gate_test_target
+    cmd = ctx.profile.get_build_command(ctx.workstream.worktree, test_target)
 
-        # Save test output
-        log_path = ctx.run_dir / "stages" / "merge_gate_test.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(
-            f"=== STDOUT ===\n{result.stdout}\n\n=== STDERR ===\n{result.stderr}\n"
+    ctx.log(f"Running full test suite: {' '.join(cmd)}")
+    start = time.time()
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=ctx.profile.test_timeout
+    )
+
+    duration = time.time() - start
+    ctx.log_command(cmd, result.returncode, duration)
+
+    # Save test output
+    log_path = ctx.run_dir / "stages" / "merge_gate_test.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        f"=== STDOUT ===\n{result.stdout}\n\n=== STDERR ===\n{result.stderr}\n"
+    )
+
+    if result.returncode != 0:
+        output = result.stdout + "\n" + result.stderr
+        raise StageError(
+            "merge_gate",
+            f"Full test suite failed (exit {result.returncode})",
+            10,
+            details={"type": "test_failure", "output": output}
         )
 
-        if result.returncode != 0:
-            output = result.stdout + "\n" + result.stderr
-            raise StageError(
-                "merge_gate",
-                f"Full test suite failed (exit {result.returncode})",
-                10,
-                details={"type": "test_failure", "output": output}
-            )
-
-        ctx.log("Full test suite passed")
+    ctx.log("Full test suite passed")
 
     # 2. Check branch is up to date with main
     # First, fetch to ensure we have latest main

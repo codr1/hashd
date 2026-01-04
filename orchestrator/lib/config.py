@@ -5,6 +5,7 @@ Loads project and workstream configuration from .env files.
 """
 
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from . import envparse
@@ -27,18 +28,66 @@ class ProjectConfig:
     tech_avoid: str  # Avoid - don't introduce unless extraordinary reason
 
 
+VALID_BUILD_RUNNERS = {"make", "task"}
+
+
 @dataclass
 class ProjectProfile:
     """Build/test configuration from project_profile.env"""
-    makefile_path: str
-    make_target_test: str
-    merge_gate_test_target: str
+    build_runner: str  # "make" (default) or "task"
+    makefile_path: str  # For make: path to Makefile
+    test_target: str  # Target to run tests (e.g., "test")
+    merge_gate_test_target: str  # Target for full test suite at merge gate
     implement_timeout: int
     review_timeout: int
     test_timeout: int
     breakdown_timeout: int
     supervised_mode: bool
     merge_mode: str  # "local" or "github_pr"
+
+    def get_build_file(self, worktree: Path) -> Path:
+        """Get the build file path for this runner.
+
+        For task runner, checks common Taskfile variants in order:
+        Taskfile.yml, Taskfile.yaml, taskfile.yml, Taskfile.dist.yml
+
+        Returns the first existing file, or the default path if none exist.
+        """
+        if self.build_runner == "task":
+            # Check common Taskfile variants in order of preference
+            variants = [
+                "Taskfile.yml",
+                "Taskfile.yaml",
+                "taskfile.yml",
+                "Taskfile.dist.yml",
+            ]
+            for variant in variants:
+                path = worktree / variant
+                if path.exists():
+                    return path
+            # Return default if none exist (caller will handle missing file)
+            return worktree / "Taskfile.yml"
+        else:  # make
+            return worktree / self.makefile_path
+
+    def get_build_command(self, worktree: Path, target: str) -> list[str]:
+        """Get the command to run a build target."""
+        if self.build_runner == "task":
+            return ["task", "-d", str(worktree), target]
+        else:  # make
+            return ["make", "-C", str(worktree), target]
+
+    def validate_runner(self) -> tuple[bool, str]:
+        """Check if the build runner binary is available.
+
+        Returns:
+            (True, "") if runner is available
+            (False, error_message) if runner is not found
+        """
+        binary = "task" if self.build_runner == "task" else "make"
+        if shutil.which(binary) is None:
+            return False, f"Build runner '{binary}' not found in PATH"
+        return True, ""
 
 
 @dataclass
@@ -74,7 +123,17 @@ def load_project_config(project_dir: Path) -> ProjectConfig:
 def load_project_profile(project_dir: Path) -> ProjectProfile:
     """Load project_profile.env and return ProjectProfile."""
     env = envparse.load_env(str(project_dir / "project_profile.env"))
-    make_target_test = env.get("MAKE_TARGET_TEST", "test")
+    # Support both TEST_TARGET (preferred) and MAKE_TARGET_TEST (legacy)
+    test_target = env.get("TEST_TARGET") or env.get("MAKE_TARGET_TEST", "test")
+
+    # Validate build runner - default to make
+    build_runner = env.get("BUILD_RUNNER", "make")
+    if build_runner not in VALID_BUILD_RUNNERS:
+        logger.warning(
+            f"Unknown BUILD_RUNNER '{build_runner}', defaulting to 'make'. "
+            f"Valid runners: {', '.join(sorted(VALID_BUILD_RUNNERS))}"
+        )
+        build_runner = "make"
 
     # Validate merge mode - default based on environment
     from orchestrator.lib.github import get_default_merge_mode, VALID_MERGE_MODES
@@ -87,9 +146,10 @@ def load_project_profile(project_dir: Path) -> ProjectProfile:
         merge_mode = "local"
 
     return ProjectProfile(
+        build_runner=build_runner,
         makefile_path=env.get("MAKEFILE_PATH", "Makefile"),
-        make_target_test=make_target_test,
-        merge_gate_test_target=env.get("MAKE_TARGET_MERGE_GATE_TEST", make_target_test),
+        test_target=test_target,
+        merge_gate_test_target=env.get("MERGE_GATE_TEST_TARGET") or env.get("MAKE_TARGET_MERGE_GATE_TEST", test_target),
         implement_timeout=int(env.get("IMPLEMENT_TIMEOUT", "1200")),  # 20 min default
         review_timeout=int(env.get("REVIEW_TIMEOUT", "600")),  # Contextual reviews need more time
         test_timeout=int(env.get("TEST_TIMEOUT", "300")),

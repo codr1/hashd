@@ -28,8 +28,10 @@ def cmd_project_show(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         print()
         print("Profile (project_profile.env)")
         print("-" * 40)
-        print(f"  Makefile:        {profile.makefile_path}")
-        print(f"  Test target:     {profile.make_target_test}")
+        print(f"  Build runner:    {profile.build_runner}")
+        if profile.build_runner == "make":
+            print(f"  Makefile:        {profile.makefile_path}")
+        print(f"  Test target:     {profile.test_target}")
         print(f"  Merge gate test: {profile.merge_gate_test_target}")
         print()
         print("  Timeouts:")

@@ -24,7 +24,7 @@ from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, Header, Input, Label, Static
+from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 
 from orchestrator.lib.config import (
     ProjectConfig,
@@ -46,7 +46,7 @@ from orchestrator.lib.timeline import (
     parse_run_log_status,
 )
 from orchestrator.pm.models import Story
-from orchestrator.pm.stories import list_stories, load_story, is_story_locked
+from orchestrator.pm.stories import list_stories, load_story, is_story_locked, update_story
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,14 @@ TIMELINE_FULL_LIMIT = 50
 TIMELINE_LOOKBACK_DAYS = 1
 MAX_SELECTABLE_WORKSTREAMS = 9
 MAX_SELECTABLE_STORIES = 9
+
+# Status display mapping (internal status -> (color, display label))
+STATUS_DISPLAY = {
+    "draft": ("yellow", "draft"),
+    "accepted": ("green", "approved"),  # Display as "approved" to match action verb
+    "implementing": ("cyan", "implementing"),
+    "implemented": ("dim", "implemented"),
+}
 
 
 def _format_event_rich(event: TimelineEvent) -> str:
@@ -133,6 +141,54 @@ class FeedbackModal(ModalScreen[str]):
 
     def on_mount(self) -> None:
         self.query_one("#feedback-input", Input).focus()
+
+    @on(Input.Submitted)
+    def on_submit(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+    def action_cancel(self) -> None:
+        self.dismiss("")
+
+
+class CriterionEditModal(ModalScreen[str]):
+    """Modal for editing an acceptance criterion."""
+
+    CSS = """
+    #criterion-dialog {
+        width: 80%;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: solid $primary;
+    }
+
+    #criterion-input {
+        width: 100%;
+        margin: 1 0;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, criterion_text: str, label: str) -> None:
+        super().__init__()
+        self.criterion_text = criterion_text
+        self.label = label
+
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Label(self.label, id="criterion-label"),
+            Input(value=self.criterion_text, id="criterion-input"),
+            Label("Press Enter to save, Escape to cancel", id="criterion-hint"),
+            id="criterion-dialog",
+        )
+
+    def on_mount(self) -> None:
+        input_widget = self.query_one("#criterion-input", Input)
+        input_widget.focus()
+        input_widget.cursor_position = len(self.criterion_text)
 
     @on(Input.Submitted)
     def on_submit(self, event: Input.Submitted) -> None:
@@ -371,7 +427,7 @@ class StatusWidget(Static):
 
         # Show PR info if in PR workflow
         if ws.status in (STATUS_PR_OPEN, STATUS_PR_APPROVED) and ws.pr_url:
-            lines.append(f"PR: [link={ws.pr_url}]{ws.pr_url}[/link]")
+            lines.append(f"PR: [cyan]{ws.pr_url}[/cyan]")
             if self.pr_status:
                 review = self.pr_status.get("review_decision") or "pending"
                 checks = self.pr_status.get("checks_status") or "none"
@@ -934,8 +990,8 @@ class DetailScreen(Screen):
 # --- Story Detail Mode ---
 
 
-class StoryStatusWidget(Static):
-    """Displays story status and details."""
+class StoryHeaderWidget(Static):
+    """Displays story header info (title, status, problem)."""
 
     story: reactive[Optional[Story]] = reactive(None)
 
@@ -954,9 +1010,6 @@ class StoryStatusWidget(Static):
         if s.workstream:
             lines.append(f"Workstream: [cyan]{s.workstream}[/cyan]")
 
-        if s.source_refs:
-            lines.append(f"Source: [dim]{s.source_refs[:60]}[/dim]")
-
         lines.append("")
 
         if s.problem:
@@ -964,33 +1017,41 @@ class StoryStatusWidget(Static):
             # Truncate long problems for display
             problem_text = s.problem[:200] + "..." if len(s.problem) > 200 else s.problem
             lines.append(f"  {problem_text}")
-            lines.append("")
-
-        if s.acceptance_criteria:
-            lines.append("[bold]Acceptance Criteria[/bold]")
-            for ac in s.acceptance_criteria[:5]:  # Show first 5
-                lines.append(f"  [ ] {ac[:60]}{'...' if len(ac) > 60 else ''}")
-            if len(s.acceptance_criteria) > 5:
-                lines.append(f"  ... and {len(s.acceptance_criteria) - 5} more")
-            lines.append("")
 
         if s.open_questions:
+            lines.append("")
             lines.append(f"[yellow]Open Questions: {len(s.open_questions)}[/yellow]")
 
         return "\n".join(lines)
 
     def _format_status(self, status: str) -> str:
         """Format status with color."""
-        if status == "draft":
-            return "[yellow]draft[/yellow]"
-        elif status == "accepted":
-            return "[green]accepted[/green]"
-        elif status == "implementing":
-            return "[cyan]implementing[/cyan]"
-        elif status == "implemented":
-            return "[dim]implemented[/dim]"
-        else:
-            return f"[dim]{status}[/dim]"
+        if status in STATUS_DISPLAY:
+            color, label = STATUS_DISPLAY[status]
+            return f"[{color}]{label}[/{color}]"
+        return f"[dim]{status}[/dim]"
+
+
+class CriterionItem(ListItem):
+    """A single acceptance criterion in the list."""
+
+    DEFAULT_CSS = """
+    CriterionItem {
+        height: 1;
+    }
+    """
+
+    def __init__(self, index: int, text: str) -> None:
+        super().__init__()
+        self.criterion_index = index
+        self.criterion_text = text
+        # Truncate for display (full text kept for editing)
+        max_len = 90
+        display_text = text[:max_len] + "..." if len(text) > max_len else text
+        self.display_text = display_text
+
+    def compose(self) -> ComposeResult:
+        yield Label(f"[ ] {self.display_text}")
 
 
 class StoryDetailScreen(Screen):
@@ -1002,10 +1063,39 @@ class StoryDetailScreen(Screen):
         padding: 1;
     }
 
-    #story-status-box {
+    #story-header-box {
         border: solid yellow;
         padding: 1;
         height: auto;
+        max-height: 40%;
+    }
+
+    #story-criteria-box {
+        border: solid yellow;
+        padding: 0 1;
+        height: 1fr;
+        margin-top: 1;
+    }
+
+    #story-criteria-box Static {
+        height: auto;
+        padding: 0 0 1 0;
+    }
+
+    #criteria-list {
+        height: 1fr;
+    }
+
+    #criteria-list > ListItem {
+        padding: 0 1;
+    }
+
+    #criteria-list > ListItem:hover {
+        background: $surface-lighten-1;
+    }
+
+    #criteria-list > ListItem.-highlight {
+        background: $primary-darken-2;
     }
 
     #story-action-bar {
@@ -1015,17 +1105,19 @@ class StoryDetailScreen(Screen):
         padding: 0 1;
     }
 
-    StoryStatusWidget {
+    StoryHeaderWidget {
         height: auto;
     }
     """
 
     BINDINGS = [
         Binding("escape", "back_to_dashboard", "Back", show=True),
-        Binding("a", "approve_story", "Approve", show=False),
-        Binding("e", "edit_story", "Edit", show=False),
-        Binding("r", "run_story", "Run", show=False),
-        Binding("c", "close_story", "Close", show=False),
+        Binding("A", "approve_story", "Approve", show=False),  # Shift+a to prevent accidental approval
+        Binding("e", "edit_criterion", "Edit criterion", show=False),
+        Binding("enter", "edit_criterion", "Edit criterion", show=False),
+        Binding("E", "edit_story", "AI edit story", show=False),
+        Binding("R", "run_story", "Run", show=False),  # Shift+r to prevent accidental run
+        Binding("C", "close_story", "Close", show=False),  # Shift+c to prevent accidental close
         Binding("v", "view_full", "View Full", show=False),
         Binding("q", "quit", "Quit"),
     ]
@@ -1044,11 +1136,17 @@ class StoryDetailScreen(Screen):
         self.project_dir = ops_dir / "projects" / project_config.name
         self.is_root = is_root
         self.story: Optional[Story] = None
+        self._last_criteria: list[str] = []  # Track for change detection
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield Container(
-            Container(StoryStatusWidget(id="story-status"), id="story-status-box"),
+            Container(StoryHeaderWidget(id="story-header"), id="story-header-box"),
+            Container(
+                Static("[bold]Acceptance Criteria[/bold]"),
+                ListView(id="criteria-list"),
+                id="story-criteria-box",
+            ),
             id="story-main-container",
         )
         yield Static(id="story-action-bar")
@@ -1070,9 +1168,34 @@ class StoryDetailScreen(Screen):
                 self.app.pop_screen()
             return
 
-        # Update widget
-        status_widget = self.query_one("#story-status", StoryStatusWidget)
-        status_widget.story = self.story
+        # Update header widget
+        header_widget = self.query_one("#story-header", StoryHeaderWidget)
+        header_widget.story = self.story
+
+        # Update criteria list only if changed (preserves selection/scroll)
+        criteria_list = self.query_one("#criteria-list", ListView)
+        current_criteria = self.story.acceptance_criteria or []
+
+        if current_criteria != self._last_criteria:
+            # Save selection index before rebuild
+            selected_index = None
+            if criteria_list.highlighted_child is not None:
+                highlighted = criteria_list.highlighted_child
+                if isinstance(highlighted, CriterionItem):
+                    selected_index = highlighted.criterion_index
+
+            criteria_list.clear()
+            if current_criteria:
+                for i, ac in enumerate(current_criteria):
+                    criteria_list.append(CriterionItem(i, ac))
+                # Restore selection if valid
+                if selected_index is not None and selected_index < len(current_criteria):
+                    criteria_list.index = selected_index
+            else:
+                # Empty state
+                criteria_list.append(ListItem(Label("[dim]No acceptance criteria defined[/dim]")))
+
+            self._last_criteria = list(current_criteria)
 
         # Update action bar
         action_bar = self.query_one("#story-action-bar", Static)
@@ -1095,9 +1218,9 @@ class StoryDetailScreen(Screen):
         status = self.story.status
 
         if status == "draft":
-            actions.extend(["[a]pprove", "[e]dit", "[c]lose", "[v]iew", "[q]uit"])
+            actions.extend(["[A]pprove", "[e]dit", "[E] AI edit", "[C]lose", "[v]iew", "[q]uit"])
         elif status == "accepted":
-            actions.extend(["[r]un", "[e]dit", "[c]lose", "[v]iew", "[q]uit"])
+            actions.extend(["[R]un", "[e]dit", "[E] AI edit", "[C]lose", "[v]iew", "[q]uit"])
         elif status == "implementing":
             actions.extend(["[v]iew", "[q]uit"])  # Limited actions when locked
         else:
@@ -1176,6 +1299,65 @@ class StoryDetailScreen(Screen):
             self.refresh_data()
 
         self.push_screen(FeedbackModal("Edit guidance:"), handle_feedback)
+
+    def action_edit_criterion(self) -> None:
+        """Edit the selected acceptance criterion."""
+        if not self.story:
+            self.notify("No story loaded", severity="warning")
+            return
+
+        if is_story_locked(self.story):
+            self.notify("Story is locked (cannot edit)", severity="warning")
+            return
+
+        # Get selected criterion from ListView
+        criteria_list = self.query_one("#criteria-list", ListView)
+        if criteria_list.highlighted_child is None:
+            self.notify("No criterion selected", severity="warning")
+            return
+
+        selected_item = criteria_list.highlighted_child
+        if not isinstance(selected_item, CriterionItem):
+            return
+
+        criterion_index = selected_item.criterion_index
+        criterion_text = selected_item.criterion_text
+
+        def handle_edit(new_text: str) -> None:
+            if not new_text or new_text == criterion_text:
+                return  # No change
+
+            # Re-fetch story to avoid stale data from polling
+            fresh_story = load_story(self.project_dir, self.story_id)
+            if not fresh_story:
+                self.notify("Story not found", severity="error")
+                return
+
+            if criterion_index >= len(fresh_story.acceptance_criteria):
+                self.notify("Criterion no longer exists", severity="error")
+                self.refresh_data()
+                return
+
+            new_criteria = list(fresh_story.acceptance_criteria)
+            new_criteria[criterion_index] = new_text
+
+            result = update_story(
+                self.project_dir,
+                self.story_id,
+                {"acceptance_criteria": new_criteria}
+            )
+
+            if result:
+                self.notify("Criterion updated", severity="information")
+            else:
+                self.notify("Failed to update criterion", severity="error")
+
+            self.refresh_data()
+
+        self.app.push_screen(
+            CriterionEditModal(criterion_text, f"Edit Criterion {criterion_index + 1}:"),
+            handle_edit
+        )
 
     def action_run_story(self) -> None:
         """Run story (create workstream)."""
@@ -1266,6 +1448,10 @@ class StoryDetailScreen(Screen):
 class WatchApp(App):
     """Main watch TUI application."""
 
+    BINDINGS = [
+        Binding("question_mark", "help", "?", show=True, key_display="?"),
+    ]
+
     CSS = """
     #feedback-dialog {
         align: center middle;
@@ -1313,6 +1499,43 @@ class WatchApp(App):
         else:
             # Dashboard mode
             self.push_screen(DashboardScreen(self.ops_dir, self.project_config))
+
+    def action_help(self) -> None:
+        """Show help screen."""
+        help_text = """[bold]wf watch - Keyboard Shortcuts[/bold]
+
+[bold]Dashboard[/bold]
+  1-9     Select workstream by number
+  a-i     Select story by letter
+  ?       Show this help
+  q       Quit
+
+[bold]Workstream Detail[/bold]
+  Esc     Back to dashboard
+  a       Approve current work / merge PR
+  r       Reject with feedback (when awaiting review)
+  e       Edit/refine with guidance
+  R       Reset (discard changes, restart)
+  g       Go - trigger a run
+  d       View diff
+  l       View run log
+  o       Open PR in browser
+  ?       Show this help
+  q       Quit
+
+[bold]Story Detail[/bold]
+  Esc     Back to dashboard
+  e       Edit selected criterion
+  Enter   Edit selected criterion
+  E       AI-powered story edit
+  A       Approve story (draft only)
+  R       Run - create workstream from story
+  C       Close/abandon story
+  v       View full story markdown
+  ?       Show this help
+  q       Quit
+"""
+        self.push_screen(ContentScreen(help_text, "Help"))
 
 
 def cmd_watch(args, ops_dir: Path, project_config: ProjectConfig) -> int:
