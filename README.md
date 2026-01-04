@@ -311,6 +311,50 @@ Hashd currently supports two modes controlled by `SUPERVISED_MODE`:
 
 Default is gatekeeper mode - the pipeline runs autonomously but requires human approval at gates.
 
+## Merge Behavior
+
+### Automatic Conflict Resolution
+
+When using GitHub PR mode (`MERGE_MODE="github_pr"`), PRs may become conflicting if main moves ahead. The merge command handles this automatically:
+
+1. Fetches latest main
+2. Attempts rebase of the PR branch
+3. Force-pushes rebased branch (using `--force-with-lease`)
+4. Re-checks PR status
+
+If rebase fails due to merge conflicts, blocks for human resolution with instructions.
+
+### Risks and Mitigations
+
+| Risk | Mitigation |
+|------|------------|
+| Force push loses work | `--force-with-lease` prevents overwriting if branch changed |
+| Infinite rebase loop | Max 3 attempts before blocking for human |
+| GitHub API timing | 2s delay after push; worst case run `wf merge` again |
+| Review bypass | Checks for `REVIEW_REQUIRED` status from GitHub |
+
+### Review Requirements
+
+The merge respects GitHub's configured review requirements:
+
+- **APPROVED** - Merge proceeds
+- **PENDING/None** - Merge proceeds (assumes no review required)
+- **CHANGES_REQUESTED** - Blocks, returns to active state
+- **REVIEW_REQUIRED** - Blocks until required reviews complete
+
+### Check Requirements
+
+- **success** - Merge proceeds
+- **pending** - Merge proceeds (for slow bots like CodeRabbit)
+- **failure** - Blocks until checks pass
+
+<!-- TODO: Reassess pending check behavior. Currently allows merge with pending checks
+     to avoid blocking on slow bots (CodeRabbit). Consider:
+     - Configurable list of ignorable checks
+     - Timeout-based promotion of pending to success
+     - Separate "required" vs "optional" check categories
+-->
+
 ## License
 
 BSL 1.1 (Business Source License)

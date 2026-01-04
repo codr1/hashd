@@ -6,6 +6,7 @@ Handles merge conflicts with retry loop similar to implement/review cycle.
 
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -130,9 +131,55 @@ def _create_pr_and_wait(
     return 0
 
 
+def _attempt_rebase_pr_branch(worktree_path: str, default_branch: str) -> bool:
+    """
+    Attempt to rebase PR branch on latest main.
+
+    Returns True on success, False if conflicts or other failure.
+    Uses --force-with-lease for safe force push.
+    """
+    # Fetch latest
+    fetch = subprocess.run(
+        ["git", "-C", worktree_path, "fetch", "origin", default_branch],
+        capture_output=True, timeout=GIT_TIMEOUT_SECONDS
+    )
+    if fetch.returncode != 0:
+        print(f"  Fetch failed: {fetch.stderr.decode()}")
+        return False
+
+    # Attempt rebase
+    rebase = subprocess.run(
+        ["git", "-C", worktree_path, "rebase", f"origin/{default_branch}"],
+        capture_output=True, timeout=GIT_TIMEOUT_SECONDS
+    )
+
+    if rebase.returncode != 0:
+        # Abort and report
+        subprocess.run(
+            ["git", "-C", worktree_path, "rebase", "--abort"],
+            capture_output=True, timeout=GIT_TIMEOUT_SECONDS
+        )
+        print("  Rebase conflicts detected - requires human resolution")
+        return False
+
+    # Force push rebased branch
+    push = subprocess.run(
+        ["git", "-C", worktree_path, "push", "--force-with-lease"],
+        capture_output=True, timeout=GIT_TIMEOUT_SECONDS
+    )
+
+    if push.returncode != 0:
+        print(f"  Push failed: {push.stderr.decode()}")
+        return False
+
+    print("  Auto-rebase successful")
+    return True
+
+
 def _handle_pr_open(
     args, ops_dir: Path, project_config: ProjectConfig,
-    ws, workstream_dir: Path, workstreams_dir: Path
+    ws, workstream_dir: Path, workstreams_dir: Path,
+    rebase_attempts: int = 0
 ) -> int:
     """Handle workstream with open PR - check status and merge if ready."""
     if not ws.pr_number:
@@ -171,6 +218,40 @@ def _handle_pr_open(
     print(f"  Checks: {checks}")
     print(f"  Mergeable: {status.mergeable}")
 
+    # Auto-rebase if PR has conflicts (do this regardless of review status)
+    if not status.mergeable and checks in ("success", "pending", None):
+        if rebase_attempts >= 3:
+            print("\nMax rebase attempts reached. Manual intervention required.")
+            print(f"  cd worktrees/{ws.id}")
+            print(f"  git fetch origin {project_config.default_branch}")
+            print(f"  git rebase origin/{project_config.default_branch}")
+            print("  git push --force-with-lease")
+            return 1
+
+        print("\nPR has conflicts, attempting auto-rebase...")
+        worktree = workstreams_dir.parent / "worktrees" / ws.id
+        default_branch = project_config.default_branch or "main"
+
+        if worktree.exists():
+            if _attempt_rebase_pr_branch(str(worktree), default_branch):
+                time.sleep(2)  # Give GitHub time to recalculate mergeable status
+                # Recursive call to re-check status
+                return _handle_pr_open(
+                    args, ops_dir, project_config, ws, workstream_dir, workstreams_dir,
+                    rebase_attempts=rebase_attempts + 1
+                )
+            else:
+                print("Auto-rebase failed. Resolve manually:")
+                print(f"  cd worktrees/{ws.id}")
+                print(f"  git fetch origin {default_branch}")
+                print(f"  git rebase origin/{default_branch}")
+                print("  git push --force-with-lease")
+                return 1
+        else:
+            print(f"  Worktree not found at: {worktree}")
+            print("  Manual rebase required")
+            return 1
+
     # Check if changes requested - treat as rejection
     if review == "CHANGES_REQUESTED":
         print()
@@ -180,9 +261,12 @@ def _handle_pr_open(
         return 0
 
     # Check if ready to merge - proceed directly without redundant status write
-    if review == "APPROVED" and checks in ("success", None) and status.mergeable:
+    # Allow merge when: APPROVED, PENDING (no review required), or None
+    # Block when: CHANGES_REQUESTED or REVIEW_REQUIRED
+    # Allow checks: success, pending (for slow bots like CodeRabbit), or None
+    if review not in ("CHANGES_REQUESTED", "REVIEW_REQUIRED") and checks in ("success", "pending", None) and status.mergeable:
         print()
-        print("PR is approved and ready to merge!")
+        print("PR is ready to merge!")
         return _handle_pr_approved(args, ops_dir, project_config, ws, workstream_dir, workstreams_dir)
 
     # Not ready yet
@@ -227,10 +311,13 @@ def _handle_pr_approved(
         capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
     )
 
-    # Archive workstream
+    # Archive workstream (always push for GitHub PR mode since repo is remote)
     project_dir = ops_dir / "projects" / project_config.name
     story = find_story_by_workstream(project_dir, ws.id)
-    return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config, ops_dir, story)
+    return _archive_workstream(
+        workstream_dir, workstreams_dir, ws, project_config, ops_dir, story,
+        push=True  # REQS cleanup needs to be pushed to remote
+    )
 
 
 def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
@@ -342,32 +429,8 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         else:
             print(f"  Warning: SPEC update failed: {spec_content}")
 
-    # 2.5 Delete REQS sections for this story (before merge, so it's in the commit)
-    if story and ws.worktree.exists():
-        # Delete from worktree so changes are included in merge
-        success, msg, extracted = delete_reqs_sections(story.id, project_config, ws.worktree)
-        if not success:
-            print(f"  Warning: REQS cleanup failed: {msg}")
-        elif extracted:
-            print(f"Cleaning REQS.md: {msg}")
-            # Commit the REQS cleanup in the worktree
-            reqs_file = project_config.reqs_path
-            add_result = subprocess.run(
-                ["git", "-C", str(ws.worktree), "add", reqs_file],
-                capture_output=True, text=True
-            )
-            if add_result.returncode != 0:
-                print(f"  Warning: git add failed: {add_result.stderr}")
-            else:
-                commit_result = subprocess.run(
-                    ["git", "-C", str(ws.worktree), "commit", "-m",
-                     f"Remove implemented requirements from REQS.md\n\nStory: {story.id}"],
-                    capture_output=True, text=True
-                )
-                if commit_result.returncode == 0:
-                    print("  Committed REQS cleanup")
-                else:
-                    print(f"  Warning: git commit failed: {commit_result.stderr.strip()}")
+    # Note: REQS cleanup now happens post-merge in _archive_workstream()
+    # This prevents cleanup from being lost during rebase conflicts
 
     # 3. Verify branch is ahead of base
     git_dir = str(ws.worktree) if ws.worktree.exists() else str(project_config.repo_path)
@@ -452,19 +515,11 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     print(f"Merged: {merge_msg}")
     _update_status(workstream_dir, STATUS_MERGED)
 
-    # 7. Push if requested
-    if getattr(args, 'push', False):
-        print("Pushing to remote...")
-        result = subprocess.run(
-            ["git", "-C", str(repo_path), "push"],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-        )
-        if result.returncode != 0:
-            print("WARNING: Push failed")
-            print(result.stderr)
-
-    # 8. Archive (pass story to avoid duplicate lookup)
-    return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config, ops_dir, story)
+    # 7. Archive (push happens inside, after REQS cleanup)
+    return _archive_workstream(
+        workstream_dir, workstreams_dir, ws, project_config, ops_dir, story,
+        push=getattr(args, 'push', False)
+    )
 
 
 def _attempt_merge_with_retry(repo_path: Path, ws, merge_msg: str,
@@ -664,7 +719,7 @@ def _update_status(workstream_dir: Path, status: str):
 
 def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
                         ws, project_config: ProjectConfig, ops_dir: Path,
-                        story: Optional[Story] = None) -> int:
+                        story: Optional[Story] = None, push: bool = False) -> int:
     """Archive workstream to _closed/."""
     print("Archiving workstream...")
     repo_path = project_config.repo_path
@@ -700,6 +755,42 @@ def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
     project_dir = ops_dir / "projects" / project_config.name
     if not story:
         story = find_story_by_workstream(project_dir, ws.id)
+
+    # Clean up REQS.md markers post-merge (on main branch)
+    # This runs after merge so it can't be lost during rebase conflicts
+    if story:
+        success, msg, extracted = delete_reqs_sections(story.id, project_config, repo_path)
+        if not success:
+            print(f"  Warning: REQS cleanup failed: {msg}")
+        elif extracted:
+            print(f"Cleaning REQS.md: {msg}")
+            reqs_file = project_config.reqs_path
+            add_result = subprocess.run(
+                ["git", "-C", str(repo_path), "add", reqs_file],
+                capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+            )
+            if add_result.returncode == 0:
+                commit_result = subprocess.run(
+                    ["git", "-C", str(repo_path), "commit", "-m",
+                     f"Remove implemented requirements from REQS.md\n\nStory: {story.id}"],
+                    capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+                )
+                if commit_result.returncode == 0:
+                    print("  Committed REQS cleanup to main")
+                elif "nothing to commit" not in commit_result.stdout:
+                    print(f"  Warning: REQS commit failed: {commit_result.stderr.strip()}")
+
+    # Push if requested (after REQS cleanup so it's included)
+    if push:
+        print("Pushing to remote...")
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "push"],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+        )
+        if result.returncode != 0:
+            print(f"  Warning: Push failed: {result.stderr.strip()}")
+
+    # Archive story
     if story:
         mark_story_implemented(project_dir, story.id)
         if archive_story(project_dir, story.id):

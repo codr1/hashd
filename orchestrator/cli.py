@@ -31,6 +31,7 @@ from orchestrator.commands import watch as cmd_watch_module
 from orchestrator.commands import diff as cmd_diff_module
 from orchestrator.commands import project as cmd_project_module
 from orchestrator.commands import docs as cmd_docs_module
+from orchestrator.commands import skip as cmd_skip_module
 
 
 def get_ops_dir() -> Path:
@@ -309,6 +310,12 @@ def cmd_docs_diff(args):
     return cmd_docs_module.cmd_docs_diff(args, ops_dir, project_config)
 
 
+def cmd_skip(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_skip_module.cmd_skip(args, ops_dir, project_config)
+
+
 def main():
     # Handle --completion before parsing subcommands
     if len(sys.argv) == 2 and sys.argv[1] == '--completion':
@@ -474,6 +481,13 @@ def main():
     p_reject.add_argument('--reset', action='store_true', help='Discard changes and start fresh')
     p_reject.add_argument('--no-run', action='store_true', help='Do not auto-run after reject')
     p_reject.set_defaults(func=cmd_reject)
+
+    # wf skip
+    p_skip = subparsers.add_parser('skip', help='Mark commit as done without changes')
+    p_skip.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_skip.add_argument('commit', nargs='?', help='Specific commit ID (defaults to next pending)')
+    p_skip.add_argument('-m', '--message', help='Reason for skipping')
+    p_skip.set_defaults(func=cmd_skip)
 
     # wf clarify
     p_clarify = subparsers.add_parser('clarify', help='Manage clarification requests')
