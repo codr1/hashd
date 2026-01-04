@@ -273,7 +273,7 @@ Options:
 | Command | Description |
 |---------|-------------|
 | `wf use [id] [--clear]` | Set/show/clear current workstream |
-| `wf watch [id]` | Interactive TUI (dashboard or single ws) |
+| `wf watch [id]` | Interactive TUI (dashboard, workstream, or STORY-xxxx) |
 | `wf review [id]` | Run final branch review |
 | `wf diff [id] [--stat\|--staged\|--branch]` | Show workstream diff |
 | `wf log [id] [-s since] [-n limit] [-v] [-r]` | Show workstream timeline |

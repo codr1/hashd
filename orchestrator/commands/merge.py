@@ -302,14 +302,21 @@ def _handle_pr_approved(
 
     # Pull the merged changes to local main
     print(f"Pulling merged changes to local {project_config.default_branch}...")
-    subprocess.run(
+    checkout_result = subprocess.run(
         ["git", "-C", str(repo_path), "checkout", project_config.default_branch],
         capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
     )
-    subprocess.run(
-        ["git", "-C", str(repo_path), "pull"],
-        capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-    )
+    if checkout_result.returncode != 0:
+        print(f"  Warning: checkout failed: {checkout_result.stderr.strip()}")
+    else:
+        pull_result = subprocess.run(
+            ["git", "-C", str(repo_path), "pull"],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+        )
+        if pull_result.returncode != 0:
+            print(f"  Warning: pull failed: {pull_result.stderr.strip()}")
+        else:
+            print(f"  Local {project_config.default_branch} updated")
 
     # Archive workstream (always push for GitHub PR mode since repo is remote)
     project_dir = ops_dir / "projects" / project_config.name
@@ -380,6 +387,9 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print(f"  Next: {next_commit.id} - {next_commit.title}")
             print(f"  Use 'wf run {ws_id}' to complete remaining work")
             return 2
+
+    # Set status to merging so watch shows progress
+    _update_status(workstream_dir, "merging")
 
     # 2. Verify no uncommitted changes in worktree
     if ws.worktree.exists():

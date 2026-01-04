@@ -28,7 +28,7 @@ Human gates are **mandatory**, not advisory. The clarification queue blocks work
 
 - **Clarification Queue** - Agents raise questions; workstream blocks until you answer (`wf clarify`)
 - **Approve/Reject/Reset** - Accept changes, iterate with feedback, or discard entirely
-- **Interactive TUI** - `wf watch` for real-time monitoring with keyboard shortcuts
+- **Interactive TUI** - `wf watch` for real-time monitoring of workstreams and stories with keyboard shortcuts
 - **Desktop Notifications** - Get alerted when workstreams need attention
 - **Parallel Workstreams** - Run multiple features simultaneously in isolated worktrees
 - **Conflict Detection** - `wf conflicts` warns about overlapping file changes
@@ -176,7 +176,7 @@ wf show other_feature  # Operates on other_feature, context unchanged
 | `wf approve <id>` | Accept story or approve workstream gate |
 | `wf merge <ws>` | Merge completed workstream to main |
 | `wf close <id>` | Close story or workstream (abandon) |
-| `wf watch [ws]` | Interactive TUI (dashboard if no ws, detail if ws given) |
+| `wf watch [id]` | Interactive TUI (dashboard, or detail for workstream/STORY-xxxx) |
 
 ### Supporting Commands
 

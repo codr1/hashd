@@ -524,6 +524,22 @@ def stage_update_state(ctx: RunContext):
     mark_done(str(plan_path), ctx.microcommit.id)
     ctx.log(f"Marked {ctx.microcommit.id} as done")
 
+    # Auto-push if PR is open (so CI re-runs on the fix)
+    if ctx.workstream.pr_number:
+        print(f"Pushing to update PR #{ctx.workstream.pr_number}...")
+        ctx.log(f"Pushing to update PR #{ctx.workstream.pr_number}...")
+        push_result = subprocess.run(
+            ["git", "-C", worktree, "push"],
+            capture_output=True, text=True, timeout=60
+        )
+        if push_result.returncode == 0:
+            print("  Pushed successfully")
+            ctx.log("Pushed successfully")
+        else:
+            # Non-fatal: commit is local, user can push manually
+            print(f"  Push warning: {push_result.stderr.strip()}")
+            ctx.log(f"Push warning: {push_result.stderr.strip()}")
+
     # Update meta.env with last run info
     meta_path = ctx.workstream_dir / "meta.env"
     meta_content = meta_path.read_text()

@@ -191,7 +191,7 @@ def merge_github_pr(repo_path: Path, pr_number: int) -> tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            ["gh", "pr", "merge", str(pr_number), "--merge", "--delete-branch"],
+            ["gh", "pr", "merge", str(pr_number), "--merge"],
             capture_output=True,
             text=True,
             cwd=str(repo_path),

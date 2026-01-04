@@ -406,8 +406,8 @@ def main():
     p_review.set_defaults(func=cmd_review)
 
     # wf watch
-    p_watch = subparsers.add_parser('watch', help='Interactive TUI for monitoring workstream')
-    p_watch.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_watch = subparsers.add_parser('watch', help='Interactive TUI for monitoring workstreams and stories')
+    p_watch.add_argument('id', nargs='?', help='Workstream or Story ID (e.g., my_feature or STORY-0001)')
     p_watch.set_defaults(func=cmd_watch)
 
     # wf conflicts

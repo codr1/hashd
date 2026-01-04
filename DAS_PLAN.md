@@ -171,6 +171,73 @@ See PRD.md section 10.6.2 for full spec.
 
 ---
 
+### No-Op Handling (Stories and Micro-Commits)
+**Status:** [ ] Designed, not started
+
+Two related problems where "no changes" breaks the workflow:
+
+#### Problem 1: Entire Story is No-Op
+Stories that result in zero source code changes:
+- **Investigations** - research tasks that conclude "already handled" or "not needed"
+- **External tooling** - GitHub Actions, CI/CD config, infrastructure changes
+- **Documentation-only** - README updates, external docs
+- **Validation** - confirming existing behavior meets requirements
+
+#### Problem 2: Individual Micro-Commit is No-Op
+Within a story, specific commits may be unnecessary:
+- **AI consolidated work** - AI did commits 001 and 002 together, so 002 has nothing to do
+- **Already implemented** - Code already exists from previous work
+- **Spec was wrong** - Commit described work that isn't actually needed
+
+**Current Behavior (broken):**
+```
+AI: "No changes needed - this is already done"
+System: "FAILED - Codex made no changes"
+→ Workflow stuck, requires manual intervention
+```
+
+**Desired Behavior:**
+```
+AI: "No changes needed - already done" (with explanation)
+System: Recognizes valid no-op, marks commit complete, proceeds to next
+```
+
+**Proposed Solutions:**
+
+1. **Recognize "already done" responses** - Parse AI output for phrases like:
+   - "already implemented", "no changes needed", "already exists"
+   - If explanation is coherent, treat as success, not failure
+   - Mark commit as `done` with note: "Skipped: {reason}"
+
+2. **`wf skip [ws] [commit-id]`** - Manual skip with reason
+   ```bash
+   wf skip dev_onecmd COMMIT-002 "Already done in COMMIT-001"
+   ```
+
+3. **`wf close --no-changes`** - For entire no-op stories
+   ```bash
+   wf close WS-xxx --no-changes "Investigation complete: already handled by X"
+   ```
+
+4. **Story type field** - Mark stories as `type: investigation` at creation
+   - Different workflow expectations per type
+
+**Key Insight:** No-op stories should COMPLETE SUCCESSFULLY, not "close" or "abort". They:
+- May include non-code changes (commands, config, external systems)
+- Still need docs, specs, and tests updated
+- Go through full workflow: run → review → merge
+- End up in `_implemented` as successful completions
+
+**Requirements:**
+- No-op commits recorded in history with reason
+- Full workflow runs: review, docs/spec update, merge
+- Story moves to `_implemented` (successful, not abandoned)
+- REQS annotations cleaned up
+- Works in automated (`-y`) mode without human intervention
+- AI output like "already done" = SUCCESS, not failure
+
+---
+
 ### Features (designed, not built)
 - Autonomy levels: autonomous mode (auto-approve gates) - see PRD section 19
 - Escalation rules config - see PRD section 19
