@@ -5,7 +5,6 @@ Generates thorough documentation from story + micro-commits + code diff.
 REQS cleanup is handled separately in merge.py.
 """
 
-import difflib
 import logging
 import subprocess
 from pathlib import Path
@@ -17,7 +16,7 @@ from orchestrator.lib.config import (
     load_project_profile,
 )
 from orchestrator.lib.planparse import parse_plan
-from orchestrator.pm.claude_utils import run_claude, strip_markdown_fences
+from orchestrator.pm.claude_utils import run_claude
 from orchestrator.pm.stories import find_story_by_workstream
 
 logger = logging.getLogger(__name__)
@@ -151,112 +150,38 @@ def gather_docs_context(
 def build_spec_prompt(context: dict) -> str:
     """Build the SPEC update prompt for Claude.
 
-    Focuses on story + micro-commits + code review for thoroughness.
+    Instructs Claude to make targeted edits to SPEC.md, not regenerate it.
     """
     parts = [
-        "Update the project SPEC.md to document the completed workstream.",
+        "# Update SPEC.md for Completed Workstream",
         "",
-        "The SPEC is the authoritative documentation of what has been built.",
-        "Your job:",
-        "1. Read the current SPEC (may be empty for new projects)",
-        "2. Understand what the workstream implemented by reviewing:",
-        "   - The story (problem, acceptance criteria)",
-        "   - The micro-commits (what was planned)",
-        "   - The actual code diff (what was built)",
-        "3. Update the SPEC to accurately reflect the new capabilities",
-        "4. Remove or update anything that's now deprecated",
-        "5. Return the complete updated SPEC",
+        "You are updating the project specification to reflect newly implemented functionality.",
         "",
-        "Be thorough: capture all important functionality from the code",
-        "Be succinct: no fluff, no repetition, no verbose descriptions",
-        "Be accurate: base your documentation on the actual code changes",
+        "## What Was Built",
+        "",
+        f"**Workstream:** {context['workstream_id']} - {context['title']}",
         "",
     ]
 
-    # Current SPEC
-    current_spec = context.get("current_spec")
-    if current_spec:
-        parts.extend([
-            "## Current SPEC.md",
-            "",
-            current_spec,
-            "",
-        ])
-    else:
-        parts.extend([
-            "## Current SPEC.md",
-            "",
-            "(No SPEC exists yet. Create the initial SPEC.)",
-            "",
-        ])
-
-    # Workstream info
-    parts.extend([
-        "## Completed Workstream",
-        "",
-        f"ID: {context['workstream_id']}",
-        f"Title: {context['title']}",
-        "",
-    ])
-
-    # Story details (primary source of requirements)
+    # Story details
     if context.get("story"):
         story = context["story"]
-        parts.extend([
-            "### Story",
-            "",
-            f"**{story['id']}**: {story['title']}",
-            "",
-        ])
+        parts.append("### Story")
+        parts.append("")
         if story.get("problem"):
-            parts.append(f"**Problem:** {story['problem']}")
+            parts.append(story["problem"])
             parts.append("")
         if story.get("acceptance_criteria"):
-            parts.append("**Acceptance Criteria:**")
+            parts.append("### Acceptance Criteria")
+            parts.append("")
             for ac in story["acceptance_criteria"]:
                 parts.append(f"- {ac}")
             parts.append("")
-        if story.get("non_goals"):
-            parts.append("**Non-Goals:**")
-            for ng in story["non_goals"]:
-                parts.append(f"- {ng}")
-            parts.append("")
 
-    # Micro-commits (implementation plan)
-    if context.get("microcommits"):
-        parts.extend([
-            "### Implementation Plan (Micro-commits)",
-            "",
-        ])
-        for mc in context["microcommits"]:
-            status = "[x]" if mc["done"] else "[ ]"
-            parts.append(f"{status} **{mc['id']}**: {mc['title']}")
-            # Include block content (truncated) for context
-            content_preview = mc["content"][:500] if mc["content"] else ""
-            if content_preview:
-                parts.append("```")
-                parts.append(content_preview)
-                if len(mc["content"]) > 500:
-                    parts.append("...")
-                parts.append("```")
-            parts.append("")
-
-    # Commits
-    if context.get("commits"):
-        parts.extend([
-            "### Commits",
-            "",
-        ])
-        for commit in context["commits"][:15]:
-            parts.append(f"- {commit}")
-        if len(context["commits"]) > 15:
-            parts.append(f"- ... and {len(context['commits']) - 15} more")
-        parts.append("")
-
-    # Code diff (the ground truth)
+    # Code changes summary
     if context.get("diff_stat"):
         parts.extend([
-            "### Files Changed",
+            "### Code Changes",
             "",
             "```",
             context["diff_stat"],
@@ -264,9 +189,10 @@ def build_spec_prompt(context: dict) -> str:
             "",
         ])
 
+    # Include actual diff for context
     if context.get("code_diff"):
         parts.extend([
-            "### Code Diff (review this carefully)",
+            "### Diff",
             "",
             "```diff",
             context["code_diff"],
@@ -276,12 +202,23 @@ def build_spec_prompt(context: dict) -> str:
 
     # Instructions
     parts.extend([
-        "---",
+        "## Your Task",
         "",
-        "Return the complete updated SPEC.md content.",
-        "Use markdown format with clear section headings.",
-        "Document the actual functionality as shown in the code diff.",
-        "Do not include any preamble or explanation, just the SPEC content.",
+        "1. Read SPEC.md",
+        "2. Check if the current SPEC already documents this functionality",
+        "3. If already covered adequately - make no changes, exit",
+        "4. If updates needed - make targeted edits:",
+        "   - Add new sections for new capabilities",
+        "   - Update existing sections if outdated",
+        "   - Do NOT rewrite sections that are already correct",
+        "   - Do NOT add redundant information",
+        "",
+        "## Rules",
+        "",
+        "- Be surgical: edit only what needs editing",
+        "- No fluff: keep documentation concise and technical",
+        "- No placeholders: only document what actually exists in code",
+        "- Preserve structure: follow existing SPEC format and conventions",
     ])
 
     return "\n".join(parts)
@@ -296,32 +233,46 @@ def run_docs_update(
 ) -> tuple[bool, str]:
     """Update SPEC.md based on a workstream.
 
+    Claude edits SPEC.md in place - making targeted changes rather than
+    regenerating the entire file.
+
     Args:
         workstream_id: The workstream to document
         ops_dir: Operations directory
         project_config: Project configuration
         timeout: Claude timeout in seconds
-        spec_source_dir: Where to read current SPEC.md from (defaults to worktree or repo)
+        spec_source_dir: Directory containing SPEC.md to edit (defaults to worktree or repo)
 
     Returns:
-        (success, new_spec_content_or_error_message)
+        (success, message) - message is informational since Claude edits in place
     """
     # Gather context about the workstream
     context = gather_docs_context(workstream_id, ops_dir, project_config, spec_source_dir)
     if not context:
         return False, f"Workstream not found: {workstream_id}"
 
-    # Build prompt and run Claude
+    # Determine where SPEC.md lives
+    if spec_source_dir is None:
+        workstreams_dir = ops_dir / "workstreams"
+        ws_dir = workstreams_dir / workstream_id
+        if not ws_dir.exists():
+            ws_dir = workstreams_dir / "_closed" / workstream_id
+        ws = load_workstream(ws_dir)
+        spec_source_dir = ws.worktree if ws.worktree.exists() else project_config.repo_path
+
+    # Build prompt and run Claude with edit permissions
     prompt = build_spec_prompt(context)
-    success, response = run_claude(prompt, timeout=timeout)
+    success, response = run_claude(
+        prompt,
+        cwd=spec_source_dir,
+        timeout=timeout,
+        accept_edits=True,
+    )
 
     if not success:
         return False, response
 
-    # Strip markdown fences and return new SPEC
-    new_spec = strip_markdown_fences(response)
-
-    return True, new_spec
+    return True, "SPEC.md updated"
 
 
 def _load_workstream_for_docs(
@@ -366,88 +317,47 @@ def cmd_docs(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     timeout = _get_docs_timeout(ops_dir, project_config)
 
-    print(f"Generating SPEC update for: {ws.title}")
+    # Determine target directory
+    spec_dir = ws.worktree if ws.worktree.exists() else project_config.repo_path
+
+    print(f"Updating SPEC.md for: {ws.title}")
+    print(f"  Target: {spec_dir / 'SPEC.md'}")
     print()
 
-    success, result = run_docs_update(
-        args.id, ops_dir, project_config, timeout=timeout
+    # Claude edits SPEC.md in place
+    success, msg = run_docs_update(
+        args.id, ops_dir, project_config,
+        timeout=timeout,
+        spec_source_dir=spec_dir,
     )
 
     if not success:
-        print(f"ERROR: {result}")
+        print(f"ERROR: {msg}")
         return 1
 
-    # Write to SPEC.md in repo (not worktree - this is manual command)
-    spec_path = project_config.repo_path / "SPEC.md"
-    spec_path.write_text(result)
-    print(f"Updated: {spec_path}")
-
+    print("Done")
     return 0
 
 
 def cmd_docs_show(args, ops_dir: Path, project_config: ProjectConfig) -> int:
-    """Preview SPEC update without writing."""
-    ws, exit_code = _load_workstream_for_docs(args.id, ops_dir)
-    if exit_code != 0:
-        return exit_code
+    """Preview SPEC update without writing.
 
-    timeout = _get_docs_timeout(ops_dir, project_config)
-
-    print(f"Generating SPEC preview for: {ws.title}")
-    print("=" * 60)
-    print()
-
-    success, result = run_docs_update(
-        args.id, ops_dir, project_config, timeout=timeout
-    )
-
-    if not success:
-        print(f"ERROR: {result}")
-        return 1
-
-    print(result)
-    return 0
+    DEPRECATED: Now that SPEC updates are targeted edits, preview isn't meaningful.
+    Use 'wf docs' directly - Claude only makes necessary changes.
+    """
+    print("WARNING: 'wf docs show' is deprecated.")
+    print("SPEC updates are now targeted edits, not full regeneration.")
+    print("Use 'wf docs <workstream>' to update SPEC.md directly.")
+    return 1
 
 
 def cmd_docs_diff(args, ops_dir: Path, project_config: ProjectConfig) -> int:
-    """Show diff between current SPEC and proposed update."""
-    ws, exit_code = _load_workstream_for_docs(args.id, ops_dir)
-    if exit_code != 0:
-        return exit_code
+    """Show diff between current SPEC and proposed update.
 
-    timeout = _get_docs_timeout(ops_dir, project_config)
-
-    print(f"Generating SPEC diff for: {ws.title}")
-    print()
-
-    # Get current SPEC from same source as generation (worktree if exists)
-    spec_source = ws.worktree if ws.worktree.exists() else project_config.repo_path
-    spec_path = spec_source / "SPEC.md"
-    current_spec = spec_path.read_text() if spec_path.exists() else ""
-
-    success, new_spec = run_docs_update(
-        args.id, ops_dir, project_config, timeout=timeout
-    )
-
-    if not success:
-        print(f"ERROR: {new_spec}")
-        return 1
-
-    # Generate unified diff
-    current_lines = current_spec.splitlines(keepends=True)
-    new_lines = new_spec.splitlines(keepends=True)
-
-    diff = difflib.unified_diff(
-        current_lines,
-        new_lines,
-        fromfile="SPEC.md (current)",
-        tofile="SPEC.md (proposed)",
-    )
-
-    diff_output = "".join(diff)
-    if diff_output:
-        print(diff_output)
-    else:
-        print("No changes to SPEC.md")
-
-    return 0
+    DEPRECATED: Now that SPEC updates are targeted edits, pre-diff isn't meaningful.
+    Use 'git diff' after running 'wf docs' to see what changed.
+    """
+    print("WARNING: 'wf docs diff' is deprecated.")
+    print("SPEC updates are now targeted edits, not full regeneration.")
+    print("Run 'wf docs <workstream>' then 'git diff SPEC.md' to see changes.")
+    return 1

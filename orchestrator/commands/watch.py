@@ -18,8 +18,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
-
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -43,12 +41,14 @@ from orchestrator.runner.locking import is_workstream_locked
 from orchestrator.lib.planparse import parse_plan
 from orchestrator.lib.timeline import (
     EVENT_COLORS,
-    EVENT_SYMBOLS,
     TimelineEvent,
     get_workstream_timeline,
+    parse_run_log_status,
 )
 from orchestrator.pm.models import Story
 from orchestrator.pm.stories import list_stories, load_story, is_story_locked
+
+logger = logging.getLogger(__name__)
 
 # Configuration
 POLL_INTERVAL_SECONDS = 2.0
@@ -65,23 +65,21 @@ MAX_SELECTABLE_STORIES = 9
 def _format_event_rich(event: TimelineEvent) -> str:
     """Format a timeline event with Rich markup."""
     ts_str = event.timestamp.strftime("%Y-%m-%d %H:%M")
-    symbol = EVENT_SYMBOLS.get(event.event_type, "?")
     color = EVENT_COLORS.get(event.event_type, "")
 
     if color:
-        return f"[dim]{ts_str}[/dim] [{color}][{symbol}][/{color}] {event.summary}"
-    return f"[dim]{ts_str}[/dim] [{symbol}] {event.summary}"
+        return f"[dim]{ts_str}[/dim] [{color}]{event.summary}[/{color}]"
+    return f"[dim]{ts_str}[/dim] {event.summary}"
 
 
 def _format_event_rich_short(event: TimelineEvent) -> str:
     """Format a timeline event with Rich markup (short timestamp)."""
     ts_str = event.timestamp.strftime("%H:%M")
-    symbol = EVENT_SYMBOLS.get(event.event_type, "?")
     color = EVENT_COLORS.get(event.event_type, "")
 
     if color:
-        return f"  [dim]{ts_str}[/dim] [{color}][{symbol}][/{color}] {event.summary}"
-    return f"  [dim]{ts_str}[/dim] [{symbol}] {event.summary}"
+        return f"  [dim]{ts_str}[/dim] [{color}]{event.summary}[/{color}]"
+    return f"  [dim]{ts_str}[/dim] {event.summary}"
 
 
 def _get_workstream_progress(workstream_dir: Path) -> tuple[int, int]:
@@ -93,8 +91,8 @@ def _get_workstream_progress(workstream_dir: Path) -> tuple[int, int]:
         commits = parse_plan(str(plan_path))
         done = sum(1 for c in commits if c.done)
         return (done, len(commits))
-    except Exception as e:
-        logger.debug(f"Failed to parse plan at {plan_path}: {e}")
+    except (FileNotFoundError, IOError) as e:
+        logger.debug(f"Failed to read plan at {plan_path}: {e}")
         return (0, 0)
 
 
@@ -350,6 +348,7 @@ class StatusWidget(Static):
     last_run: reactive[Optional[dict]] = reactive(None)
     file_stats: reactive[str] = reactive("")
     pr_status: reactive[Optional[dict]] = reactive(None)
+    progress: reactive[str] = reactive("")
 
     def render(self) -> str:
         if not self.workstream:
@@ -358,8 +357,17 @@ class StatusWidget(Static):
         ws = self.workstream
         lines = [
             f"[bold]{ws.id}[/bold]",
-            f"Status: [cyan]{ws.status}[/cyan]",
         ]
+
+        # Show title if available
+        if ws.title and ws.title != ws.id:
+            lines.append(f"[dim]{ws.title}[/dim]")
+
+        lines.append(f"Status: [cyan]{ws.status}[/cyan]")
+
+        # Show progress if available
+        if self.progress:
+            lines.append(f"Progress: {self.progress}")
 
         # Show PR info if in PR workflow
         if ws.status in (STATUS_PR_OPEN, STATUS_PR_APPROVED) and ws.pr_url:
@@ -372,6 +380,26 @@ class StatusWidget(Static):
         if self.last_run:
             microcommit = self.last_run.get("microcommit", "none")
             lines.append(f"Commit: {microcommit}")
+
+            # Show current/failed stage
+            failed_stage = self.last_run.get("failed_stage")
+            if failed_stage:
+                lines.append(f"Stage: [red]{failed_stage}[/red] (failed)")
+            else:
+                # Show last stage from stages dict
+                stages = self.last_run.get("stages", {})
+                if stages:
+                    last_stage = list(stages.keys())[-1]
+                    stage_info = stages[last_stage]
+                    if stage_info.get("status") == "running":
+                        lines.append(f"Stage: [yellow]{last_stage}[/yellow] (running)")
+                    else:
+                        lines.append(f"Stage: [green]{last_stage}[/green]")
+
+            # Show blocked reason if failed
+            blocked = self.last_run.get("blocked_reason")
+            if blocked:
+                lines.append(f"[red]Blocked: {blocked}[/red]")
 
         if self.file_stats:
             lines.append(f"Files: {self.file_stats}")
@@ -513,7 +541,11 @@ class DetailScreen(Screen):
         try:
             self.workstream = load_workstream(self.workstream_dir)
             self._load_error_notified = False
-        except Exception as e:
+        except (FileNotFoundError, KeyError, ValueError) as e:
+            # FileNotFoundError: meta.env missing
+            # KeyError: required field missing
+            # ValueError: validation failed
+            logger.debug(f"Failed to load workstream {self.workstream_dir.name}: {e}")
             if not self._load_error_notified:
                 self.notify(f"Failed to load workstream: {e}", severity="error")
                 self._load_error_notified = True
@@ -526,11 +558,15 @@ class DetailScreen(Screen):
 
         if matching_runs:
             result_file = matching_runs[0] / "result.json"
+            run_log_file = matching_runs[0] / "run.log"
             if result_file.exists():
                 try:
                     self.last_run = json.loads(result_file.read_text())
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, IOError):
                     self.last_run = None
+            elif run_log_file.exists():
+                # Parse run.log for in-progress run
+                self.last_run = parse_run_log_status(run_log_file)
             else:
                 self.last_run = None
         else:
@@ -560,12 +596,17 @@ class DetailScreen(Screen):
             limit=TIMELINE_RECENT_LIMIT,
         )
 
+        # Calculate progress from plan.md
+        done, total = _get_workstream_progress(self.workstream_dir)
+        progress = f"{done}/{total} commits" if total > 0 else ""
+
         # Update widgets
         status_widget = self.query_one("#status", StatusWidget)
         status_widget.workstream = self.workstream
         status_widget.last_run = self.last_run
         status_widget.file_stats = file_stats
         status_widget.pr_status = pr_status
+        status_widget.progress = progress
 
         timeline_widget = self.query_one("#timeline", TimelineWidget)
         timeline_widget.events = events
@@ -588,8 +629,10 @@ class DetailScreen(Screen):
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
-        except (subprocess.TimeoutExpired, subprocess.SubprocessError):
-            pass
+        except subprocess.TimeoutExpired:
+            logger.debug(f"Git diff timed out for {worktree}")
+        except subprocess.SubprocessError as e:
+            logger.debug(f"Git diff failed for {worktree}: {e}")
         return ""
 
     def _get_action_bar(self) -> str:
@@ -746,7 +789,8 @@ class DetailScreen(Screen):
                     "timestamp": datetime.now().isoformat()
                 }, indent=2))
                 self.notify("Guidance recorded", severity="information")
-            except Exception as e:
+            except OSError as e:
+                logger.debug(f"Failed to write feedback file: {e}")
                 self.notify(f"Failed: {e}", severity="error")
 
             self.refresh_data()
@@ -858,13 +902,16 @@ class DetailScreen(Screen):
         self.notify("Starting run...", severity="information")
 
         # Run in background with new session to avoid zombies
-        subprocess.Popen(
-            [sys.executable, "-m", "orchestrator.cli", "run", "--once", self.workstream.id],
-            cwd=self.ops_dir,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        try:
+            subprocess.Popen(
+                [sys.executable, "-m", "orchestrator.cli", "run", "--once", self.workstream.id],
+                cwd=self.ops_dir,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as e:
+            self.notify(f"Failed to start run: {e}", severity="error")
 
     def action_open_pr(self) -> None:
         """Open PR in browser."""
@@ -921,7 +968,7 @@ class StoryStatusWidget(Static):
 
         if s.acceptance_criteria:
             lines.append("[bold]Acceptance Criteria[/bold]")
-            for i, ac in enumerate(s.acceptance_criteria[:5]):  # Show first 5
+            for ac in s.acceptance_criteria[:5]:  # Show first 5
                 lines.append(f"  [ ] {ac[:60]}{'...' if len(ac) > 60 else ''}")
             if len(s.acceptance_criteria) > 5:
                 lines.append(f"  ... and {len(s.acceptance_criteria) - 5} more")

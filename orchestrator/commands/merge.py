@@ -409,16 +409,14 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     story = find_story_by_workstream(project_dir, ws.id)
     if ws.worktree.exists():
         print(f"Updating SPEC.md...")
-        spec_ok, spec_content = run_docs_update(
+        # Claude edits SPEC.md in place (targeted edits, not full regeneration)
+        spec_ok, spec_msg = run_docs_update(
             ws.id, ops_dir, project_config,
             timeout=300,
-            spec_source_dir=ws.worktree,  # Read from worktree, not main repo
+            spec_source_dir=ws.worktree,
         )
         if spec_ok:
-            # Write to worktree so it's part of the merge
-            spec_path = ws.worktree / "SPEC.md"
-            spec_path.write_text(spec_content)
-            # Stage and commit
+            # Stage and commit any changes Claude made
             add_result = subprocess.run(
                 ["git", "-C", str(ws.worktree), "add", "SPEC.md"],
                 capture_output=True, text=True
@@ -433,11 +431,11 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                 if commit_result.returncode == 0:
                     print("  Committed SPEC update")
                 elif "nothing to commit" in commit_result.stdout:
-                    print("  SPEC unchanged")
+                    print("  SPEC unchanged (already documented)")
                 else:
                     print(f"  Warning: git commit failed: {commit_result.stderr.strip()}")
         else:
-            print(f"  Warning: SPEC update failed: {spec_content}")
+            print(f"  Warning: SPEC update failed: {spec_msg}")
 
     # Note: REQS cleanup now happens post-merge in _archive_workstream()
     # This prevents cleanup from being lost during rebase conflicts
@@ -458,6 +456,19 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     # GitHub PR workflow: create PR instead of merging locally
     if profile.merge_mode == MERGE_MODE_GITHUB_PR:
+        # If PR already exists, push updates and check status
+        if ws.pr_number:
+            print(f"Pushing updates to PR #{ws.pr_number}...")
+            push_result = subprocess.run(
+                ["git", "-C", git_dir, "push"],
+                capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+            )
+            if push_result.returncode != 0:
+                print(f"ERROR: Push failed: {push_result.stderr.strip()}")
+                return 1
+            _update_status(workstream_dir, STATUS_PR_OPEN)
+            return _handle_pr_open(args, ops_dir, project_config, ws, workstream_dir, workstreams_dir)
+
         return _create_pr_and_wait(
             args, ops_dir, project_config, ws, workstream_dir, workstreams_dir,
             commit_count, story
