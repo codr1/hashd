@@ -104,11 +104,11 @@ def format_conversation_history(review_history: list | None) -> str:
                 parts.append(f"Notes: {feedback['notes']}\n")
             parts.append("\n")
 
-        # Test failure output
+        # Test failure output (may be pre-formatted with structure)
         if entry.get("test_failure"):
             parts.append("**Test failure:**\n")
-            parts.append(f"```\n{entry['test_failure']}\n```\n")
-            parts.append("Fix the code to make tests pass.\n\n")
+            parts.append(f"{entry['test_failure']}\n")
+            parts.append("\nFix the code to make tests pass.\n\n")
 
         entries.append("".join(parts))
 

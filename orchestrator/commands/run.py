@@ -41,6 +41,7 @@ from orchestrator.runner.impl.stages import (
 )
 from orchestrator.runner.impl.fix_generation import generate_fix_commits
 from orchestrator.runner.impl.breakdown import append_commits_to_plan
+from orchestrator.lib.test_parser import parse_test_output, format_parsed_output
 
 
 MAX_REVIEW_ATTEMPTS = 5
@@ -728,16 +729,31 @@ def _load_implement_summary(run_dir: Path) -> str:
 
 
 def _load_test_output(run_dir: Path) -> str:
-    """Load test output from test.log."""
+    """Load and parse test output from test.log.
+
+    Returns formatted structured output for LLM consumption.
+    Falls back to raw output if parsing fails.
+    """
     log_path = run_dir / "stages" / "test.log"
     if not log_path.exists():
         return ""
     try:
         content = log_path.read_text()
-        # Truncate if too long (keep last 2000 chars for most relevant output)
-        if len(content) > 2000:
-            content = "... (truncated)\n" + content[-2000:]
-        return content.strip()
+
+        # Split into stdout/stderr sections
+        stdout = ""
+        stderr = ""
+        if "=== STDOUT ===" in content:
+            parts = content.split("=== STDERR ===")
+            stdout = parts[0].replace("=== STDOUT ===", "").strip()
+            if len(parts) > 1:
+                stderr = parts[1].strip()
+        else:
+            stdout = content
+
+        # Parse and format
+        parsed = parse_test_output(stdout, stderr)
+        return format_parsed_output(parsed)
     except IOError as e:
         logger.warning(f"Failed to load test output from {log_path}: {e}")
         return ""
