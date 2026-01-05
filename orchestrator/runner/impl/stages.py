@@ -19,6 +19,7 @@ from orchestrator.lib.planparse import parse_plan, get_next_microcommit, mark_do
 from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.history import format_conversation_history
 from orchestrator.lib.review import load_review, format_review, print_review
+from orchestrator.lib.context import get_codebase_context
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
@@ -243,6 +244,11 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
             review_content=review_content
         )
 
+    # Pre-compute codebase context to reduce agent exploration time
+    codebase_context = ""
+    if ctx.workstream and ctx.workstream.worktree:
+        codebase_context = get_codebase_context(Path(ctx.workstream.worktree))
+
     # Build the full prompt from template
     prompt = render_prompt(
         "implement",
@@ -253,6 +259,7 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         commit_id=ctx.microcommit.id,
         commit_title=ctx.microcommit.title,
         commit_description=ctx.microcommit.block_content,
+        codebase_context=codebase_context,
         review_context_section=review_context_section,
         conversation_history_section=conversation_history_section,
         human_guidance_section=human_guidance_section

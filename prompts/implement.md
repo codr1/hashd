@@ -9,6 +9,7 @@ Variables:
   - commit_id: e.g., COMMIT-MYWS-001
   - commit_title: Short title of the commit
   - commit_description: Detailed implementation guidance
+  - codebase_context: Pre-computed directory structure and key files (empty string if unavailable)
   - review_context_section: Previous review output (empty string if none)
   - conversation_history_section: Previous attempts (empty string if first attempt)
   - human_guidance_section: Human feedback if rejected (empty string if none)
@@ -32,7 +33,7 @@ Description:
 1. Make the necessary code changes using the preferred tech stack
 2. If you create new files or directories, stage them with `git add <path>`. Do NOT commit - the orchestrator handles commits after review
 3. If you encounter ambiguity or need clarification, stop and explain what you need
-{review_context_section}{conversation_history_section}{human_guidance_section}
+{codebase_context}{review_context_section}{conversation_history_section}{human_guidance_section}
 ## Status Output (REQUIRED)
 
 When complete, output a JSON status block on its own line at the END of your response:

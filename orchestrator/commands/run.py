@@ -727,19 +727,29 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
                 return "blocked", 8, None
         except StageError as e:
             if attempt < MAX_REVIEW_ATTEMPTS:
-                # Test failure - capture output and retry
-                ctx.log(f"Tests failed on attempt {attempt}, will retry")
-                test_output = _load_test_output(ctx.run_dir)
+                # Detect build vs test failure
+                is_build_failure = "Build failed" in e.message
+
+                if is_build_failure:
+                    ctx.log(f"Build failed on attempt {attempt}, will retry")
+                    failure_output = _load_build_output(ctx.run_dir)
+                    failure_type = "build_failure"
+                else:
+                    ctx.log(f"Tests failed on attempt {attempt}, will retry")
+                    failure_output = _load_test_output(ctx.run_dir)
+                    failure_type = "test_failure"
+
                 implement_summary = _load_implement_summary(ctx.run_dir)
                 ctx.review_history.append({
                     "attempt": attempt,
-                    "test_failure": test_output,
+                    failure_type: failure_output,
                     "implement_summary": implement_summary,
                 })
                 continue
             else:
                 # Final attempt failed - fall through to HITL
-                ctx.log(f"Tests failed after {MAX_REVIEW_ATTEMPTS} attempts")
+                failure_desc = "Build" if "Build failed" in e.message else "Tests"
+                ctx.log(f"{failure_desc} failed after {MAX_REVIEW_ATTEMPTS} attempts")
                 ctx.write_result("failed", e.stage)
                 break
 
@@ -864,6 +874,30 @@ def _load_test_output(run_dir: Path) -> str:
         return format_parsed_output(parsed)
     except IOError as e:
         logger.warning(f"Failed to load test output from {log_path}: {e}")
+        return ""
+
+
+def _load_build_output(run_dir: Path) -> str:
+    """Load build error output from build.log.
+
+    Returns formatted output for LLM consumption.
+    """
+    log_path = run_dir / "stages" / "build.log"
+    if not log_path.exists():
+        return ""
+    try:
+        content = log_path.read_text()
+        # Extract stderr which typically contains the compiler error
+        if "=== STDERR ===" in content:
+            parts = content.split("=== STDERR ===")
+            if len(parts) > 1:
+                stderr = parts[1].strip()
+                if stderr:
+                    return f"Build error:\n{stderr}"
+        # Fallback to full content
+        return f"Build output:\n{content}"
+    except IOError as e:
+        logger.warning(f"Failed to load build output from {log_path}: {e}")
         return ""
 
 

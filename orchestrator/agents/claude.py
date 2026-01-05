@@ -18,6 +18,25 @@ from orchestrator.lib.history import format_review_history
 
 logger = logging.getLogger(__name__)
 
+# Known Claude CLI error patterns and their user-friendly messages
+# Only add patterns here that we've actually observed in the wild
+_CLI_ERROR_PATTERNS = {
+    "You must run `claude` to review the updated terms": (
+        "Claude CLI requires terms acceptance. "
+        "Run 'claude' interactively to accept the updated terms, then retry."
+    ),
+}
+
+
+def _detect_cli_error(stderr: str) -> Optional[str]:
+    """Detect known Claude CLI errors and return a user-friendly message."""
+    stderr_lower = stderr.lower()
+    for pattern, message in _CLI_ERROR_PATTERNS.items():
+        if pattern.lower() in stderr_lower:
+            logger.warning(f"Claude CLI error detected: {message}")
+            return message
+    return None
+
 
 @dataclass
 class FreeformResult:
@@ -81,10 +100,13 @@ class ClaudeAgent:
         elapsed = time.time() - start_time
 
         if result.returncode != 0:
-            return FreeformResult(
-                text=f"ERROR: Claude failed with exit code {result.returncode}\n{result.stderr}",
-                elapsed_seconds=elapsed,
-            )
+            # Check for known CLI errors and provide clear message
+            cli_error = _detect_cli_error(result.stderr)
+            if cli_error:
+                error_text = f"ERROR: {cli_error}"
+            else:
+                error_text = f"ERROR: Claude failed with exit code {result.returncode}\n{result.stderr}"
+            return FreeformResult(text=error_text, elapsed_seconds=elapsed)
 
         # Parse JSON wrapper to extract the text result and usage
         try:
@@ -191,6 +213,14 @@ class ClaudeAgent:
         )
 
         if result.returncode != 0:
+            # Check for known CLI errors and provide clear message
+            cli_error = _detect_cli_error(result.stderr)
+            if cli_error:
+                review.notes = cli_error
+            else:
+                # Include truncated stderr for unknown errors
+                stderr_snippet = result.stderr.strip()[:200] if result.stderr else "no output"
+                review.notes = f"Claude CLI failed (exit {result.returncode}): {stderr_snippet}"
             return review
 
         # Parse JSON wrapper from --output-format json, then extract review from result
