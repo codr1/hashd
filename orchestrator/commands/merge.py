@@ -352,6 +352,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         profile = ProjectProfile(
             build_runner="make",
             makefile_path="Makefile",
+            build_target="build",
             test_target="test",
             merge_gate_test_target="test",
             implement_timeout=1200,

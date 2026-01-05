@@ -33,3 +33,23 @@ Description:
 2. If you create new files or directories, stage them with `git add <path>`. Do NOT commit - the orchestrator handles commits after review
 3. If you encounter ambiguity or need clarification, stop and explain what you need
 {review_context_section}{conversation_history_section}{human_guidance_section}
+## Status Output (REQUIRED)
+
+When complete, output a JSON status block on its own line at the END of your response:
+
+If you made changes:
+```json
+{"status": "changes_made", "files": ["path/to/file1", "path/to/file2"], "summary": "Brief description of changes"}
+```
+
+If the work is already complete (changes already applied, nothing to do):
+```json
+{"status": "already_done", "reason": "Explanation of why no changes needed"}
+```
+
+If you are blocked and need human intervention:
+```json
+{"status": "blocked", "reason": "Explanation of what is blocking you"}
+```
+
+This JSON status MUST be the last thing you output.

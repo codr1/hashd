@@ -36,6 +36,7 @@ class ProjectProfile:
     """Build/test configuration from project_profile.env"""
     build_runner: str  # "make" (default) or "task"
     makefile_path: str  # For make: path to Makefile
+    build_target: str  # Target to compile (e.g., "build") - run before tests
     test_target: str  # Target to run tests (e.g., "test")
     merge_gate_test_target: str  # Target for full test suite at merge gate
     implement_timeout: int
@@ -148,6 +149,7 @@ def load_project_profile(project_dir: Path) -> ProjectProfile:
     return ProjectProfile(
         build_runner=build_runner,
         makefile_path=env.get("MAKEFILE_PATH", "Makefile"),
+        build_target=env.get("BUILD_TARGET", "build"),
         test_target=test_target,
         merge_gate_test_target=env.get("MERGE_GATE_TEST_TARGET") or env.get("MAKE_TARGET_MERGE_GATE_TEST", test_target),
         implement_timeout=int(env.get("IMPLEMENT_TIMEOUT", "1200")),  # 20 min default

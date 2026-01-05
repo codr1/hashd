@@ -301,6 +301,37 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     if not result.success:
         raise StageError("implement", f"Codex failed: {result.stderr}", 4)
 
+    # Parse structured status output (JSON block with "status" key)
+    # Scan lines in reverse to find the last valid JSON status block
+    status_data = None
+    if result.stdout:
+        for line in reversed(result.stdout.splitlines()):
+            line = line.strip()
+            if line.startswith('{') and '"status"' in line:
+                try:
+                    status_data = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+
+    # Handle structured status responses
+    if status_data:
+        status = status_data.get("status")
+        if status == "already_done":
+            reason = status_data.get("reason", "work already complete")
+            ctx.log(f"Auto-skipping: {reason}")
+            # Mark commit as done without changes
+            plan_path = ctx.workstream_dir / "plan.md"
+            mark_done(str(plan_path), ctx.microcommit.id)
+            ctx.log(f"Marked {ctx.microcommit.id} as done (auto-skip)")
+            # HACK: We abuse StageBlocked to signal "success, move to next commit".
+            # The caller (run.py) checks for "auto_skip:" prefix and returns "passed".
+            # A proper fix would be a dedicated return type, but this minimizes changes.
+            raise StageBlocked("implement", f"auto_skip:{ctx.microcommit.id}")
+        elif status == "blocked":
+            reason = status_data.get("reason", "Codex is blocked")
+            raise StageBlocked("implement", f"Codex blocked: {reason}")
+
     # Verify Codex wrote something
     git_status = subprocess.run(
         ["git", "-C", str(ctx.workstream.worktree), "status", "--porcelain"],
@@ -333,6 +364,34 @@ def stage_test(ctx: RunContext):
             5
         )
 
+    # Run build first to catch compile errors fast
+    # Note: build uses test_timeout since builds are typically faster than tests
+    if ctx.profile.build_target:
+        build_cmd = ctx.profile.get_build_command(
+            ctx.workstream.worktree, ctx.profile.build_target
+        )
+        ctx.log(f"Running build: {' '.join(build_cmd)}")
+        build_start = time.time()
+        build_result = subprocess.run(
+            build_cmd,
+            capture_output=True,
+            text=True,
+            timeout=ctx.profile.test_timeout
+        )
+        build_duration = time.time() - build_start
+        ctx.log_command(build_cmd, build_result.returncode, build_duration)
+
+        if build_result.returncode != 0:
+            # Save build output
+            log_path = ctx.run_dir / "stages" / "build.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(
+                f"=== STDOUT ===\n{build_result.stdout}\n\n=== STDERR ===\n{build_result.stderr}\n"
+            )
+            raise StageError("test", f"Build failed (exit {build_result.returncode})", 5)
+        ctx.log("Build passed")
+
+    # Then run tests
     cmd = ctx.profile.get_build_command(ctx.workstream.worktree, ctx.profile.test_target)
 
     ctx.log(f"Running: {' '.join(cmd)}")

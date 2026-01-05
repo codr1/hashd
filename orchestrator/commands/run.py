@@ -594,6 +594,12 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
             )
             if result == StageResult.BLOCKED:
                 reason = ctx.stages.get("implement", {}).get("notes", "unknown")
+                # Handle auto-skip: commit was already done, continue to next
+                if reason.startswith("auto_skip:"):
+                    commit_id = reason.split(":", 1)[1]
+                    ctx.log(f"Auto-skipped {commit_id}, continuing to next commit")
+                    ctx.write_result("passed")
+                    return "passed", 0, None
                 ctx.write_result("blocked", blocked_reason=reason)
                 return "blocked", 8, None
         except StageError as e:
@@ -788,6 +794,7 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         profile = ProjectProfile(
             build_runner="make",
             makefile_path="Makefile",
+            build_target="build",
             test_target="test",
             merge_gate_test_target="test",
             implement_timeout=1200,
