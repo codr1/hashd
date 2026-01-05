@@ -356,6 +356,36 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     ctx.log(f"Implementation complete, {len(git_status.stdout.strip().splitlines())} files changed")
 
 
+def _stage_untracked_files(worktree: Path, ctx: RunContext) -> None:
+    """Stage any untracked files before test.
+
+    Codex sometimes creates new files but doesn't git add them. This causes:
+    - Build failures (e.g., templ files not generating .go files)
+    - Review blockers ("untracked files" warnings)
+
+    By auto-staging before test, we catch this early and avoid wasted iterations.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(worktree), "status", "--porcelain"],
+        capture_output=True, text=True
+    )
+    untracked = [line[3:] for line in result.stdout.splitlines() if line.startswith("??")]
+    if not untracked:
+        return
+
+    ctx.log(f"Auto-staging {len(untracked)} untracked file(s)")
+    for f in untracked:
+        ctx.log(f"  + {f}")
+
+    # Stage only the untracked files, not modified files
+    add_result = subprocess.run(
+        ["git", "-C", str(worktree), "add", "--"] + untracked,
+        capture_output=True, text=True
+    )
+    if add_result.returncode != 0:
+        ctx.log(f"  Warning: git add failed: {add_result.stderr.strip()}")
+
+
 def stage_test(ctx: RunContext):
     """Run tests."""
     # Validate runner binary is available
@@ -370,6 +400,10 @@ def stage_test(ctx: RunContext):
             f"Build file not found: {build_file} (runner: {ctx.profile.build_runner})",
             5
         )
+
+    # Auto-stage any untracked files before build/test
+    # Codex sometimes creates files but doesn't git add them
+    _stage_untracked_files(ctx.workstream.worktree, ctx)
 
     # Run build first to catch compile errors fast
     # Note: build uses test_timeout since builds are typically faster than tests

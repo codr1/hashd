@@ -153,7 +153,7 @@ def load_project_profile(project_dir: Path) -> ProjectProfile:
         test_target=test_target,
         merge_gate_test_target=env.get("MERGE_GATE_TEST_TARGET") or env.get("MAKE_TARGET_MERGE_GATE_TEST", test_target),
         implement_timeout=int(env.get("IMPLEMENT_TIMEOUT", "1200")),  # 20 min default
-        review_timeout=int(env.get("REVIEW_TIMEOUT", "600")),  # Contextual reviews need more time
+        review_timeout=int(env.get("REVIEW_TIMEOUT", "900")),  # Increased from 600 - large changes need more time
         test_timeout=int(env.get("TEST_TIMEOUT", "300")),
         breakdown_timeout=int(env.get("BREAKDOWN_TIMEOUT", "180")),
         supervised_mode=env.get("SUPERVISED_MODE", "false").lower() == "true",

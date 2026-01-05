@@ -300,8 +300,10 @@ def _handle_pr_approved(
     print("PR merged successfully!")
     _update_status(workstream_dir, STATUS_MERGED)
 
-    # Pull the merged changes to local main
-    print(f"Pulling merged changes to local {project_config.default_branch}...")
+    # Sync local main with remote (discard any divergent local commits)
+    # Using fetch+reset instead of pull to avoid "divergent branches" errors
+    # Local main should always track remote; any local-only commits are artifacts
+    print(f"Syncing local {project_config.default_branch} with remote...")
     checkout_result = subprocess.run(
         ["git", "-C", str(repo_path), "checkout", project_config.default_branch],
         capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
@@ -309,14 +311,22 @@ def _handle_pr_approved(
     if checkout_result.returncode != 0:
         print(f"  Warning: checkout failed: {checkout_result.stderr.strip()}")
     else:
-        pull_result = subprocess.run(
-            ["git", "-C", str(repo_path), "pull"],
+        fetch_result = subprocess.run(
+            ["git", "-C", str(repo_path), "fetch", "origin"],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
         )
-        if pull_result.returncode != 0:
-            print(f"  Warning: pull failed: {pull_result.stderr.strip()}")
+        if fetch_result.returncode != 0:
+            print(f"  Warning: fetch failed: {fetch_result.stderr.strip()}")
         else:
-            print(f"  Local {project_config.default_branch} updated")
+            reset_result = subprocess.run(
+                ["git", "-C", str(repo_path), "reset", "--hard",
+                 f"origin/{project_config.default_branch}"],
+                capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+            )
+            if reset_result.returncode != 0:
+                print(f"  Warning: reset failed: {reset_result.stderr.strip()}")
+            else:
+                print(f"  Local {project_config.default_branch} synced with remote")
 
     # Archive workstream (always push for GitHub PR mode since repo is remote)
     project_dir = ops_dir / "projects" / project_config.name
@@ -356,7 +366,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             test_target="test",
             merge_gate_test_target="test",
             implement_timeout=1200,
-            review_timeout=600,
+            review_timeout=900,
             test_timeout=300,
             breakdown_timeout=180,
             supervised_mode=False,
