@@ -23,6 +23,7 @@ from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
 from orchestrator.lib.stats import AgentStats, record_agent_stats
+from orchestrator.runner.git_utils import has_uncommitted_changes
 
 
 def _verbose_header(title: str):
@@ -319,15 +320,21 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         status = status_data.get("status")
         if status == "already_done":
             reason = status_data.get("reason", "work already complete")
-            ctx.log(f"Auto-skipping: {reason}")
-            # Mark commit as done without changes
-            plan_path = ctx.workstream_dir / "plan.md"
-            mark_done(str(plan_path), ctx.microcommit.id)
-            ctx.log(f"Marked {ctx.microcommit.id} as done (auto-skip)")
-            # HACK: We abuse StageBlocked to signal "success, move to next commit".
-            # The caller (run.py) checks for "auto_skip:" prefix and returns "passed".
-            # A proper fix would be a dedicated return type, but this minimizes changes.
-            raise StageBlocked("implement", f"auto_skip:{ctx.microcommit.id}")
+            # Only auto-skip if there are NO uncommitted changes.
+            # If there ARE uncommitted changes, the work IS done - proceed to test/review.
+            if has_uncommitted_changes(ctx.workstream.worktree):
+                ctx.log(f"Codex says '{reason}' but uncommitted changes exist - proceeding to test/review")
+                # Fall through to normal completion (changes exist, will be tested/reviewed)
+            else:
+                ctx.log(f"Auto-skipping: {reason}")
+                # Mark commit as done without changes
+                plan_path = ctx.workstream_dir / "plan.md"
+                mark_done(str(plan_path), ctx.microcommit.id)
+                ctx.log(f"Marked {ctx.microcommit.id} as done (auto-skip)")
+                # HACK: We abuse StageBlocked to signal "success, move to next commit".
+                # The caller (run.py) checks for "auto_skip:" prefix and returns "passed".
+                # A proper fix would be a dedicated return type, but this minimizes changes.
+                raise StageBlocked("implement", f"auto_skip:{ctx.microcommit.id}")
         elif status == "blocked":
             reason = status_data.get("reason", "Codex is blocked")
             raise StageBlocked("implement", f"Codex blocked: {reason}")

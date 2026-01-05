@@ -39,17 +39,17 @@ When complete, output a JSON status block on its own line at the END of your res
 
 If you made changes:
 ```json
-{"status": "changes_made", "files": ["path/to/file1", "path/to/file2"], "summary": "Brief description of changes"}
+{{"status": "changes_made", "files": ["path/to/file1", "path/to/file2"], "summary": "Brief description of changes"}}
 ```
 
 If the work is already complete (changes already applied, nothing to do):
 ```json
-{"status": "already_done", "reason": "Explanation of why no changes needed"}
+{{"status": "already_done", "reason": "Explanation of why no changes needed"}}
 ```
 
 If you are blocked and need human intervention:
 ```json
-{"status": "blocked", "reason": "Explanation of what is blocking you"}
+{{"status": "blocked", "reason": "Explanation of what is blocking you"}}
 ```
 
 This JSON status MUST be the last thing you output.

@@ -444,6 +444,31 @@ cleanup cannot be lost during rebase conflicts.
 
 ---
 
+## Resume Behavior
+
+When `wf run` detects uncommitted changes in the worktree, it checks the previous run's status to determine whether to resume or re-implement:
+
+| Last Run Failed At | Failure Type | Action |
+|-------------------|--------------|--------|
+| **test** | Timeout/infra | Resume from test stage |
+| **test** | Tests failed | Re-implement (code bug) |
+| **review** | Timeout/infra | Resume from review stage |
+| **review** | Rejected | Re-implement with feedback |
+| **human_review** | Waiting | Continue waiting |
+
+### Auto-Skip Logic
+
+When Codex reports "already_done" (work is complete):
+
+| Uncommitted Changes | Action |
+|---------------------|--------|
+| **None** | Auto-skip to next micro-commit |
+| **Present** | Proceed to test/review (changes ARE the implementation) |
+
+This prevents orphaned changes when a timeout leaves uncommitted work in the worktree.
+
+---
+
 ## Merge Safety
 
 ### Auto-Rebase for GitHub PRs
