@@ -24,7 +24,7 @@ from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
+from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static, TextArea
 
 from orchestrator.lib.config import (
     ProjectConfig,
@@ -154,9 +154,14 @@ class CriterionEditModal(ModalScreen[str]):
     """Modal for editing an acceptance criterion."""
 
     CSS = """
+    CriterionEditModal {
+        align: center middle;
+    }
+
     #criterion-dialog {
         width: 80%;
         height: auto;
+        max-height: 80%;
         padding: 1 2;
         background: $surface;
         border: solid $primary;
@@ -164,12 +169,19 @@ class CriterionEditModal(ModalScreen[str]):
 
     #criterion-input {
         width: 100%;
+        height: 8;  /* Fixed height for multiline editing; fits ~6 lines comfortably */
         margin: 1 0;
+    }
+
+    #criterion-hint {
+        color: $text-muted;
     }
     """
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+s", "save", "Save"),
+        Binding("ctrl+enter", "save", "Save", show=False),  # Alternative for muscle memory
     ]
 
     def __init__(self, criterion_text: str, label: str) -> None:
@@ -180,19 +192,20 @@ class CriterionEditModal(ModalScreen[str]):
     def compose(self) -> ComposeResult:
         yield Container(
             Label(self.label, id="criterion-label"),
-            Input(value=self.criterion_text, id="criterion-input"),
-            Label("Press Enter to save, Escape to cancel", id="criterion-hint"),
+            TextArea(self.criterion_text, id="criterion-input"),
+            Label("Ctrl+S to save, Escape to cancel", id="criterion-hint"),
             id="criterion-dialog",
         )
 
     def on_mount(self) -> None:
-        input_widget = self.query_one("#criterion-input", Input)
-        input_widget.focus()
-        input_widget.cursor_position = len(self.criterion_text)
+        text_area = self.query_one("#criterion-input", TextArea)
+        text_area.focus()
+        # Move cursor to end of text for easier editing
+        text_area.move_cursor(text_area.document.end)
 
-    @on(Input.Submitted)
-    def on_submit(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value)
+    def action_save(self) -> None:
+        text_area = self.query_one("#criterion-input", TextArea)
+        self.dismiss(text_area.text)
 
     def action_cancel(self) -> None:
         self.dismiss("")
@@ -1035,12 +1048,6 @@ class StoryHeaderWidget(Static):
 class CriterionItem(ListItem):
     """A single acceptance criterion in the list."""
 
-    DEFAULT_CSS = """
-    CriterionItem {
-        height: 1;
-    }
-    """
-
     def __init__(self, index: int, text: str) -> None:
         super().__init__()
         self.criterion_index = index
@@ -1084,17 +1091,27 @@ class StoryDetailScreen(Screen):
 
     #criteria-list {
         height: 1fr;
+        padding: 0;
+        margin: 0;
     }
 
-    #criteria-list > ListItem {
+    CriterionItem {
+        height: 1;
         padding: 0 1;
+        margin: 0;
     }
 
-    #criteria-list > ListItem:hover {
+    CriterionItem Label {
+        height: 1;
+        padding: 0;
+        margin: 0;
+    }
+
+    CriterionItem:hover {
         background: $surface-lighten-1;
     }
 
-    #criteria-list > ListItem.-highlight {
+    CriterionItem.-highlight {
         background: $primary-darken-2;
     }
 
