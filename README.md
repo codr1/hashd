@@ -186,6 +186,7 @@ wf show other_feature  # Operates on other_feature, context unchanged
 | `wf archive stories` | List archived stories |
 | `wf open <id>` | Resurrect archived workstream |
 | `wf clarify` | Manage clarification requests |
+| `wf directives` | View/edit project directives |
 
 ### Project Commands
 

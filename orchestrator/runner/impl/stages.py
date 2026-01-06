@@ -20,6 +20,7 @@ from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.history import format_conversation_history
 from orchestrator.lib.review import load_review, format_review, print_review
 from orchestrator.lib.context import get_codebase_context
+from orchestrator.lib.directives import load_directives
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
@@ -249,6 +250,18 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     if ctx.workstream and ctx.workstream.worktree:
         codebase_context = get_codebase_context(Path(ctx.workstream.worktree))
 
+    # Build directives section from global/project/feature directives
+    directives_section = ""
+    repo_path = Path(ctx.project.repo_path) if ctx.project.repo_path else None
+    workstream_dir = ctx.workstream_dir if ctx.workstream_dir else None
+    if repo_path:
+        directives_content = load_directives(repo_path, workstream_dir)
+        if directives_content:
+            directives_section = render_prompt(
+                "implement_directives",
+                directives_content=directives_content
+            )
+
     # Build the full prompt from template
     prompt = render_prompt(
         "implement",
@@ -260,6 +273,7 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         commit_title=ctx.microcommit.title,
         commit_description=ctx.microcommit.block_content,
         codebase_context=codebase_context,
+        directives_section=directives_section,
         review_context_section=review_context_section,
         conversation_history_section=conversation_history_section,
         human_guidance_section=human_guidance_section
@@ -766,11 +780,27 @@ def stage_merge_gate(ctx: RunContext) -> dict:
     )
 
     if result.returncode != 0 and result.stdout.strip():
+        output = result.stdout.strip()
+
+        # Detect actual issue type - git diff --check reports both conflicts and whitespace
+        has_conflicts = any(m in output for m in ["<<<<<<<", "=======", ">>>>>>>"])
+        has_whitespace = "trailing whitespace" in output.lower() or "space before tab" in output.lower()
+
+        if has_conflicts:
+            message = "Conflict markers detected in files"
+            error_type = "conflict"
+        elif has_whitespace:
+            message = "Whitespace errors detected"
+            error_type = "whitespace"
+        else:
+            message = "Git diff check failed"
+            error_type = "diff_check"
+
         raise StageError(
             "merge_gate",
-            "Conflict markers detected in files",
+            message,
             12,
-            details={"type": "conflict", "output": result.stdout}
+            details={"type": error_type, "output": output}
         )
 
     ctx.log("No conflict markers found")

@@ -300,12 +300,50 @@ Options:
 | `wf archive delete <id> --confirm` | Permanently delete |
 | `wf open <id> [--use] [--force]` | Resurrect archived workstream |
 
+### Directives Commands
+
+| Command | Description |
+|---------|-------------|
+| `wf directives` | Show all directives (global + project) |
+| `wf directives --project-only` | Show only project directives |
+| `wf directives -w <ws>` | Include feature directives for workstream |
+| `wf directives edit [level]` | Edit directives in $EDITOR (global/project/feature) |
+
 ### Other Commands
 
 | Command | Description |
 |---------|-------------|
 | `wf project show` | Show project configuration |
 | `wf --completion bash\|zsh\|fish` | Generate shell completion |
+
+---
+
+## Directives
+
+Directives are curated rules that guide AI implementation. They exist at three levels:
+
+```
+~/.config/wf/directives.md        # Global user preferences
+{repo}/WF_DIRECTIVES.md           # Project rules
+workstreams/{id}/directives.md    # Feature-specific (rare)
+```
+
+**Key principle:** Directives are documentation, not runtime state. They persist and are version-controlled.
+
+### Example WF_DIRECTIVES.md
+
+```markdown
+# Project Directives
+
+- No backward compatibility. We have zero users.
+- Use sync.Once pattern for handler initialization
+- Follow existing templ component patterns in internal/templates
+- HTMX handlers should set HX-Trigger for related component updates
+```
+
+### Usage
+
+Directives are automatically included in Codex implementation prompts. Use `wf directives` to view current directives.
 
 ---
 
