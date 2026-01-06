@@ -824,7 +824,7 @@ class DetailScreen(Screen):
 
             self.refresh_data()
 
-        self.push_screen(FeedbackModal("What's wrong?"), handle_feedback)
+        self.app.push_screen(FeedbackModal("What's wrong?"), handle_feedback)
 
     def action_edit(self) -> None:
         """Edit/refine with guidance.
@@ -864,7 +864,7 @@ class DetailScreen(Screen):
 
             self.refresh_data()
 
-        self.push_screen(FeedbackModal("Guidance?"), handle_guidance)
+        self.app.push_screen(FeedbackModal("Guidance?"), handle_guidance)
 
     def action_reset(self) -> None:
         """Reset workstream (discard changes)."""
@@ -903,7 +903,7 @@ class DetailScreen(Screen):
 
             self.refresh_data()
 
-        self.push_screen(FeedbackModal("Reset feedback (optional):"), handle_feedback)
+        self.app.push_screen(FeedbackModal("Reset feedback (optional):"), handle_feedback)
 
     def action_show_diff(self) -> None:
         """Show full diff."""
@@ -927,7 +927,7 @@ class DetailScreen(Screen):
             return
 
         if result.stdout:
-            self.push_screen(ContentScreen(result.stdout, title="Diff"))
+            self.app.push_screen(ContentScreen(result.stdout, title="Diff"))
         else:
             self.notify("No changes to show", severity="warning")
 
@@ -952,7 +952,7 @@ class DetailScreen(Screen):
         for event in reversed(events):
             lines.append(_format_event_rich(event))
 
-        self.push_screen(ContentScreen("\n".join(lines), title="Timeline"))
+        self.app.push_screen(ContentScreen("\n".join(lines), title="Timeline"))
 
     def action_go_run(self) -> None:
         """Trigger a run."""
@@ -1315,7 +1315,7 @@ class StoryDetailScreen(Screen):
 
             self.refresh_data()
 
-        self.push_screen(FeedbackModal("Edit guidance:"), handle_feedback)
+        self.app.push_screen(FeedbackModal("Edit guidance:"), handle_feedback)
 
     def action_edit_criterion(self) -> None:
         """Edit the selected acceptance criterion."""
@@ -1450,7 +1450,7 @@ class StoryDetailScreen(Screen):
 
         if md_path.exists():
             content = md_path.read_text()
-            self.push_screen(ContentScreen(content, title=f"{self.story_id}"))
+            self.app.push_screen(ContentScreen(content, title=f"{self.story_id}"))
         else:
             self.notify("Story file not found", severity="warning")
 
