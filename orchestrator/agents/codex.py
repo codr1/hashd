@@ -34,17 +34,18 @@ class CodexAgent:
         """
         Run Codex to implement a micro-commit.
 
-        Uses: codex exec --full-auto --sandbox danger-full-access -C <worktree> "<prompt>"
+        Uses: codex exec --dangerously-bypass-approvals-and-sandbox -C <worktree> "<prompt>"
 
         Note: Git worktrees have their .git directory in the parent repo
         (e.g., /repo/.git/worktrees/<name>), so workspace-write sandbox
-        blocks git operations. We use danger-full-access since this is
-        trusted local development with automated code changes.
+        blocks git operations. We use --dangerously-bypass-approvals-and-sandbox
+        since this is trusted local development with automated code changes.
+        The --full-auto flag's --sandbox workspace-write overrides explicit
+        --sandbox flags, so we must use the bypass flag instead.
         """
         cmd = [
             "codex", "exec",
-            "--full-auto",
-            "--sandbox", "danger-full-access",
+            "--dangerously-bypass-approvals-and-sandbox",
             "-C", str(worktree),
             prompt
         ]

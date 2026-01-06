@@ -5,6 +5,7 @@ Loads project and workstream configuration from .env files.
 """
 
 import logging
+import shlex
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,12 +34,25 @@ VALID_BUILD_RUNNERS = {"make", "task"}
 
 @dataclass
 class ProjectProfile:
-    """Build/test configuration from project_profile.env"""
-    build_runner: str  # "make" (default) or "task"
-    makefile_path: str  # For make: path to Makefile
-    build_target: str  # Target to compile (e.g., "build") - run before tests
-    test_target: str  # Target to run tests (e.g., "test")
-    merge_gate_test_target: str  # Target for full test suite at merge gate
+    """Build/test configuration from project_profile.env
+
+    Supports two config styles:
+    1. New (command-based): TEST_CMD="npm test", BUILD_CMD="npm run build"
+    2. Legacy (target-based): BUILD_RUNNER=make, TEST_TARGET=test
+    """
+    # New command-based fields (preferred)
+    test_cmd: str  # Full command to run tests, e.g., "make test", "npm test", "pytest"
+    build_cmd: str  # Full command to build (optional), e.g., "make build", "npm run build"
+    merge_gate_test_cmd: str  # Full command for merge gate tests (defaults to test_cmd)
+
+    # Legacy fields (kept for backward compatibility)
+    build_runner: str  # "make" (default) or "task" - DEPRECATED
+    makefile_path: str  # For make: path to Makefile - DEPRECATED
+    build_target: str  # Target to compile (e.g., "build") - DEPRECATED
+    test_target: str  # Target to run tests (e.g., "test") - DEPRECATED
+    merge_gate_test_target: str  # Target for full test suite - DEPRECATED
+
+    # Timeouts and modes
     implement_timeout: int
     review_timeout: int
     test_timeout: int
@@ -46,8 +60,40 @@ class ProjectProfile:
     supervised_mode: bool
     merge_mode: str  # "local" or "github_pr"
 
+    def get_test_command(self) -> list[str]:
+        """Get the command to run tests.
+
+        Returns command as list for subprocess.
+        Raises ValueError if test_cmd is not configured.
+        """
+        if not self.test_cmd:
+            raise ValueError(
+                "No test command configured. Run 'wf interview' to set TEST_CMD."
+            )
+        return shlex.split(self.test_cmd)
+
+    def get_build_command_str(self) -> list[str] | None:
+        """Get the command to run build (if configured).
+
+        Returns None if no build command is configured.
+        """
+        if not self.build_cmd:
+            return None
+        return shlex.split(self.build_cmd)
+
+    def get_merge_gate_test_command(self) -> list[str]:
+        """Get the command to run merge gate tests.
+
+        Raises ValueError if merge_gate_test_cmd is not configured.
+        """
+        if not self.merge_gate_test_cmd:
+            raise ValueError(
+                "No merge gate test command configured. Run 'wf interview' to set MERGE_GATE_TEST_CMD."
+            )
+        return shlex.split(self.merge_gate_test_cmd)
+
     def get_build_file(self, worktree: Path) -> Path:
-        """Get the build file path for this runner.
+        """Get the build file path for this runner (legacy support).
 
         For task runner, checks common Taskfile variants in order:
         Taskfile.yml, Taskfile.yaml, taskfile.yml, Taskfile.dist.yml
@@ -72,7 +118,7 @@ class ProjectProfile:
             return worktree / self.makefile_path
 
     def get_build_command(self, worktree: Path, target: str) -> list[str]:
-        """Get the command to run a build target."""
+        """Get the command to run a build target (legacy support)."""
         if self.build_runner == "task":
             return ["task", "-d", str(worktree), target]
         else:  # make
@@ -122,19 +168,15 @@ def load_project_config(project_dir: Path) -> ProjectConfig:
 
 
 def load_project_profile(project_dir: Path) -> ProjectProfile:
-    """Load project_profile.env and return ProjectProfile."""
-    env = envparse.load_env(str(project_dir / "project_profile.env"))
-    # Support both TEST_TARGET (preferred) and MAKE_TARGET_TEST (legacy)
-    test_target = env.get("TEST_TARGET") or env.get("MAKE_TARGET_TEST", "test")
+    """Load project_profile.env and return ProjectProfile.
 
-    # Validate build runner - default to make
-    build_runner = env.get("BUILD_RUNNER", "make")
-    if build_runner not in VALID_BUILD_RUNNERS:
-        logger.warning(
-            f"Unknown BUILD_RUNNER '{build_runner}', defaulting to 'make'. "
-            f"Valid runners: {', '.join(sorted(VALID_BUILD_RUNNERS))}"
-        )
-        build_runner = "make"
+    Supports two config styles:
+    1. New (command-based): TEST_CMD, BUILD_CMD, MERGE_GATE_TEST_CMD
+    2. Legacy (target-based): BUILD_RUNNER, TEST_TARGET, etc.
+
+    Legacy configs are automatically converted to command format.
+    """
+    env = envparse.load_env(str(project_dir / "project_profile.env"))
 
     # Validate merge mode - default based on environment
     from orchestrator.lib.github import get_default_merge_mode, VALID_MERGE_MODES
@@ -146,12 +188,55 @@ def load_project_profile(project_dir: Path) -> ProjectProfile:
         )
         merge_mode = "local"
 
+    # Determine config style and build commands
+    if "TEST_CMD" in env:
+        # New command-based style
+        test_cmd = env["TEST_CMD"]
+        build_cmd = env.get("BUILD_CMD", "")
+        merge_gate_test_cmd = env.get("MERGE_GATE_TEST_CMD", test_cmd)
+        # Legacy fields get defaults (not used but required for dataclass)
+        build_runner = "make"
+        makefile_path = "Makefile"
+        build_target = "build"
+        test_target = "test"
+        merge_gate_test_target = "test"
+    else:
+        # Legacy target-based style - convert to commands
+        build_runner = env.get("BUILD_RUNNER", "make")
+        if build_runner not in VALID_BUILD_RUNNERS:
+            logger.warning(
+                f"Unknown BUILD_RUNNER '{build_runner}', defaulting to 'make'. "
+                f"Valid runners: {', '.join(sorted(VALID_BUILD_RUNNERS))}"
+            )
+            build_runner = "make"
+
+        makefile_path = env.get("MAKEFILE_PATH", "Makefile")
+        build_target = env.get("BUILD_TARGET", "build")
+        test_target = env.get("TEST_TARGET") or env.get("MAKE_TARGET_TEST", "test")
+        merge_gate_test_target = env.get("MERGE_GATE_TEST_TARGET") or env.get("MAKE_TARGET_MERGE_GATE_TEST", test_target)
+
+        # Convert to command format
+        if build_runner == "task":
+            test_cmd = f"task {test_target}"
+            build_cmd = f"task {build_target}" if build_target else ""
+            merge_gate_test_cmd = f"task {merge_gate_test_target}"
+        else:  # make
+            test_cmd = f"make {test_target}"
+            build_cmd = f"make {build_target}" if build_target else ""
+            merge_gate_test_cmd = f"make {merge_gate_test_target}"
+
     return ProjectProfile(
+        # New command-based fields
+        test_cmd=test_cmd,
+        build_cmd=build_cmd,
+        merge_gate_test_cmd=merge_gate_test_cmd,
+        # Legacy fields (for backward compat)
         build_runner=build_runner,
-        makefile_path=env.get("MAKEFILE_PATH", "Makefile"),
-        build_target=env.get("BUILD_TARGET", "build"),
+        makefile_path=makefile_path,
+        build_target=build_target,
         test_target=test_target,
-        merge_gate_test_target=env.get("MERGE_GATE_TEST_TARGET") or env.get("MAKE_TARGET_MERGE_GATE_TEST", test_target),
+        merge_gate_test_target=merge_gate_test_target,
+        # Timeouts and modes
         implement_timeout=int(env.get("IMPLEMENT_TIMEOUT", "1200")),  # 20 min default
         review_timeout=int(env.get("REVIEW_TIMEOUT", "900")),  # Increased from 600 - large changes need more time
         test_timeout=int(env.get("TEST_TIMEOUT", "300")),

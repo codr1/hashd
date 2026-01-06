@@ -360,11 +360,17 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         profile = load_project_profile(project_dir)
     except FileNotFoundError:
         profile = ProjectProfile(
+            # New command-based fields
+            test_cmd="make test",
+            build_cmd="make build",
+            merge_gate_test_cmd="make test",
+            # Legacy fields (for backward compat)
             build_runner="make",
             makefile_path="Makefile",
             build_target="build",
             test_target="test",
             merge_gate_test_target="test",
+            # Timeouts and modes
             implement_timeout=1200,
             review_timeout=900,
             test_timeout=300,

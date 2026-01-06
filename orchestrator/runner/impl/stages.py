@@ -395,35 +395,22 @@ def _stage_untracked_files(worktree: Path, ctx: RunContext) -> None:
 
 def stage_test(ctx: RunContext):
     """Run tests."""
-    # Validate runner binary is available
-    valid, error = ctx.profile.validate_runner()
-    if not valid:
-        raise StageError("test", error, 5)
-
-    build_file = ctx.profile.get_build_file(ctx.workstream.worktree)
-    if not build_file.exists():
-        raise StageError(
-            "test",
-            f"Build file not found: {build_file} (runner: {ctx.profile.build_runner})",
-            5
-        )
+    worktree = ctx.workstream.worktree
 
     # Auto-stage any untracked files before build/test
     # Codex sometimes creates files but doesn't git add them
-    _stage_untracked_files(ctx.workstream.worktree, ctx)
+    _stage_untracked_files(worktree, ctx)
 
-    # Run build first to catch compile errors fast
-    # Note: build uses test_timeout since builds are typically faster than tests
-    if ctx.profile.build_target:
-        build_cmd = ctx.profile.get_build_command(
-            ctx.workstream.worktree, ctx.profile.build_target
-        )
+    # Run build first to catch compile errors fast (if build command is configured)
+    build_cmd = ctx.profile.get_build_command_str()
+    if build_cmd:
         ctx.log(f"Running build: {' '.join(build_cmd)}")
         build_start = time.time()
         build_result = subprocess.run(
             build_cmd,
             capture_output=True,
             text=True,
+            cwd=str(worktree),
             timeout=ctx.profile.test_timeout
         )
         build_duration = time.time() - build_start
@@ -440,7 +427,7 @@ def stage_test(ctx: RunContext):
         ctx.log("Build passed")
 
     # Then run tests
-    cmd = ctx.profile.get_build_command(ctx.workstream.worktree, ctx.profile.test_target)
+    cmd = ctx.profile.get_test_command()
 
     ctx.log(f"Running: {' '.join(cmd)}")
     start = time.time()
@@ -449,6 +436,7 @@ def stage_test(ctx: RunContext):
         cmd,
         capture_output=True,
         text=True,
+        cwd=str(worktree),
         timeout=ctx.profile.test_timeout
     )
 
@@ -695,26 +683,12 @@ def stage_merge_gate(ctx: RunContext) -> dict:
         StageError with details dict containing 'type' and 'output' on failure.
     """
     ctx.log("Running merge gate...")
-    worktree = str(ctx.workstream.worktree)
+    worktree = ctx.workstream.worktree
+    worktree_str = str(worktree)
     default_branch = ctx.project.default_branch
 
-    # Validate runner binary is available
-    valid, error = ctx.profile.validate_runner()
-    if not valid:
-        raise StageError("merge_gate", error, 10, details={"type": "missing_runner"})
-
     # 1. Run full test suite
-    build_file = ctx.profile.get_build_file(ctx.workstream.worktree)
-    if not build_file.exists():
-        raise StageError(
-            "merge_gate",
-            f"Build file not found: {build_file} (runner: {ctx.profile.build_runner})",
-            10,
-            details={"type": "missing_build_file"}
-        )
-
-    test_target = ctx.profile.merge_gate_test_target
-    cmd = ctx.profile.get_build_command(ctx.workstream.worktree, test_target)
+    cmd = ctx.profile.get_merge_gate_test_command()
 
     ctx.log(f"Running full test suite: {' '.join(cmd)}")
     start = time.time()
@@ -723,6 +697,7 @@ def stage_merge_gate(ctx: RunContext) -> dict:
         cmd,
         capture_output=True,
         text=True,
+        cwd=worktree_str,
         timeout=ctx.profile.test_timeout
     )
 
@@ -750,13 +725,13 @@ def stage_merge_gate(ctx: RunContext) -> dict:
     # 2. Check branch is up to date with main
     # First, fetch to ensure we have latest main
     subprocess.run(
-        ["git", "-C", worktree, "fetch", "origin", default_branch],
+        ["git", "-C", worktree_str, "fetch", "origin", default_branch],
         capture_output=True, text=True
     )
 
     # Check if main is ancestor of HEAD (meaning we're rebased on main)
     result = subprocess.run(
-        ["git", "-C", worktree, "merge-base", "--is-ancestor",
+        ["git", "-C", worktree_str, "merge-base", "--is-ancestor",
          f"origin/{default_branch}", "HEAD"],
         capture_output=True, text=True
     )
@@ -764,7 +739,7 @@ def stage_merge_gate(ctx: RunContext) -> dict:
     if result.returncode != 0:
         # Get divergence info for context
         diverge_result = subprocess.run(
-            ["git", "-C", worktree, "rev-list", "--left-right", "--count",
+            ["git", "-C", worktree_str, "rev-list", "--left-right", "--count",
              f"origin/{default_branch}...HEAD"],
             capture_output=True, text=True
         )
@@ -786,7 +761,7 @@ def stage_merge_gate(ctx: RunContext) -> dict:
 
     # 3. Check for conflict markers in tracked files
     result = subprocess.run(
-        ["git", "-C", worktree, "diff", "--check", f"origin/{default_branch}...HEAD"],
+        ["git", "-C", worktree_str, "diff", "--check", f"origin/{default_branch}...HEAD"],
         capture_output=True, text=True
     )
 

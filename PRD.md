@@ -203,58 +203,75 @@ These flow to both implementer and reviewer prompts to maintain stack consistenc
 
 ### 7.2 project_profile.md and project_profile.env
 
-AOS must support a user interview step that writes these.
+AOS must support a user interview step that writes these. See section 7.3 for `wf project add` and `wf interview`.
 
-project_profile.env schema (minimum):
+project_profile.env schema:
 
-REPO_PATH=...
-DEFAULT_BRANCH=main
-REQ_RAW_PATHS=requirements,docs,notes
-REQ_CLEAN_PATH=requirements/clean
-REQ_STORIES_PATH=requirements/stories
-REQ_ADR_PATH=adr
-MAKEFILE_PATH=Makefile
-MAKE_TARGET_UNIT=test-unit
-MAKE_TARGET_INTEGRATION=test-integration
-MAKE_TARGET_SMOKE=test-smoke
-MAKE_TARGET_E2E=test-e2e
-STACK=mixed
-TEST_RUNNERS=jest,playwright
-DOCKER_ALLOWED=yes
-HITL_MODE=strict
-COMMITSIZE=<=200 LOC, <=10 files
-REVIEW_STRICTNESS=blocker on missing tests + doc/REQ mismatch
+```env
+# Command-based config (recommended)
+TEST_CMD="make test"              # Full test command (e.g., "npm test", "pytest")
+BUILD_CMD=""                      # Optional build command before tests
+MERGE_GATE_TEST_CMD="make test"   # Full test suite at merge gate
+
+# Merge settings
+MERGE_MODE=local                  # "local" or "github_pr"
+SUPERVISED_MODE=false             # Pause for human review after each commit
+
+# Timeouts (seconds)
+IMPLEMENT_TIMEOUT=1200
+REVIEW_TIMEOUT=900
+TEST_TIMEOUT=300
 BREAKDOWN_TIMEOUT=180
-SUPERVISED_MODE=false
-MERGE_MODE=local
+```
+
+**Legacy config** (still supported for backward compatibility):
+```env
+BUILD_RUNNER=make
+MAKEFILE_PATH=Makefile
+TEST_TARGET=test
+MERGE_GATE_TEST_TARGET=test
+```
 
 **Merge Mode:**
 - `MERGE_MODE=local` (default): Direct git merge to main
 - `MERGE_MODE=github_pr`: Create GitHub PR, merge via `gh pr merge`
 
-7.3 Interview requirements (wf interview)
+7.3 Project Registration and Interview
 
-wf interview must:
+**Commands:**
+- `wf project add <path>` - Register project and run interactive interview
+- `wf project add <path> --no-interview` - Quick register without interview
+- `wf project list` - List registered projects
+- `wf project use <name>` - Set active project
+- `wf interview` - Update existing project configuration
 
-    ask the user a small set of questions:
-        - paths (repo, requirements, docs)
-        - Make targets for testing
-        - runner hints
-        - GitHub usage and PR preference (sets MERGE_MODE)
+**Auto-detection:**
+The interview auto-detects build systems and suggests test commands:
+| File Found | Suggested TEST_CMD |
+|------------|-------------------|
+| Makefile with `test:` target | `make test` |
+| package.json with `test` script | `npm test` |
+| pyproject.toml | `pytest` |
+| Taskfile.yml | `task test` |
+| Cargo.toml | `cargo test` |
+| go.mod | `go test ./...` |
 
-    write/update:
+**Interview prompts:**
+- Project name (detected from git remote or directory)
+- Default branch (detected from git)
+- Test command (detected or manual)
+- Build command (optional)
+- Merge gate test command (defaults to test command)
+- Requirements file path
+- Merge mode (local or github_pr)
+- Supervised mode (pause after each commit)
 
-        project_profile.md
+**Output:**
+Writes `projects/<name>/project.env` and `projects/<name>/project_profile.env`
 
-        project_profile.env
-
-It must NOT:
-
-    scan secrets
-
-    print secrets
-
-    modify product repo
+**Constraints:**
+- Must NOT scan or print secrets
+- Must NOT modify product repo
 
 8) Workstream: data model and files
 8.1 Workstream directory

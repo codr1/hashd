@@ -32,6 +32,7 @@ from orchestrator.commands import diff as cmd_diff_module
 from orchestrator.commands import project as cmd_project_module
 from orchestrator.commands import docs as cmd_docs_module
 from orchestrator.commands import skip as cmd_skip_module
+from orchestrator.commands import interview as cmd_interview_module
 
 
 def get_ops_dir() -> Path:
@@ -292,6 +293,26 @@ def cmd_project_show(args):
     return cmd_project_module.cmd_project_show(args, ops_dir, project_config)
 
 
+def cmd_project_add(args):
+    ops_dir = get_ops_dir()
+    return cmd_project_module.cmd_project_add(args, ops_dir)
+
+
+def cmd_project_list(args):
+    ops_dir = get_ops_dir()
+    return cmd_project_module.cmd_project_list(args, ops_dir)
+
+
+def cmd_project_use(args):
+    ops_dir = get_ops_dir()
+    return cmd_project_module.cmd_project_use(args, ops_dir)
+
+
+def cmd_interview(args):
+    ops_dir = get_ops_dir()
+    return cmd_interview_module.cmd_interview(args, ops_dir)
+
+
 def cmd_docs(args):
     project_config, ops_dir = get_project_config(args)
     args.id = resolve_workstream_id(args, ops_dir)
@@ -531,12 +552,31 @@ def main():
 
     # wf project
     p_project = subparsers.add_parser('project', help='Project management')
-    p_project.set_defaults(func=cmd_project_show)
+    p_project.set_defaults(func=cmd_project_list)  # Default to list when no subcommand
     project_sub = p_project.add_subparsers(dest='project_cmd')
+
+    # wf project add <path> [--no-interview]
+    p_project_add = project_sub.add_parser('add', help='Register a new project')
+    p_project_add.add_argument('path', help='Path to project repository')
+    p_project_add.add_argument('--no-interview', action='store_true', help='Skip interactive setup')
+    p_project_add.set_defaults(func=cmd_project_add)
+
+    # wf project list
+    p_project_list = project_sub.add_parser('list', help='List registered projects')
+    p_project_list.set_defaults(func=cmd_project_list)
+
+    # wf project use <name>
+    p_project_use = project_sub.add_parser('use', help='Set active project')
+    p_project_use.add_argument('name', help='Project name')
+    p_project_use.set_defaults(func=cmd_project_use)
 
     # wf project show
     p_project_show = project_sub.add_parser('show', help='Show project configuration')
     p_project_show.set_defaults(func=cmd_project_show)
+
+    # wf interview
+    p_interview = subparsers.add_parser('interview', help='Update project configuration interactively')
+    p_interview.set_defaults(func=cmd_interview)
 
     # wf docs
     p_docs = subparsers.add_parser('docs', help='Update SPEC.md from workstream')
