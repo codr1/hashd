@@ -186,8 +186,8 @@ def cmd_close(args):
     if getattr(args, 'no_changes', False):
         reason = getattr(args, 'reason', None)
         if not reason:
-            print("ERROR: --no-changes requires a reason")
-            print("  Usage: wf close [ws_id] --no-changes \"reason\"")
+            print("ERROR: --no-changes requires --reason")
+            print("  Usage: wf close [ws_id] --no-changes --reason \"explanation\"")
             return 2
         args.id = resolve_workstream_id(args, ops_dir)
         return cmd_close_module.cmd_close_no_changes(args, ops_dir, project_config)
@@ -494,7 +494,7 @@ def main():
     p_close.add_argument('--force', action='store_true', help='Close even with uncommitted changes')
     p_close.add_argument('--keep-branch', action='store_true', help='Keep git branch for potential resurrection')
     p_close.add_argument('--no-changes', action='store_true', help='Close as complete (no code changes needed)')
-    p_close.add_argument('reason', nargs='?', help='Reason why no changes needed (required with --no-changes)')
+    p_close.add_argument('--reason', '-r', help='Reason why no changes needed (required with --no-changes)')
     p_close.set_defaults(func=cmd_close)
 
     # wf merge
