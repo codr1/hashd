@@ -185,6 +185,16 @@ class ClaudeAgent:
             )
         except subprocess.TimeoutExpired:
             elapsed = time.time() - start_time
+            # Write log file on timeout - critical for debugging long reviews
+            if log_file:
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                log_file.write_text(
+                    f"=== COMMAND ===\n{' '.join(cmd)}\n\n"
+                    f"=== TIMING ===\nElapsed: {elapsed:.1f}s (TIMEOUT)\n\n"
+                    f"=== EXIT CODE ===\nN/A - process killed after timeout\n\n"
+                    f"=== STDOUT ===\nN/A - timeout\n\n"
+                    f"=== STDERR ===\nN/A - timeout\n"
+                )
             return ClaudeReview(
                 success=False,
                 exit_code=-1,
@@ -199,6 +209,7 @@ class ClaudeAgent:
             log_file.parent.mkdir(parents=True, exist_ok=True)
             log_file.write_text(
                 f"=== COMMAND ===\n{' '.join(cmd)}\n\n"
+                f"=== TIMING ===\nElapsed: {elapsed:.1f}s\n\n"
                 f"=== EXIT CODE ===\n{result.returncode}\n\n"
                 f"=== STDOUT ===\n{result.stdout}\n\n"
                 f"=== STDERR ===\n{result.stderr}\n"
@@ -234,6 +245,28 @@ class ClaudeAgent:
                 review.output_tokens = wrapper["usage"].get("output_tokens")
             else:
                 logger.debug("No usage info in Claude response (expected 'usage' key in JSON wrapper)")
+
+            # Log diagnostics for understanding review behavior
+            num_turns = wrapper.get("num_turns")
+            session_id = wrapper.get("session_id")
+
+            if num_turns is not None:
+                logger.info(f"Review completed in {num_turns} turns")
+            if session_id:
+                logger.debug(f"Claude session: {session_id}")
+            if review.input_tokens and review.output_tokens:
+                logger.info(f"Review tokens: {review.input_tokens} in, {review.output_tokens} out")
+
+            # Append diagnostics to log file for post-mortem analysis
+            # This is critical for understanding 15-minute timeouts
+            if log_file:
+                diagnostics = "\n=== DIAGNOSTICS ===\n"
+                diagnostics += f"Turns: {num_turns}\n" if num_turns else "Turns: unknown\n"
+                diagnostics += f"Session: {session_id}\n" if session_id else ""
+                diagnostics += f"Input tokens: {review.input_tokens}\n" if review.input_tokens else ""
+                diagnostics += f"Output tokens: {review.output_tokens}\n" if review.output_tokens else ""
+                with open(log_file, "a") as f:
+                    f.write(diagnostics)
 
             # Now parse the review JSON from the result text
             # Find and extract JSON from markdown code blocks

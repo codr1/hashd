@@ -4,7 +4,10 @@ wf run - Execute the run loop with retry and human gate.
 
 import json
 import logging
+import os
+import re
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -339,11 +342,63 @@ def _run_merge_gate(ctx: RunContext) -> tuple[str, int]:
             )
 
             if rebase_result.returncode == 0:
-                ctx.log("Automatic rebase succeeded")
+                ctx.log("Automatic rebase succeeded, verifying build...")
+                # Verify build still works after rebase
+                build_result = subprocess.run(
+                    ["task", "-d", worktree, "build"],
+                    capture_output=True, text=True, timeout=120
+                )
+                if build_result.returncode != 0:
+                    # Go build errors often go to stdout, not stderr
+                    build_error = build_result.stderr or build_result.stdout
+                    ctx.log(f"Build failed after rebase: {build_error[:500]}")
+                    print("\n" + "="*60)
+                    print("WARNING: Build failed after rebase")
+                    print("="*60)
+                    print("\nThe rebase succeeded but the build now fails.")
+                    print("This may indicate semantic conflicts that need manual review.")
+                    print(f"\nBuild error:\n{build_error[:1000]}")
+                    print(f"\nFix the issue, then run: wf run {ctx.workstream.id}")
+                    notify_blocked(ctx.workstream.id, "Build failed after rebase")
+                    return "blocked", 8
+                ctx.log("Build verified after rebase")
                 print("Automatic rebase succeeded")
                 return "rebased", 0
 
-            # Rebase failed - abort and block for human
+            # Rebase failed - try to auto-resolve trivial conflicts
+            # NOTE: We only attempt resolution for the first conflicting commit.
+            # If subsequent commits also have conflicts, rebase --continue will fail
+            # and we'll abort. This is conservative but safe.
+            conflicted = _get_conflicted_files(worktree)
+            if conflicted and _try_auto_resolve_conflicts(worktree, conflicted):
+                # Try to continue rebase after auto-resolution
+                continue_result = subprocess.run(
+                    ["git", "-C", worktree, "rebase", "--continue"],
+                    capture_output=True, text=True,
+                    env={**os.environ, "GIT_EDITOR": "true"}  # Skip commit message editor
+                )
+                if continue_result.returncode == 0:
+                    ctx.log("Auto-resolved trivial conflicts and completed rebase")
+                    # Verify build after auto-resolution too
+                    build_result = subprocess.run(
+                        ["task", "-d", worktree, "build"],
+                        capture_output=True, text=True, timeout=120
+                    )
+                    if build_result.returncode != 0:
+                        build_error = build_result.stderr or build_result.stdout
+                        ctx.log(f"Build failed after auto-resolved rebase: {build_error[:500]}")
+                        print("\n" + "="*60)
+                        print("WARNING: Build failed after rebase")
+                        print("="*60)
+                        print("\nAuto-resolved conflicts but the build now fails.")
+                        print(f"\nBuild error:\n{build_error[:1000]}")
+                        print(f"\nFix the issue, then run: wf run {ctx.workstream.id}")
+                        notify_blocked(ctx.workstream.id, "Build failed after rebase")
+                        return "blocked", 8
+                    print("Auto-resolved trivial conflicts, rebase succeeded")
+                    return "rebased", 0
+
+            # Still failed - abort and block for human
             ctx.log(f"Rebase failed with conflicts: {rebase_result.stderr}")
             subprocess.run(
                 ["git", "-C", worktree, "rebase", "--abort"],
@@ -899,6 +954,154 @@ def _load_build_output(run_dir: Path) -> str:
     except IOError as e:
         logger.warning(f"Failed to load build output from {log_path}: {e}")
         return ""
+
+
+def _get_conflicted_files(worktree: str) -> list[str]:
+    """Get list of files with conflicts during rebase."""
+    result = subprocess.run(
+        ["git", "-C", worktree, "diff", "--name-only", "--diff-filter=U"],
+        capture_output=True, text=True
+    )
+    return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+
+
+def _get_conflict_type(worktree: str, filepath: str) -> str:
+    """Get the conflict type for a file (UU, AA, etc.) from git status."""
+    result = subprocess.run(
+        ["git", "-C", worktree, "status", "--porcelain", filepath],
+        capture_output=True, text=True
+    )
+    # Format is "XY filename" where XY is the two-letter status
+    if result.stdout and len(result.stdout) >= 2:
+        return result.stdout[:2]
+    return ""
+
+
+def _git_show_index(worktree: str, stage: int, filepath: str) -> Optional[str]:
+    """Get file content from git index at given stage.
+
+    During merge/rebase conflicts:
+      stage 1 = base (common ancestor)
+      stage 2 = ours (HEAD)
+      stage 3 = theirs (incoming)
+
+    Returns None if:
+      - File doesn't exist at that stage
+      - File is binary (contains null bytes)
+      - File can't be decoded as UTF-8
+    """
+    result = subprocess.run(
+        ["git", "-C", worktree, "show", f":{stage}:{filepath}"],
+        capture_output=True  # returns bytes
+    )
+    if result.returncode != 0:
+        return None
+
+    # Check for binary content (null bytes)
+    if b'\x00' in result.stdout:
+        logger.info(f"File {filepath} stage {stage} is binary, skipping auto-resolution")
+        return None
+
+    # Try to decode as UTF-8
+    try:
+        return result.stdout.decode('utf-8')
+    except UnicodeDecodeError:
+        logger.info(f"File {filepath} stage {stage} is not valid UTF-8, skipping auto-resolution")
+        return None
+
+
+def _try_auto_resolve_conflicts(worktree: str, files: list[str]) -> bool:
+    """Try to auto-resolve conflicts using git merge-file --union.
+
+    Only attempts resolution for 'both modified' (UU) conflicts where:
+    - The file existed in the common ancestor
+    - Both sides modified it
+
+    Does NOT attempt:
+    - 'both added' (AA) - usually completely different files
+    - Any delete conflicts (UD, DU, DD)
+    - Added by one side (AU, UA)
+
+    Returns True if all conflicts were successfully resolved.
+
+    WARNING: Union merge can produce syntactically valid but semantically
+    incorrect code (e.g., wrong execution order). Build verification catches
+    syntax errors but cannot detect semantic issues. Human review of
+    auto-resolved merges is recommended.
+    """
+    for filepath in files:
+        conflict_type = _get_conflict_type(worktree, filepath)
+
+        # Only auto-resolve UU (both modified) conflicts
+        if conflict_type != "UU":
+            logger.info(f"Conflict {filepath}: type {conflict_type!r} not auto-resolvable")
+            # Return False - caller will abort rebase which handles cleanup
+            return False
+
+        # Get the three versions from git index
+        base = _git_show_index(worktree, 1, filepath)
+        ours = _git_show_index(worktree, 2, filepath)
+        theirs = _git_show_index(worktree, 3, filepath)
+
+        if base is None or ours is None or theirs is None:
+            logger.warning(f"Conflict {filepath}: missing index stage (base={base is not None}, "
+                          f"ours={ours is not None}, theirs={theirs is not None})")
+            return False
+
+        # Use git merge-file --union to resolve
+        resolved_content = _merge_union(base, ours, theirs)
+        if resolved_content is None:
+            logger.warning(f"Conflict {filepath}: git merge-file failed")
+            return False
+
+        # Write resolved content and stage
+        file_path = Path(worktree) / filepath
+        try:
+            file_path.write_text(resolved_content)
+        except IOError as e:
+            logger.warning(f"Conflict {filepath}: failed to write resolved content: {e}")
+            return False
+
+        stage_result = subprocess.run(
+            ["git", "-C", worktree, "add", filepath],
+            capture_output=True, text=True
+        )
+        if stage_result.returncode != 0:
+            logger.warning(f"Conflict {filepath}: failed to stage: {stage_result.stderr}")
+            return False
+
+        logger.info(f"Auto-resolved conflict in {filepath} using union merge")
+
+    return True
+
+
+def _merge_union(base: str, ours: str, theirs: str) -> Optional[str]:
+    """Run git merge-file --union and return resolved content.
+
+    Returns None on error (not conflict - union resolves conflicts).
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_path = Path(tmpdir) / "base"
+        ours_path = Path(tmpdir) / "ours"
+        theirs_path = Path(tmpdir) / "theirs"
+
+        base_path.write_text(base)
+        ours_path.write_text(ours)
+        theirs_path.write_text(theirs)
+
+        # git merge-file --union modifies ours_path in place
+        # Exit codes: negative=error, 0=clean merge, positive=conflicts (but --union resolves them)
+        result = subprocess.run(
+            ["git", "merge-file", "--union",
+             str(ours_path), str(base_path), str(theirs_path)],
+            capture_output=True, text=True
+        )
+
+        if result.returncode < 0:
+            logger.error(f"git merge-file error: {result.stderr}")
+            return None
+
+        return ours_path.read_text()
 
 
 def _find_last_run(ops_dir: Path, ws_id: str) -> Optional[Path]:
