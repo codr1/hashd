@@ -1207,20 +1207,25 @@ AOS supports configurable autonomy levels per project, controlling how much huma
 
 | Level | Name | Behavior | Status |
 |-------|------|----------|--------|
-| `supervised` | Supervised | Human approves each micro-commit after AI review. Human triggers merge. | **current default** |
-| `gatekeeper` | Gatekeeper | AI runs all micro-commits autonomously. Final branch review runs. Human approves only at merge. | planned |
-| `autonomous` | Autonomous | AI runs to completion. Auto-merge if escalation rules pass. Human notified on completion or escalation. | future |
+| `supervised` | Supervised | Human approves each micro-commit after AI review. Human triggers merge with `--confirm`. | **implemented** |
+| `gatekeeper` | Gatekeeper | Auto-continue commits if AI confidence >= threshold (default 70%). Human approves at merge. | **implemented** |
+| `autonomous` | Autonomous | Auto-continue commits >= 70%. Auto-merge locally (GitHub PR mode still requires PR approval). | **implemented** |
 
-### 19.2 Escalation rules
+### 19.2 Confidence-based escalation
 
-Escalation rules determine when autonomous/gatekeeper modes should block and notify a human instead of proceeding.
+AI reviews include a confidence score (0.0-1.0). When confidence falls below the threshold, the system escalates to human review.
 
-**Default escalation triggers:**
-- Test failures
-- Final review requests changes (AI not confident)
-- Unresolved merge conflicts
-- Lines changed > threshold
-- Sensitive paths modified (auth, security, env files)
+**Confidence scoring:**
+- 0.9-1.0: Highly confident - code is solid, well-tested patterns
+- 0.7-0.9: Confident - looks good but some uncertainty
+- 0.5-0.7: Uncertain - may miss edge cases
+- Below 0.5: Low confidence - recommend human review
+
+**Escalation triggers:**
+- Test failures (always)
+- Review rejects changes (always)
+- Confidence below threshold (gatekeeper/autonomous modes)
+- Sensitive paths touched (raises required threshold)
 
 ### 19.3 Escalation config schema
 
@@ -1228,18 +1233,26 @@ Config file: `projects/<name>/escalation.json`
 
 ```json
 {
-  "autonomy": "supervised",
-  "block_on": {
-    "test_failure": true,
-    "review_requests_changes": true,
-    "unresolved_conflicts": true,
-    "lines_changed_threshold": 1000,
-    "sensitive_paths": ["**/auth/**", "**/security/**", "**/.env*"]
+  "autonomy": "gatekeeper",
+  "commit_confidence_threshold": 0.7,
+  "merge_confidence_threshold": 0.8,
+  "sensitive_paths": {
+    "patterns": ["**/auth/**", "**/*.env*", "**/security/**", "**/migrations/**"],
+    "threshold_boost": 0.15
   }
 }
 ```
 
-MVP implementation: `supervised` is the only implemented mode. Escalation config is future work.
+**Fields:**
+- `autonomy`: One of "supervised", "gatekeeper", "autonomous"
+- `commit_confidence_threshold`: Minimum confidence to auto-continue commits (default 0.7)
+- `merge_confidence_threshold`: Minimum confidence for auto-merge (default 0.8)
+- `sensitive_paths.patterns`: Glob patterns for sensitive files
+- `sensitive_paths.threshold_boost`: How much to raise threshold when sensitive paths touched (default 0.15)
+
+**Example:** If commit touches `auth/handler.py` and base threshold is 0.7, required threshold becomes 0.85.
+
+Run `wf interview` to configure escalation settings for your project.
 
 ---
 

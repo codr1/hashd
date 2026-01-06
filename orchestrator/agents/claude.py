@@ -54,6 +54,8 @@ class ClaudeReview:
     stdout: str
     stderr: str
     decision: Optional[str] = None  # "approve" or "request_changes"
+    confidence: float = 0.5  # 0.0-1.0, default conservative
+    concerns: list[str] = field(default_factory=list)  # Reasons for low confidence
     blockers: list[dict] = field(default_factory=list)
     required_changes: list[str] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
@@ -293,6 +295,8 @@ class ClaudeAgent:
 
             data = json.loads(response_text)
             review.decision = data.get("decision", "request_changes")
+            review.confidence = data.get("confidence", 0.5)  # Default conservative if missing
+            review.concerns = data.get("concerns", [])
             review.blockers = data.get("blockers", [])
             review.required_changes = data.get("required_changes", [])
             review.suggestions = data.get("suggestions", [])

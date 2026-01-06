@@ -4,6 +4,8 @@ Configuration loaders for AOS.
 Loads project and workstream configuration from .env files.
 """
 
+import fnmatch
+import json
 import logging
 import shlex
 import shutil
@@ -323,3 +325,105 @@ def clear_current_workstream(ops_dir: Path) -> None:
     context_file = ops_dir / "config" / "current_workstream"
     if context_file.exists():
         context_file.unlink()
+
+
+# Autonomy modes
+AUTONOMY_MODES = {"supervised", "gatekeeper", "autonomous"}
+
+
+@dataclass
+class SensitivePathsConfig:
+    """Configuration for sensitive path detection."""
+    patterns: list[str]  # Glob patterns like "**/auth/**", "**/*.env*"
+    threshold_boost: float  # How much to increase threshold for sensitive paths
+
+
+@dataclass
+class EscalationConfig:
+    """Escalation configuration from escalation.json.
+
+    Controls autonomy level and confidence thresholds for auto-continue decisions.
+    """
+    autonomy: str  # "supervised", "gatekeeper", or "autonomous"
+    commit_confidence_threshold: float  # Threshold for auto-continuing commits (e.g., 0.7)
+    merge_confidence_threshold: float  # Threshold for auto-merging (e.g., 0.8)
+    sensitive_paths: SensitivePathsConfig | None  # Optional path-based threshold boost
+
+
+def load_escalation_config(project_dir: Path) -> EscalationConfig:
+    """Load escalation.json and return EscalationConfig.
+
+    If file doesn't exist, returns sensible defaults.
+    """
+    config_path = project_dir / "escalation.json"
+
+    # Defaults
+    defaults = EscalationConfig(
+        autonomy="gatekeeper",
+        commit_confidence_threshold=0.7,
+        merge_confidence_threshold=0.8,
+        sensitive_paths=SensitivePathsConfig(
+            patterns=["**/auth/**", "**/*.env*", "**/security/**", "**/migrations/**"],
+            threshold_boost=0.15,
+        ),
+    )
+
+    if not config_path.exists():
+        return defaults
+
+    try:
+        data = json.loads(config_path.read_text())
+
+        autonomy = data.get("autonomy", "gatekeeper")
+        if autonomy not in AUTONOMY_MODES:
+            logger.warning(f"Unknown autonomy mode '{autonomy}', defaulting to 'gatekeeper'")
+            autonomy = "gatekeeper"
+
+        sensitive_paths = None
+        if "sensitive_paths" in data:
+            sp = data["sensitive_paths"]
+            sensitive_paths = SensitivePathsConfig(
+                patterns=sp.get("patterns", []),
+                threshold_boost=sp.get("threshold_boost", 0.15),
+            )
+
+        return EscalationConfig(
+            autonomy=autonomy,
+            commit_confidence_threshold=data.get("commit_confidence_threshold", 0.7),
+            merge_confidence_threshold=data.get("merge_confidence_threshold", 0.8),
+            sensitive_paths=sensitive_paths,
+        )
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.warning(f"Failed to parse escalation.json: {e}, using defaults")
+        return defaults
+
+
+def get_confidence_threshold(
+    changed_files: list[str],
+    config: EscalationConfig,
+    for_merge: bool = False,
+) -> float:
+    """Calculate effective confidence threshold based on changed files.
+
+    Args:
+        changed_files: List of file paths that were changed
+        config: Escalation config with thresholds and sensitive patterns
+        for_merge: If True, use merge threshold; otherwise use commit threshold
+
+    Returns:
+        Effective threshold (base + boost if sensitive paths touched)
+    """
+    base_threshold = config.merge_confidence_threshold if for_merge else config.commit_confidence_threshold
+
+    if not config.sensitive_paths or not config.sensitive_paths.patterns:
+        return base_threshold
+
+    # Check if any changed file matches sensitive patterns
+    for file_path in changed_files:
+        for pattern in config.sensitive_paths.patterns:
+            if fnmatch.fnmatch(file_path, pattern):
+                boosted = base_threshold + config.sensitive_paths.threshold_boost
+                # Cap at 1.0
+                return min(boosted, 1.0)
+
+    return base_threshold

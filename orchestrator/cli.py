@@ -501,6 +501,7 @@ def main():
     p_merge = subparsers.add_parser('merge', help='Merge workstream to main and archive')
     p_merge.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_merge.add_argument('--push', action='store_true', help='Push to remote after merge')
+    p_merge.add_argument('--confirm', action='store_true', help='Confirm merge in supervised mode')
     p_merge.set_defaults(func=cmd_merge)
 
     # wf archive

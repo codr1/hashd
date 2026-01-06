@@ -44,9 +44,13 @@ All paths implemented. Validation pending.
 
 ---
 
+### Features (recently implemented)
+- **Confidence-based escalation**: AI reviews include confidence score (0.0-1.0). Low confidence triggers human review.
+- **Three autonomy modes**: supervised (always pause), gatekeeper (auto-continue >= 70%), autonomous (auto-continue + auto-merge)
+- **Sensitive path detection**: auth/*, *.env, security/*, migrations/* raise confidence threshold by +15%
+- **escalation.json config**: Per-project autonomy mode and thresholds
+
 ### Features (designed, not built)
-- Autonomy levels: autonomous mode (auto-approve gates) - see PRD section 19
-- Escalation rules config - see PRD section 19
 - Interactive story Q&A (`wf plan edit` without `-f`) - see below
 
 ### Interactive Story Question Answering

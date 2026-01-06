@@ -16,6 +16,7 @@ from orchestrator.lib.config import (
     ProjectProfile,
     load_workstream,
     load_project_profile,
+    load_escalation_config,
     get_current_workstream,
     clear_current_workstream,
 )
@@ -405,6 +406,26 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print(f"  Next: {next_commit.id} - {next_commit.title}")
             print(f"  Use 'wf run {ws_id}' to complete remaining work")
             return 2
+
+    # Load escalation config for autonomy mode
+    escalation_config = load_escalation_config(project_dir)
+    autonomy = escalation_config.autonomy
+
+    # In supervised mode for local merge, require explicit --confirm flag
+    if autonomy == "supervised" and profile.merge_mode != MERGE_MODE_GITHUB_PR:
+        if not getattr(args, 'confirm', False):
+            print("MERGE PAUSED - Supervised mode")
+            print()
+            print(f"Workstream: {ws.id}")
+            print(f"Branch: {ws.branch}")
+            print(f"Title: {ws.title}")
+            print()
+            print("All micro-commits complete. Ready to merge.")
+            print()
+            print("Commands:")
+            print(f"  wf merge {ws.id} --confirm  # Proceed with merge")
+            print(f"  wf diff {ws.id}             # Review changes")
+            return 0
 
     # Set status to merging so watch shows progress
     _update_status(workstream_dir, "merging")

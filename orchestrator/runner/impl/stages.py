@@ -20,6 +20,7 @@ from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.history import format_conversation_history
 from orchestrator.lib.review import load_review, format_review, print_review
 from orchestrator.lib.context import get_codebase_context
+from orchestrator.lib.config import load_escalation_config, get_confidence_threshold
 from orchestrator.lib.directives import load_directives
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
@@ -561,10 +562,12 @@ def stage_review(ctx: RunContext):
         _print_review_result(review)
         _verbose_footer()
 
-    # Save review result
+    # Save review result (including confidence for threshold-based decisions)
     (ctx.run_dir / "claude_review.json").write_text(json.dumps({
-        "version": 1,
+        "version": 2,
         "decision": review.decision,
+        "confidence": review.confidence,
+        "concerns": review.concerns,
         "blockers": review.blockers,
         "required_changes": review.required_changes,
         "suggestions": review.suggestions,
@@ -809,22 +812,141 @@ def stage_merge_gate(ctx: RunContext) -> dict:
     return {}
 
 
+def _get_changed_files(worktree: Path) -> list[str]:
+    """Get list of changed files in the worktree (staged + unstaged)."""
+    result = subprocess.run(
+        ["git", "-C", str(worktree), "diff", "--name-only", "HEAD"],
+        capture_output=True, text=True
+    )
+    files = result.stdout.strip().split("\n") if result.stdout.strip() else []
+
+    # Also include untracked files
+    status = subprocess.run(
+        ["git", "-C", str(worktree), "status", "--porcelain"],
+        capture_output=True, text=True
+    )
+    for line in status.stdout.strip().split("\n"):
+        if line and line.startswith("??"):
+            files.append(line[3:].strip())
+
+    return files
+
+
+def _format_escalation_context(
+    ctx: RunContext,
+    confidence: float,
+    threshold: float,
+    concerns: list[str],
+    changed_files: list[str],
+    sensitive_touched: bool,
+    reason: str,
+) -> str:
+    """Format rich escalation context for human review pause.
+
+    Shows confidence, concerns, changed files, and available commands.
+    """
+    lines = []
+
+    # Header with confidence
+    lines.append(f"REVIEW PAUSED - {reason}")
+    lines.append("")
+
+    # Commit info
+    if ctx.microcommit:
+        lines.append(f"Commit: {ctx.microcommit.id} - {ctx.microcommit.title}")
+
+    # Confidence vs threshold
+    lines.append(f"Confidence: {confidence:.0%} (threshold: {threshold:.0%})")
+    if sensitive_touched:
+        lines.append("  [Sensitive paths touched - threshold raised]")
+
+    # Changed files summary
+    if changed_files:
+        lines.append(f"Changed: {len(changed_files)} file(s)")
+        # Show first few files
+        for f in changed_files[:5]:
+            lines.append(f"  - {f}")
+        if len(changed_files) > 5:
+            lines.append(f"  ... and {len(changed_files) - 5} more")
+
+    # Concerns from AI
+    if concerns:
+        lines.append("")
+        lines.append("Concerns:")
+        for c in concerns:
+            lines.append(f"  - {c}")
+
+    # Commands
+    lines.append("")
+    lines.append("Commands:")
+    lines.append("  wf approve           # Accept and continue")
+    lines.append("  wf approve -f \"...\"  # Accept with guidance")
+    lines.append("  wf reject -f \"...\"   # Reject with feedback")
+    lines.append("  wf diff              # See full diff")
+
+    return "\n".join(lines)
+
+
 def stage_human_review(ctx: RunContext):
     """Block until human approves or rejects.
 
-    In gatekeeper mode (supervised_mode=False), this stage is skipped since
-    the AI review already approved. Human review only happens at the merge gate.
+    Uses confidence-based decision logic:
+    - Supervised: Always pause (show confidence as info)
+    - Gatekeeper: Auto-continue if confidence >= threshold
+    - Autonomous: Auto-continue if confidence >= threshold (merge gate separate)
 
-    In supervised mode (supervised_mode=True), checks for approval file:
+    Sensitive paths (auth/*, *.env) increase the required threshold.
+
+    Checks for approval file:
     - human_approval.json with {"action": "approve"} -> proceed
     - human_approval.json with {"action": "reject", "reset": bool, "feedback": "..."} -> StageError
     - No file -> StageBlocked (waiting for human)
     """
-    # In gatekeeper mode, skip human review IF AI approved
-    # If AI rejected after max attempts, we still need human review
-    review_status = ctx.stages.get("review", {}).get("status")
-    if not ctx.profile.supervised_mode and review_status == "passed":
-        ctx.log("Gatekeeper mode: skipping human review (AI approved)")
+    # Load escalation config
+    project_dir = ctx.workstream_dir.parent.parent / "projects" / ctx.project.name
+    escalation_config = load_escalation_config(project_dir)
+
+    # Get review result with confidence
+    review_path = ctx.run_dir / "claude_review.json"
+    review_data = {}
+    if review_path.exists():
+        review_data = json.loads(review_path.read_text())
+
+    confidence = review_data.get("confidence", 0.5)
+    concerns = review_data.get("concerns", [])
+    review_decision = review_data.get("decision", "request_changes")
+
+    # Get changed files for threshold calculation
+    changed_files = _get_changed_files(ctx.workstream.worktree)
+    threshold = get_confidence_threshold(changed_files, escalation_config)
+
+    # Check if any sensitive paths were touched
+    sensitive_touched = threshold > escalation_config.commit_confidence_threshold
+
+    # Determine if we should auto-continue
+    autonomy = escalation_config.autonomy
+    review_approved = review_decision == "approve"
+
+    # Decision logic
+    should_auto_continue = False
+    reason = ""
+
+    if not review_approved:
+        # AI rejected - always need human
+        reason = "AI review rejected"
+    elif autonomy == "supervised":
+        # Always pause in supervised mode
+        reason = f"Supervised mode (confidence: {confidence:.0%})"
+    elif autonomy in ("gatekeeper", "autonomous"):
+        if confidence >= threshold:
+            should_auto_continue = True
+            ctx.log(f"Auto-continuing: confidence {confidence:.0%} >= {threshold:.0%} threshold")
+        else:
+            reason = f"Low confidence: {confidence:.0%} < {threshold:.0%} required"
+            if sensitive_touched:
+                reason += " (sensitive paths touched)"
+
+    if should_auto_continue:
         return
 
     approval_file = ctx.workstream_dir / "human_approval.json"
@@ -833,7 +955,18 @@ def stage_human_review(ctx: RunContext):
         # Update status to awaiting human review
         _update_workstream_status(ctx.workstream_dir, "awaiting_human_review")
         ctx.log("Awaiting human review")
-        raise StageBlocked("human_review", "Waiting for human approval (use: wf approve/reject/reset)")
+
+        # Build rich escalation context
+        escalation_msg = _format_escalation_context(
+            ctx=ctx,
+            confidence=confidence,
+            threshold=threshold,
+            concerns=concerns,
+            changed_files=changed_files,
+            sensitive_touched=sensitive_touched,
+            reason=reason,
+        )
+        raise StageBlocked("human_review", escalation_msg)
 
     try:
         approval = json.loads(approval_file.read_text())
