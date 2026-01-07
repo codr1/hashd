@@ -74,7 +74,8 @@ class CodexAgent:
                 input=stdin_input,
                 capture_output=True,
                 text=True,
-                timeout=self.timeout
+                timeout=self.timeout,
+                cwd=str(worktree)  # Ensure subprocess runs from worktree directory
             )
         except subprocess.TimeoutExpired:
             elapsed = time.time() - start_time
