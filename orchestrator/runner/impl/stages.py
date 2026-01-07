@@ -41,6 +41,19 @@ def _verbose_footer():
     print('='*60 + "\n")
 
 
+MAX_FAILURE_OUTPUT_CHARS = 3000
+
+def _truncate_output(output: str) -> str:
+    """Truncate output, keeping start and end for context."""
+    if len(output) <= MAX_FAILURE_OUTPUT_CHARS:
+        return output
+    marker = "\n\n... [truncated] ...\n\n"
+    available = MAX_FAILURE_OUTPUT_CHARS - len(marker)
+    head_chars = (available * 2) // 3
+    tail_chars = available - head_chars
+    return f"{output[:head_chars]}{marker}{output[-tail_chars:]}"
+
+
 def _load_last_review_output(ctx: RunContext) -> dict | None:
     """Load the most recent review output for context."""
     runs_dir = ctx.run_dir.parent  # run_dir is {ops_dir}/runs/{run_id}
@@ -323,11 +336,10 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         # Try session resume with short prompt
         last_entry = ctx.review_history[-1]
 
-        # Check for test/build failure first (takes precedence over review feedback)
         if last_entry.get("test_failure"):
-            review_feedback = f"Tests failed:\n\n{last_entry['test_failure']}\n\nFix the code to make tests pass."
+            review_feedback = f"Tests failed:\n\n{_truncate_output(last_entry['test_failure'])}\n\nFix the code to make tests pass."
         elif last_entry.get("build_failure"):
-            review_feedback = f"Build failed:\n\n{last_entry['build_failure']}\n\nFix the build errors."
+            review_feedback = f"Build failed:\n\n{_truncate_output(last_entry['build_failure'])}\n\nFix the build errors."
         else:
             last_review = last_entry.get("review_feedback", {})
             review_feedback = format_review_for_retry(last_review)
