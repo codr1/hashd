@@ -31,7 +31,7 @@ DEFAULT_STAGE_COMMANDS = {
     # Implementation phase
     "breakdown": "claude -p --output-format json",  # Story -> micro-commit specs JSON
     "implement": "codex exec --dangerously-bypass-approvals-and-sandbox -C {worktree} {prompt}",
-    "implement_resume": "codex exec resume --last --dangerously-bypass-approvals-and-sandbox -C {worktree} {prompt}",
+    "implement_resume": "codex exec resume --last --dangerously-bypass-approvals-and-sandbox {prompt}",
     "review": "claude --output-format json --dangerously-skip-permissions -p {prompt}",
     "review_resume": "claude --continue --output-format json --dangerously-skip-permissions -p {prompt}",
     "fix_generation": "claude -p --output-format json",  # Test failure -> fix commit specs JSON

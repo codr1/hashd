@@ -321,8 +321,16 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
 
     if should_try_resume:
         # Try session resume with short prompt
-        last_review = ctx.review_history[-1].get("review_feedback", {})
-        review_feedback = format_review_for_retry(last_review)
+        last_entry = ctx.review_history[-1]
+
+        # Check for test/build failure first (takes precedence over review feedback)
+        if last_entry.get("test_failure"):
+            review_feedback = f"Tests failed:\n\n{last_entry['test_failure']}\n\nFix the code to make tests pass."
+        elif last_entry.get("build_failure"):
+            review_feedback = f"Build failed:\n\n{last_entry['build_failure']}\n\nFix the build errors."
+        else:
+            last_review = last_entry.get("review_feedback", {})
+            review_feedback = format_review_for_retry(last_review)
 
         retry_prompt = render_prompt(
             "implement_retry",
