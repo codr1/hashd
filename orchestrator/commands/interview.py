@@ -431,6 +431,41 @@ BREAKDOWN_TIMEOUT="180"
     escalation_file.write_text(json.dumps(escalation_config, indent=2) + "\n")
     print(f"Writing {escalation_file}... done")
 
+    # Ensure Codex trusts the worktrees directory
+    # project_dir is ops_dir/projects/<name>, so ops_dir is parent.parent
+    ops_dir = project_dir.parent.parent
+    _ensure_codex_worktrees_trust(ops_dir)
+
+
+def _ensure_codex_worktrees_trust(ops_dir: Path) -> None:
+    """Add worktrees directory to Codex trust config if not already present.
+
+    Codex requires directories to be explicitly trusted in ~/.codex/config.toml.
+    Git worktrees use a .git file instead of .git directory, so Codex doesn't
+    recognize them as part of a trusted repo without explicit configuration.
+    """
+    worktrees_dir = ops_dir / "worktrees"
+    worktrees_dir.mkdir(exist_ok=True)
+
+    codex_config_path = Path.home() / ".codex" / "config.toml"
+    codex_config_path.parent.mkdir(exist_ok=True)
+
+    # Read existing config
+    existing_content = ""
+    if codex_config_path.exists():
+        existing_content = codex_config_path.read_text()
+
+    # Check if worktrees path is already trusted
+    trust_entry = f'[projects."{worktrees_dir}"]'
+    if trust_entry in existing_content:
+        print(f"Codex trust for {worktrees_dir}... already configured")
+        return
+
+    # Append trust entry
+    new_entry = f'\n{trust_entry}\ntrust_level = "trusted"\n'
+    codex_config_path.write_text(existing_content.rstrip() + new_entry)
+    print(f"Codex trust for {worktrees_dir}... added")
+
 
 def cmd_interview(args, ops_dir: Path) -> int:
     """Run interview to update existing project config."""
