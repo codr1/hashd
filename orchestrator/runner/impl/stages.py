@@ -456,30 +456,50 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     ctx.log(f"Implementation complete, {len(git_status.stdout.strip().splitlines())} files changed")
 
 
-def _stage_untracked_files(worktree: Path, ctx: RunContext) -> None:
-    """Stage any untracked files before test.
+def _auto_stage_changes(worktree: Path, ctx: RunContext) -> None:
+    """Stage all changes (new and modified files) before test.
 
-    Codex sometimes creates new files but doesn't git add them. This causes:
+    Codex sometimes creates or modifies files but doesn't git add them. This causes:
     - Build failures (e.g., templ files not generating .go files)
-    - Review blockers ("untracked files" warnings)
+    - Review blockers ("unstaged changes" warnings)
+    - Wasted review cycles when reviewer flags staging issues
 
-    By auto-staging before test, we catch this early and avoid wasted iterations.
+    By auto-staging all changes before test, we ensure the reviewer sees exactly
+    what will be committed. The commit stage does `git add -A` anyway, so this
+    just catches issues earlier and avoids unnecessary feedback loops.
     """
     result = subprocess.run(
         ["git", "-C", str(worktree), "status", "--porcelain"],
         capture_output=True, text=True
     )
-    untracked = [line[3:] for line in result.stdout.splitlines() if line.startswith("??")]
-    if not untracked:
+
+    # Parse status: ?? = untracked, ' M' = modified unstaged, 'M ' = modified staged
+    # We want to stage anything that's not already fully staged
+    lines = result.stdout.splitlines()
+    untracked = [line[3:] for line in lines if line.startswith("??")]
+    modified_unstaged = [line[3:] for line in lines if line.startswith(" M") or line.startswith(" D")]
+
+    to_stage = untracked + modified_unstaged
+    if not to_stage:
         return
 
-    ctx.log(f"Auto-staging {len(untracked)} untracked file(s)")
-    for f in untracked:
-        ctx.log(f"  + {f}")
+    if untracked:
+        ctx.log(f"Auto-staging {len(untracked)} new file(s)")
+        for f in untracked[:5]:  # Show first 5
+            ctx.log(f"  + {f}")
+        if len(untracked) > 5:
+            ctx.log(f"  ... and {len(untracked) - 5} more")
 
-    # Stage only the untracked files, not modified files
+    if modified_unstaged:
+        ctx.log(f"Auto-staging {len(modified_unstaged)} modified file(s)")
+        for f in modified_unstaged[:5]:  # Show first 5
+            ctx.log(f"  ~ {f}")
+        if len(modified_unstaged) > 5:
+            ctx.log(f"  ... and {len(modified_unstaged) - 5} more")
+
+    # Stage all unstaged changes
     add_result = subprocess.run(
-        ["git", "-C", str(worktree), "add", "--"] + untracked,
+        ["git", "-C", str(worktree), "add", "--"] + to_stage,
         capture_output=True, text=True
     )
     if add_result.returncode != 0:
@@ -490,9 +510,9 @@ def stage_test(ctx: RunContext):
     """Run tests."""
     worktree = ctx.workstream.worktree
 
-    # Auto-stage any untracked files before build/test
-    # Codex sometimes creates files but doesn't git add them
-    _stage_untracked_files(worktree, ctx)
+    # Auto-stage all changes before build/test
+    # Codex sometimes creates or modifies files but doesn't git add them
+    _auto_stage_changes(worktree, ctx)
 
     # Run build first to catch compile errors fast (if build command is configured)
     build_cmd = ctx.profile.get_build_command_str()
