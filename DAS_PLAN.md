@@ -7,7 +7,29 @@ See PRD.md for authoritative specification.
 
 ---
 
-## Next: Golden Run Validation
+## Next: Agent Command Config
+
+Decouple AI agent CLI commands from code into `agents.json` config file.
+
+Config format (`projects/{project}/agents.json`):
+```json
+{
+  "stages": {
+    "breakdown": "claude -p --output-format json",
+    "implement": "codex exec --dangerously-bypass-approvals-and-sandbox -C {worktree}",
+    "review": "claude --output-format json --dangerously-skip-permissions -p"
+  }
+}
+```
+
+- [x] Create `orchestrator/lib/agents_config.py` with loader and defaults
+- [x] Refactor agent classes to use config
+- [x] Update all invocation points (8 files)
+- [ ] Test switching between agents
+
+---
+
+## Golden Run Validation
 
 Run full cycle on a real project. Fix what breaks.
 
@@ -21,37 +43,8 @@ All paths implemented. Validation pending.
 
 ## Later
 
-### No-Op Handling (Stories and Micro-Commits)
-**Status:** [x] COMPLETE (except optional story type field)
-
-#### Implemented (Individual Micro-Commits)
-
-- [x] `prompts/implement.md` - Codex outputs `{"status": "already_done", "reason": "..."}`
-- [x] `orchestrator/runner/impl/stages.py` - Parses JSON, handles `already_done` status
-- [x] Auto-skip logic: if no uncommitted changes, marks commit done and proceeds
-- [x] Edge case: if uncommitted changes exist, proceeds to test/review (changes ARE the work)
-- [x] `orchestrator/commands/run.py` - Handles `auto_skip:` prefix, returns "passed"
-- [x] `orchestrator/commands/skip.py` - Manual `wf skip [ws] [commit-id] -m "reason"`
-- [x] `WF.md` - Documents auto-skip logic
-
-#### Implemented (Entire No-Op Stories)
-
-- [x] `wf close --no-changes "reason"` - For stories with zero code changes
-
-#### Not Implemented
-
+### Story Type Field
 - [ ] Story `type` field (e.g., `investigation`) - Different workflow expectations
-
----
-
-### Features (recently implemented)
-- **Confidence-based escalation**: AI reviews include confidence score (0.0-1.0). Low confidence triggers human review.
-- **Three autonomy modes**: supervised (always pause), gatekeeper (auto-continue >= 70%), autonomous (auto-continue + auto-merge)
-- **Sensitive path detection**: auth/*, *.env, security/*, migrations/* raise confidence threshold by +15%
-- **escalation.json config**: Per-project autonomy mode and thresholds
-
-### Features (designed, not built)
-- Interactive story Q&A (`wf plan edit` without `-f`) - see below
 
 ### Interactive Story Question Answering
 
@@ -98,9 +91,32 @@ Refining story with Claude PM...
 - Display tech stack summary in project header
 - Show when commits are flagged for tech stack violations
 
+### Session Reuse Phase 2: Across-Commit Persistence
+
+Phase 1 (implemented) provides session reuse within a single commit's review loop:
+- When review rejects, retry continues the same Codex/Claude session
+- Benefits: shorter prompts, agent remembers what it tried
+
+Phase 2 (future): Maintain sessions across commits within a workstream.
+
+**Benefits:**
+- Claude reviewer remembers project patterns, approved approaches
+- Codex implementer has pre-warmed codebase context
+- Faster iterations as workstream progresses
+
+**Considerations:**
+- Session ID tracking in `meta.env`
+- Staleness: sessions may have outdated assumptions after many commits
+- Debugging: harder to reproduce issues with long session history
+- Reset strategy: when to start fresh vs continue
+
+**Implementation sketch:**
+1. Store session ID in `meta.env` after first implement/review
+2. On next commit, try to resume that session with `codex exec resume <id>`
+3. Reset session on: workstream reset, explicit flag, N commits threshold
+
 ### Ideas (not designed)
 - Parallel workstream scheduling - conflict-aware concurrent execution
-- Rich run reports - HTML dashboard for run history
 
 ### Infrastructure
 - Integration tests (after design stabilizes)

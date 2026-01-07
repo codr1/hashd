@@ -12,6 +12,7 @@ from typing import Optional
 from orchestrator.lib.config import ProjectConfig, ProjectProfile, Workstream
 from orchestrator.lib.planparse import MicroCommit
 from orchestrator.lib.validate import validate_before_write
+from orchestrator.lib.agents_config import AgentsConfig, load_agents_config
 
 
 @dataclass
@@ -29,6 +30,31 @@ class RunContext:
     # Conversation history: list of {"attempt": N, "review_feedback": {...}, "implement_summary": "..."}
     review_history: list = field(default_factory=list)
     verbose: bool = False
+
+    # Session tracking for agent reuse within review loop.
+    # When a review rejects an implementation, we retry using the same agent session
+    # instead of starting fresh. This lets the agent remember what it tried and produces
+    # faster iterations with shorter prompts. Both Codex and Claude support session resume:
+    # - Codex: `codex exec resume --last "prompt"`
+    # - Claude: `claude --continue`
+    # These flags track whether we've made the first call in the current commit's review loop.
+    codex_session_active: bool = False
+    claude_session_active: bool = False
+
+    # Cached agents config (loaded lazily)
+    _agents_config: Optional[AgentsConfig] = field(default=None, repr=False)
+
+    @property
+    def project_dir(self) -> Path:
+        """Project directory (ops_dir/projects/project_name)."""
+        return self.workstream_dir.parent.parent / "projects" / self.project.name
+
+    @property
+    def agents_config(self) -> AgentsConfig:
+        """Agent configuration (loaded once, cached)."""
+        if self._agents_config is None:
+            self._agents_config = load_agents_config(self.project_dir)
+        return self._agents_config
 
     @classmethod
     def create(cls, ops_dir: Path, project: ProjectConfig, profile: ProjectProfile,

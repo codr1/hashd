@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from orchestrator.lib.agents_config import AgentsConfig, get_stage_command
+
 
 @dataclass
 class CodexResult:
@@ -27,14 +29,27 @@ class CodexResult:
 
 
 class CodexAgent:
-    def __init__(self, timeout: int = 600):
+    def __init__(self, timeout: int = 600, agents_config: Optional[AgentsConfig] = None):
         self.timeout = timeout
+        self.agents_config = agents_config or AgentsConfig()
 
-    def implement(self, prompt: str, worktree: Path, log_file: Path = None) -> CodexResult:
+    def implement(
+        self,
+        prompt: str,
+        worktree: Path,
+        log_file: Optional[Path] = None,
+        stage: str = "implement",
+    ) -> CodexResult:
         """
         Run Codex to implement a micro-commit.
 
-        Uses: codex exec --dangerously-bypass-approvals-and-sandbox -C <worktree> "<prompt>"
+        Args:
+            prompt: The implementation prompt
+            worktree: Path to git worktree
+            log_file: Optional path to write command log
+            stage: Stage name from agents_config. Use "implement" for first attempt,
+                   "implement_resume" for retries to continue the previous session.
+                   Session reuse lets Codex remember what it tried before.
 
         Note: Git worktrees have their .git directory in the parent repo
         (e.g., /repo/.git/worktrees/<name>), so workspace-write sandbox
@@ -43,17 +58,20 @@ class CodexAgent:
         The --full-auto flag's --sandbox workspace-write overrides explicit
         --sandbox flags, so we must use the bypass flag instead.
         """
-        cmd = [
-            "codex", "exec",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "-C", str(worktree),
-            prompt
-        ]
+        stage_cmd = get_stage_command(
+            self.agents_config,
+            stage,
+            {"worktree": str(worktree), "prompt": prompt},
+        )
+        cmd = stage_cmd.cmd
+
+        stdin_input = stage_cmd.get_stdin_input(prompt)
 
         start_time = time.time()
         try:
             result = subprocess.run(
                 cmd,
+                input=stdin_input,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout

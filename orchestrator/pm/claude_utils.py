@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from orchestrator.lib.agents_config import load_agents_config, get_stage_command
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,17 +20,20 @@ def _run_claude_subprocess(
     prompt: str,
     timeout: int,
     cwd: Optional[Path] = None,
+    prompt_via_stdin: bool = True,
 ) -> tuple[bool, str]:
     """Common subprocess handling for Claude invocations."""
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
     kwargs = {
-        "input": prompt,
         "capture_output": True,
         "text": True,
         "timeout": timeout,
         "env": env,
     }
+    # Only pass prompt via stdin if prompt_via_stdin is True
+    if prompt_via_stdin:
+        kwargs["input"] = prompt
     if cwd:
         kwargs["cwd"] = str(cwd)
 
@@ -53,6 +58,8 @@ def run_claude(
     cwd: Optional[Path] = None,
     timeout: int = 300,
     accept_edits: bool = False,
+    stage: Optional[str] = None,
+    project_dir: Optional[Path] = None,
 ) -> tuple[bool, str]:
     """Run Claude with a prompt.
 
@@ -61,11 +68,41 @@ def run_claude(
         cwd: Working directory. If provided, Claude runs with file access
              (Read, Grep, Glob tools). If None, runs without file access.
         timeout: Timeout in seconds (default 300)
-        accept_edits: If True, auto-accept file edits (requires cwd)
+        accept_edits: If True, auto-accept file edits (requires cwd) - ignored if stage provided
+        stage: Stage name for config lookup (e.g., "pm_discovery", "pm_refine")
+        project_dir: Project directory for loading agents.json config
 
     Returns:
         Tuple of (success, response_text)
     """
+    # If stage is specified, use config-driven command
+    if stage:
+        if accept_edits:
+            logger.warning(
+                f"accept_edits=True ignored when stage='{stage}' is provided; "
+                "edit permissions are controlled by the stage command in agents.json"
+            )
+        config = load_agents_config(project_dir)
+        stage_cmd = get_stage_command(config, stage, {"prompt": prompt})
+        success, output = _run_claude_subprocess(
+            stage_cmd.cmd, prompt, timeout, cwd, stage_cmd.prompt_via_stdin
+        )
+        if not success:
+            return success, output
+
+        # Parse JSON wrapper if using --output-format json
+        if stage_cmd.output_format == "json":
+            try:
+                wrapper = json.loads(output.strip())
+                response = wrapper.get("result", output)
+            except json.JSONDecodeError:
+                response = output
+        else:
+            response = output
+
+        return True, response
+
+    # Legacy behavior: determine command from cwd/accept_edits
     if cwd:
         # With cwd, use --print mode which gives Claude tool access
         cmd = ["claude", "--print"]

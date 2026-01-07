@@ -18,7 +18,7 @@ from orchestrator.runner.stages import StageError, StageBlocked
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit, mark_done
 from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.history import format_conversation_history
-from orchestrator.lib.review import load_review, format_review, print_review
+from orchestrator.lib.review import load_review, format_review, format_review_for_retry, print_review
 from orchestrator.lib.context import get_codebase_context
 from orchestrator.lib.config import load_escalation_config, get_confidence_threshold
 from orchestrator.lib.directives import load_directives
@@ -151,6 +151,7 @@ def stage_breakdown(ctx: RunContext):
         plan_content=plan_content,
         timeout=ctx.profile.breakdown_timeout,
         log_file=log_file,
+        agents_config=ctx.agents_config,
     )
 
     if not breakdown:
@@ -212,17 +213,11 @@ def stage_clarification_check(ctx: RunContext):
     ctx.log("No blocking clarifications")
 
 
-def stage_implement(ctx: RunContext, human_feedback: str = None):
-    """Run Codex to implement the micro-commit.
+def _build_full_implement_prompt(ctx: RunContext, human_guidance_section: str) -> str:
+    """Build the full implementation prompt with all context.
 
-    Args:
-        ctx: Run context (includes review_history for iterative feedback)
-        human_feedback: Human-provided guidance from rejection
+    Used for first attempts and as fallback when session resume fails.
     """
-    if not ctx.microcommit:
-        raise StageError("implement", "No micro-commit selected", 9)
-
-    # Build conversation history section if this is a retry
     conversation_history_section = ""
     if ctx.review_history:
         history_entries = format_conversation_history(ctx.review_history)
@@ -230,11 +225,6 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
             "implement_history",
             history_entries=history_entries
         )
-
-    # Build human guidance section
-    human_guidance_section = ""
-    if human_feedback:
-        human_guidance_section = f"## HUMAN GUIDANCE\n\n{human_feedback}\n"
 
     # Build review context section from last review output
     review_context_section = ""
@@ -263,8 +253,7 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
                 directives_content=directives_content
             )
 
-    # Build the full prompt from template
-    prompt = render_prompt(
+    return render_prompt(
         "implement",
         system_description=ctx.project.description or f"Project: {ctx.project.name}",
         tech_preferred=ctx.project.tech_preferred or "Not specified",
@@ -280,17 +269,106 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         human_guidance_section=human_guidance_section
     )
 
-    ctx.log(f"Running Codex for {ctx.microcommit.id}")
 
-    if ctx.verbose:
-        _verbose_header("IMPLEMENT PROMPT")
-        print(prompt)
-        _verbose_footer()
+def _is_session_resume_failure(result) -> bool:
+    """Check if a failed result is due to session resume failure.
 
-    agent = CodexAgent(timeout=ctx.profile.implement_timeout)
+    Returns True if the error indicates no session to resume (as opposed to
+    other errors like network issues or code problems).
+    """
+    if result.success:
+        return False
+
+    stderr_lower = result.stderr.lower()
+    # Common patterns for "no session to resume" errors
+    session_error_patterns = [
+        "no session",
+        "session not found",
+        "no previous session",
+        "cannot resume",
+        "nothing to resume",
+        "no conversation",
+    ]
+    return any(pattern in stderr_lower for pattern in session_error_patterns)
+
+
+def stage_implement(ctx: RunContext, human_feedback: str = None):
+    """Run Codex to implement the micro-commit.
+
+    Args:
+        ctx: Run context (includes review_history for iterative feedback)
+        human_feedback: Human-provided guidance from rejection
+
+    Session Reuse:
+        On retries (ctx.codex_session_active=True), we attempt `codex exec resume --last`
+        to continue the previous session. If resume fails (no session exists), we fall
+        back to a fresh session with the full prompt. This handles cases where the
+        previous session was lost (timeout, crash, process killed).
+    """
+    if not ctx.microcommit:
+        raise StageError("implement", "No micro-commit selected", 9)
+
+    # Build human guidance section (used in both full and retry prompts)
+    human_guidance_section = ""
+    if human_feedback:
+        human_guidance_section = f"\n## HUMAN GUIDANCE\n\n{human_feedback}\n"
+
+    agent = CodexAgent(timeout=ctx.profile.implement_timeout, agents_config=ctx.agents_config)
     log_file = ctx.run_dir / "stages" / "implement.log"
 
-    result = agent.implement(prompt, ctx.workstream.worktree, log_file)
+    # Determine if we should try session resume
+    should_try_resume = ctx.codex_session_active and ctx.review_history
+
+    if should_try_resume:
+        # Try session resume with short prompt
+        last_review = ctx.review_history[-1].get("review_feedback", {})
+        review_feedback = format_review_for_retry(last_review)
+
+        retry_prompt = render_prompt(
+            "implement_retry",
+            review_feedback=review_feedback,
+            human_guidance_section=human_guidance_section
+        )
+
+        ctx.log(f"Running Codex (session resume) for {ctx.microcommit.id}")
+
+        if ctx.verbose:
+            _verbose_header("IMPLEMENT PROMPT (resume)")
+            print(retry_prompt)
+            _verbose_footer()
+
+        result = agent.implement(retry_prompt, ctx.workstream.worktree, log_file, stage="implement_resume")
+
+        # Check if resume failed due to no session - fall back to fresh
+        if _is_session_resume_failure(result):
+            ctx.log("Session resume failed (no session found), falling back to fresh session")
+            prompt = _build_full_implement_prompt(ctx, human_guidance_section)
+
+            if ctx.verbose:
+                _verbose_header("IMPLEMENT PROMPT (fallback)")
+                print(prompt)
+                _verbose_footer()
+
+            # Use a separate log file for the fallback attempt
+            fallback_log_file = ctx.run_dir / "stages" / "implement_fallback.log"
+            result = agent.implement(prompt, ctx.workstream.worktree, fallback_log_file, stage="implement")
+        elif not result.success:
+            # Resume failed for other reasons - log for pattern discovery but don't fall back
+            logger.debug(f"Codex resume failed with unrecognized error: {result.stderr[:200]}")
+    else:
+        # First attempt: use full prompt
+        prompt = _build_full_implement_prompt(ctx, human_guidance_section)
+        ctx.log(f"Running Codex for {ctx.microcommit.id}")
+
+        if ctx.verbose:
+            _verbose_header("IMPLEMENT PROMPT")
+            print(prompt)
+            _verbose_footer()
+
+        result = agent.implement(prompt, ctx.workstream.worktree, log_file, stage="implement")
+
+    # Mark session as active for next iteration within this commit's review loop
+    ctx.codex_session_active = True
 
     # Record stats
     record_agent_stats(ctx.workstream_dir, AgentStats(
@@ -498,8 +576,57 @@ def _get_story_context(ctx: RunContext) -> str:
     return title
 
 
+def _build_full_review_prompt(ctx: RunContext, agent: ClaudeAgent) -> str:
+    """Build the full contextual review prompt.
+
+    Used for first attempts and as fallback when session resume fails.
+    """
+    system_description = ctx.project.description or f"Project: {ctx.project.name}"
+    story_context = _get_story_context(ctx)
+
+    return agent.build_contextual_review_prompt(
+        system_description=system_description,
+        tech_preferred=ctx.project.tech_preferred,
+        tech_acceptable=ctx.project.tech_acceptable,
+        tech_avoid=ctx.project.tech_avoid,
+        story_context=story_context,
+        commit_title=ctx.microcommit.title,
+        commit_description=ctx.microcommit.block_content,
+        review_history=ctx.review_history
+    )
+
+
+def _is_claude_session_resume_failure(review) -> bool:
+    """Check if a failed review is due to session resume failure.
+
+    Returns True if the error indicates no session to resume (as opposed to
+    other errors like network issues or parsing problems).
+    """
+    if review.success:
+        return False
+
+    # Check both stderr and notes for session-related errors
+    error_text = (review.stderr + " " + review.notes).lower()
+    session_error_patterns = [
+        "no session",
+        "session not found",
+        "no previous session",
+        "cannot continue",
+        "nothing to continue",
+        "no conversation",
+    ]
+    return any(pattern in error_text for pattern in session_error_patterns)
+
+
 def stage_review(ctx: RunContext):
-    """Run Claude to review the changes with full codebase access."""
+    """Run Claude to review the changes with full codebase access.
+
+    Session Reuse:
+        On retries (ctx.claude_session_active=True), we attempt `claude --continue`
+        to continue the previous session. If resume fails (no session exists), we fall
+        back to a fresh session with the full prompt. This handles cases where the
+        previous session was lost (timeout, crash, process killed).
+    """
     if not ctx.microcommit:
         raise StageError("review", "No micro-commit selected", 9)
 
@@ -518,33 +645,62 @@ def stage_review(ctx: RunContext):
             ctx.log("No changes to review")
             return
 
-    # Get context for the reviewer
-    system_description = ctx.project.description or f"Project: {ctx.project.name}"
-    story_context = _get_story_context(ctx)
-
-    # Build review prompt
-    agent = ClaudeAgent(timeout=ctx.profile.review_timeout)
-    prompt = agent.build_contextual_review_prompt(
-        system_description=system_description,
-        tech_preferred=ctx.project.tech_preferred,
-        tech_acceptable=ctx.project.tech_acceptable,
-        tech_avoid=ctx.project.tech_avoid,
-        story_context=story_context,
-        commit_title=ctx.microcommit.title,
-        commit_description=ctx.microcommit.block_content,
-        review_history=ctx.review_history
-    )
-
-    ctx.log("Running Claude review (contextual)")
-
-    if ctx.verbose:
-        _verbose_header("REVIEW PROMPT")
-        print(prompt)
-        _verbose_footer()
-
+    agent = ClaudeAgent(timeout=ctx.profile.review_timeout, agents_config=ctx.agents_config)
     log_file = ctx.run_dir / "stages" / "review.log"
 
-    review = agent.contextual_review(prompt, ctx.workstream.worktree, log_file)
+    # Determine if we should try session resume
+    should_try_resume = ctx.claude_session_active and ctx.review_history
+
+    if should_try_resume:
+        # Try session resume with short prompt
+        last_review = ctx.review_history[-1].get("review_feedback", {})
+        previous_feedback = format_review_for_retry(last_review)
+
+        retry_prompt = render_prompt(
+            "review_retry",
+            previous_feedback=previous_feedback
+        )
+
+        ctx.log("Running Claude review (session resume)")
+
+        if ctx.verbose:
+            _verbose_header("REVIEW PROMPT (resume)")
+            print(retry_prompt)
+            _verbose_footer()
+
+        review = agent.contextual_review(retry_prompt, ctx.workstream.worktree, log_file, stage="review_resume")
+
+        # Check if resume failed due to no session - fall back to fresh
+        if _is_claude_session_resume_failure(review):
+            ctx.log("Session resume failed (no session found), falling back to fresh session")
+            prompt = _build_full_review_prompt(ctx, agent)
+
+            if ctx.verbose:
+                _verbose_header("REVIEW PROMPT (fallback)")
+                print(prompt)
+                _verbose_footer()
+
+            # Use a separate log file for the fallback attempt
+            fallback_log_file = ctx.run_dir / "stages" / "review_fallback.log"
+            review = agent.contextual_review(prompt, ctx.workstream.worktree, fallback_log_file, stage="review")
+        elif not review.success:
+            # Resume failed for other reasons - log for pattern discovery but don't fall back
+            error_snippet = (review.stderr + " " + review.notes)[:200]
+            logger.debug(f"Claude resume failed with unrecognized error: {error_snippet}")
+    else:
+        # First attempt: use full contextual prompt
+        prompt = _build_full_review_prompt(ctx, agent)
+        ctx.log("Running Claude review (contextual)")
+
+        if ctx.verbose:
+            _verbose_header("REVIEW PROMPT")
+            print(prompt)
+            _verbose_footer()
+
+        review = agent.contextual_review(prompt, ctx.workstream.worktree, log_file, stage="review")
+
+    # Mark session as active for next iteration within this commit's review loop
+    ctx.claude_session_active = True
 
     # Record stats
     record_agent_stats(ctx.workstream_dir, AgentStats(
@@ -903,8 +1059,7 @@ def stage_human_review(ctx: RunContext):
     - No file -> StageBlocked (waiting for human)
     """
     # Load escalation config
-    project_dir = ctx.workstream_dir.parent.parent / "projects" / ctx.project.name
-    escalation_config = load_escalation_config(project_dir)
+    escalation_config = load_escalation_config(ctx.project_dir)
 
     # Get review result with confidence
     review_path = ctx.run_dir / "claude_review.json"

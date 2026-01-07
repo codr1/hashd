@@ -204,7 +204,13 @@ def run_plan_session(
         return False, f"Cannot read requirements file: {context.get('reqs_path')}"
 
     prompt = build_plan_prompt(context)
-    return run_claude(prompt, cwd=project_config.repo_path, timeout=timeout)
+    return run_claude(
+        prompt,
+        cwd=project_config.repo_path,
+        timeout=timeout,
+        stage="pm_discovery",
+        project_dir=project_dir,
+    )
 
 
 def build_refine_prompt(chunk_name: str, context: dict, existing_ws_ids: list[str] = None, feedback: str = None) -> str:
@@ -286,7 +292,13 @@ def run_refine_session(
     existing_ws_ids = get_existing_ws_ids(ops_dir)
 
     prompt = build_refine_prompt(chunk_name, context, existing_ws_ids, feedback=feedback)
-    success, response = run_claude(prompt, cwd=project_config.repo_path, timeout=timeout)
+    success, response = run_claude(
+        prompt,
+        cwd=project_config.repo_path,
+        timeout=timeout,
+        stage="pm_refine",
+        project_dir=project_dir,
+    )
 
     if not success:
         return False, None, response
@@ -377,7 +389,13 @@ def run_edit_session(
     context = gather_context(project_config, ops_dir, project_dir)
 
     prompt = build_edit_prompt(story, feedback, context)
-    success, response = run_claude(prompt, cwd=project_config.repo_path, timeout=timeout)
+    success, response = run_claude(
+        prompt,
+        cwd=project_config.repo_path,
+        timeout=timeout,
+        stage="pm_edit",
+        project_dir=project_dir,
+    )
 
     if not success:
         return False, None, response, ""

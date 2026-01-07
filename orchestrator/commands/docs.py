@@ -262,11 +262,14 @@ def run_docs_update(
 
     # Build prompt and run Claude with edit permissions
     prompt = build_spec_prompt(context)
+    project_dir = ops_dir / "projects" / project_config.name
     success, response = run_claude(
         prompt,
         cwd=spec_source_dir,
         timeout=timeout,
         accept_edits=True,
+        stage="pm_docs",
+        project_dir=project_dir,
     )
 
     if not success:

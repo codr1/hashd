@@ -459,6 +459,7 @@ def _generate_fixes_for_test_failure(ctx: RunContext, failure_output: str) -> tu
         existing_commit_count=existing_count,
         timeout=ctx.profile.breakdown_timeout,
         log_file=log_file,
+        agents_config=ctx.agents_config,
     )
 
     if fix_commits:

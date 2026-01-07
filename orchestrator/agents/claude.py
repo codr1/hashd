@@ -15,6 +15,7 @@ from typing import Optional
 
 from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.history import format_review_history
+from orchestrator.lib.agents_config import AgentsConfig, get_stage_command
 
 logger = logging.getLogger(__name__)
 
@@ -67,30 +68,39 @@ class ClaudeReview:
 
 
 class ClaudeAgent:
-    def __init__(self, timeout: int = 120):
+    def __init__(self, timeout: int = 120, agents_config: Optional[AgentsConfig] = None):
         self.timeout = timeout
+        self.agents_config = agents_config or AgentsConfig()
 
-    def review_freeform(self, prompt: str, cwd: Path) -> FreeformResult:
+    def review_freeform(self, prompt: str, cwd: Path, stage: str = "final_review") -> FreeformResult:
         """
         Run Claude and return raw text response (no JSON parsing).
 
         Used for final branch reviews where we want prose, not structured output.
+
+        Args:
+            prompt: The prompt to send
+            cwd: Working directory
+            stage: Stage name for command lookup (default: final_review)
         """
-        cmd = [
-            "claude",
-            "-p",
-            "--output-format", "json",
-        ]
+        stage_cmd = get_stage_command(
+            self.agents_config,
+            stage,
+            {"prompt": prompt},
+        )
+        cmd = stage_cmd.cmd
 
         # Remove ANTHROPIC_API_KEY so Claude uses OAuth credentials instead
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+        stdin_input = stage_cmd.get_stdin_input(prompt)
 
         start_time = time.time()
         try:
             result = subprocess.run(
                 cmd,
                 cwd=str(cwd),
-                input=prompt,
+                input=stdin_input,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
@@ -157,7 +167,13 @@ class ClaudeAgent:
             review_history_section=review_history_section
         )
 
-    def contextual_review(self, prompt: str, cwd: Path, log_file: Path = None) -> ClaudeReview:
+    def contextual_review(
+        self,
+        prompt: str,
+        cwd: Path,
+        log_file: Path = None,
+        stage: str = "review",
+    ) -> ClaudeReview:
         """
         Run Claude with tool access to review changes in context.
 
@@ -165,21 +181,32 @@ class ClaudeAgent:
         - Run git diff HEAD to see changes
         - Read full files for context
         - Grep for patterns, check imports, etc.
+
+        Args:
+            prompt: The review prompt
+            cwd: Working directory (worktree)
+            log_file: Optional path to write command log
+            stage: Stage name from agents_config. Use "review" for first attempt,
+                   "review_resume" for retries to continue the previous session.
+                   Session reuse lets Claude remember the context it explored.
         """
-        cmd = [
-            "claude",
-            "--output-format", "json",
-            "--dangerously-skip-permissions",
-            "-p", prompt,
-        ]
+        stage_cmd = get_stage_command(
+            self.agents_config,
+            stage,
+            {"prompt": prompt},
+        )
+        cmd = stage_cmd.cmd
 
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+        stdin_input = stage_cmd.get_stdin_input(prompt)
 
         start_time = time.time()
         try:
             result = subprocess.run(
                 cmd,
                 cwd=str(cwd),
+                input=stdin_input,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
