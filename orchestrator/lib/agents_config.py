@@ -3,44 +3,125 @@ Agent command configuration.
 
 Loads agents.json to determine which CLI commands to use for each stage.
 If no config file exists, returns defaults matching current hardcoded behavior.
+
+STAGE COMMAND TEMPLATES
+=======================
+
+Each stage maps to a CLI command template. Templates support variable substitution
+using {variable_name} syntax. The caller provides a context dict with values.
+
+Variable Handling:
+- {prompt}: The prompt text. If present in template, passed as CLI arg. If absent,
+  prompt is passed via stdin (for multi-line or special character handling).
+- {worktree}: Path to the git worktree where code changes happen.
+- {session_id}: Codex session UUID for resuming a specific session.
+
+IMPORTANT: Session ID Isolation
+-------------------------------
+Codex's `resume --last` resumes the most recent session GLOBALLY, not per-directory.
+This causes a critical bug when running concurrent workstreams: workstream A might
+resume workstream B's session, leading to changes in the wrong directory.
+
+Solution: We track session IDs per workstream (in codex_session.txt) and use
+`resume {session_id}` to resume the specific session for that workstream.
+
+The implement_resume stage REQUIRES session_id in context. If missing, the command
+will fail. The caller (stage_implement in stages.py) must ensure session_id is
+provided, or fall back to a fresh session if unavailable.
 """
 
 import json
+import logging
+import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
 
-# Default commands matching current hardcoded behavior
-# If {prompt} is in command, it's substituted as CLI arg; otherwise prompt goes via stdin
-# Ordered by workflow sequence
+
+# Default commands matching current hardcoded behavior.
+# Ordered by workflow sequence.
+#
+# Variable reference:
+#   {prompt}     - The prompt text (required for all stages)
+#   {worktree}   - Git worktree path (implement, implement_resume)
+#   {session_id} - Codex session UUID (implement_resume only)
+#
+# If {prompt} is in command, it's substituted as CLI arg; otherwise prompt goes via stdin.
 #
 # Session Reuse Strategy:
 # Both Codex and Claude support session persistence. When a review rejects an implementation,
 # we use *_resume variants to continue the existing session instead of starting fresh.
 # Benefits: (1) Agent remembers what it tried, (2) shorter prompts, (3) faster iterations.
 # Users can override these in agents.json to use different models or strategies for retries.
+#
 DEFAULT_STAGE_COMMANDS = {
-    # Planning phase
-    "pm_discovery": "claude --print",      # Analyzes REQS.md -> story candidates JSON
-    "pm_refine": "claude --print",         # Refines story with feedback -> updated story JSON
-    "pm_edit": "claude --print",           # Edits existing story -> updated story JSON
-    "pm_annotate": "claude --print --permission-mode acceptEdits",  # Marks up REQS.md
+    # ─────────────────────────────────────────────────────────────────────────
+    # PLANNING PHASE
+    # These stages handle story discovery, refinement, and requirements markup.
+    # ─────────────────────────────────────────────────────────────────────────
+    "pm_discovery": "claude --print",
+    # Analyzes REQS.md -> story candidates JSON
 
-    # Implementation phase
-    "breakdown": "claude -p --output-format json",  # Story -> micro-commit specs JSON
+    "pm_refine": "claude --print",
+    # Refines story with feedback -> updated story JSON
+
+    "pm_edit": "claude --print",
+    # Edits existing story -> updated story JSON
+
+    "pm_annotate": "claude --print --permission-mode acceptEdits",
+    # Marks up REQS.md with WIP annotations
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # IMPLEMENTATION PHASE
+    # These stages handle code generation, review, and iteration.
+    # ─────────────────────────────────────────────────────────────────────────
+    "breakdown": "claude -p --output-format json",
+    # Story -> micro-commit specs JSON
+
     "implement": "codex exec --dangerously-bypass-approvals-and-sandbox -C {worktree} {prompt}",
-    "implement_resume": "codex exec resume --last --dangerously-bypass-approvals-and-sandbox {prompt}",
-    "review": "claude --output-format json --dangerously-skip-permissions -p {prompt}",
-    "review_resume": "claude --continue --output-format json --dangerously-skip-permissions -p {prompt}",
-    "fix_generation": "claude -p --output-format json",  # Test failure -> fix commit specs JSON
-    "plan_add": "claude -p --output-format json",  # Add commit to plan -> commit spec JSON
+    # First implementation attempt. Runs Codex in the worktree.
+    # Variables: {worktree}, {prompt}
 
-    # Completion phase
-    "final_review": "claude -p --output-format json",  # Branch review -> prose summary
-    "pm_spec": "claude -p --output-format json",  # Generate SPEC.md content
-    "pm_docs": "claude --print --permission-mode acceptEdits",  # Generate documentation
+    "implement_resume": "codex exec resume {session_id} --dangerously-bypass-approvals-and-sandbox -C {worktree} {prompt}",
+    # Resume previous Codex session for retry after review rejection.
+    # CRITICAL: Uses {session_id} instead of --last to avoid resuming wrong workstream.
+    # Variables: {session_id} (REQUIRED), {worktree}, {prompt}
+
+    "review": "claude --output-format json --dangerously-skip-permissions -p {prompt}",
+    # First review of implementation. Claude reads the diff and worktree.
+    # Variables: {prompt}
+
+    "review_resume": "claude --continue --output-format json --dangerously-skip-permissions -p {prompt}",
+    # Continue previous Claude session for re-review after fixes.
+    # Variables: {prompt}
+
+    "fix_generation": "claude -p --output-format json",
+    # Test failure -> fix commit specs JSON
+
+    "plan_add": "claude -p --output-format json",
+    # Add commit to plan -> commit spec JSON
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # COMPLETION PHASE
+    # These stages handle final review, spec generation, and documentation.
+    # ─────────────────────────────────────────────────────────────────────────
+    "final_review": "claude -p --output-format json",
+    # Branch review -> prose summary
+
+    "pm_spec": "claude -p --output-format json",
+    # Generate SPEC.md content
+
+    "pm_docs": "claude --print --permission-mode acceptEdits",
+    # Generate documentation
+}
+
+# Stages that require specific variables in context (beyond prompt)
+STAGE_REQUIRED_VARIABLES = {
+    "implement": ["worktree"],
+    "implement_resume": ["worktree", "session_id"],
 }
 
 
@@ -100,6 +181,9 @@ def get_stage_command(
     Returns:
         StageCommand with cmd list and prompt_via_stdin flag
 
+    Raises:
+        ValueError: If stage is unknown or required variables are missing from context.
+
     If {prompt} is in the command template, it's substituted and prompt_via_stdin=False.
     Otherwise prompt_via_stdin=True (caller should pass prompt via stdin).
 
@@ -113,6 +197,17 @@ def get_stage_command(
     """
     if stage not in config.stages:
         raise ValueError(f"Unknown stage: {stage}")
+
+    # Validate required variables are present in context
+    required_vars = STAGE_REQUIRED_VARIABLES.get(stage, [])
+    if required_vars:
+        context_keys = set(context.keys()) if context else set()
+        missing = [v for v in required_vars if v not in context_keys]
+        if missing:
+            raise ValueError(
+                f"Stage '{stage}' requires variables {required_vars} in context, "
+                f"but missing: {missing}. This is a programming error in the caller."
+            )
 
     cmd_template = config.stages[stage]
 
@@ -138,11 +233,20 @@ def get_stage_command(
         # Replace {prompt} with a placeholder that shlex won't choke on
         cmd_template = cmd_template.replace("{prompt}", "__PROMPT_PLACEHOLDER__")
 
-    # Apply other variable substitutions (worktree, etc.)
+    # Apply other variable substitutions (worktree, session_id, etc.)
     if context:
         for key, value in context.items():
             if key != "prompt":
                 cmd_template = cmd_template.replace(f"{{{key}}}", value)
+
+    # Check for any remaining unsubstituted {var} patterns (indicates a bug).
+    # Note: __PROMPT_PLACEHOLDER__ has no braces, so won't match this regex.
+    remaining_vars = re.findall(r'\{(\w+)\}', cmd_template)
+    if remaining_vars:
+        logger.error(
+            f"Stage '{stage}' has unsubstituted variables: {remaining_vars}. "
+            f"Template: {cmd_template}"
+        )
 
     # Parse into list using shell lexer (safe now since prompt is removed)
     cmd = shlex.split(cmd_template)

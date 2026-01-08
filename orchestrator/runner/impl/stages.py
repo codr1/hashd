@@ -29,6 +29,52 @@ from orchestrator.lib.stats import AgentStats, record_agent_stats
 from orchestrator.runner.git_utils import has_uncommitted_changes
 
 
+def _save_codex_session_id(workstream_dir: Path, session_id: str) -> None:
+    """Save Codex session ID for this workstream for later resume.
+
+    Session IDs are stored per-workstream to enable resuming the correct session
+    when multiple workstreams are running concurrently. Without this, Codex's
+    `resume --last` would resume the most recent session globally, which could
+    be from a different workstream.
+
+    The session file is cleared when a commit is completed (see stage_update_state).
+    """
+    session_file = workstream_dir / "codex_session.txt"
+    try:
+        session_file.write_text(session_id + "\n")
+    except OSError as e:
+        logger.warning(f"Failed to save Codex session ID: {e}")
+
+
+def _load_codex_session_id(workstream_dir: Path) -> str | None:
+    """Load saved Codex session ID for this workstream.
+
+    Returns None if no session file exists or if reading fails.
+    """
+    session_file = workstream_dir / "codex_session.txt"
+    if not session_file.exists():
+        return None
+    try:
+        return session_file.read_text().strip() or None
+    except OSError as e:
+        logger.warning(f"Failed to load Codex session ID: {e}")
+        return None
+
+
+def _clear_codex_session_id(workstream_dir: Path) -> None:
+    """Clear saved Codex session ID.
+
+    Called when a commit is completed so the next commit starts with a fresh session.
+    Silently ignores missing files or deletion errors.
+    """
+    session_file = workstream_dir / "codex_session.txt"
+    try:
+        if session_file.exists():
+            session_file.unlink()
+    except OSError as e:
+        logger.warning(f"Failed to clear Codex session ID: {e}")
+
+
 def _verbose_header(title: str):
     """Print a section header for verbose output."""
     print(f"\n{'='*60}")
@@ -226,6 +272,92 @@ def stage_clarification_check(ctx: RunContext):
     ctx.log("No blocking clarifications")
 
 
+def _get_uncommitted_changes_context(worktree: Path) -> str:
+    """Get context about uncommitted changes for the implement prompt.
+
+    When Codex blocks with uncommitted changes (e.g., asking for clarification),
+    those changes persist in the worktree. On the next run, Codex needs to know
+    about these changes to avoid confusion. Without this context, Codex might:
+    - Claim files don't exist when they're already staged
+    - Try to re-implement work that's already done
+    - Ask for confirmation instead of proceeding
+
+    This function builds a context string describing staged, unstaged, and untracked
+    files. The caller prepends this to the prompt so Codex understands the current
+    worktree state.
+
+    Returns:
+        A markdown-formatted context string if there are uncommitted changes,
+        or empty string if the worktree is clean.
+    """
+    # Check for staged changes
+    staged_result = subprocess.run(
+        ["git", "-C", str(worktree), "diff", "--cached", "--stat"],
+        capture_output=True, text=True
+    )
+    staged_stat = staged_result.stdout.strip()
+
+    # Check for unstaged changes
+    unstaged_result = subprocess.run(
+        ["git", "-C", str(worktree), "diff", "--stat"],
+        capture_output=True, text=True
+    )
+    unstaged_stat = unstaged_result.stdout.strip()
+
+    # Check for untracked files
+    untracked_result = subprocess.run(
+        ["git", "-C", str(worktree), "ls-files", "--others", "--exclude-standard"],
+        capture_output=True, text=True
+    )
+    untracked = untracked_result.stdout.strip()
+
+    if not staged_stat and not unstaged_stat and not untracked:
+        return ""
+
+    lines = [
+        "## IMPORTANT: Uncommitted Changes From Previous Attempt",
+        "",
+        "There are uncommitted changes in the worktree from your previous attempt.",
+        "These changes are likely partial progress toward the current task.",
+        "",
+    ]
+
+    if staged_stat:
+        lines.append("**Staged changes:**")
+        lines.append("```")
+        lines.append(staged_stat)
+        lines.append("```")
+        lines.append("")
+
+    if unstaged_stat:
+        lines.append("**Unstaged changes:**")
+        lines.append("```")
+        lines.append(unstaged_stat)
+        lines.append("```")
+        lines.append("")
+
+    if untracked:
+        untracked_lines = untracked.split("\n")
+        untracked_files = untracked_lines[:10]  # Limit to 10 files
+        lines.append("**Untracked files:**")
+        for f in untracked_files:
+            lines.append(f"- {f}")
+        if len(untracked_lines) > 10:
+            lines.append(f"- ... and {len(untracked_lines) - 10} more")
+        lines.append("")
+
+    lines.extend([
+        "**Action:** Continue from where you left off. If these changes are correct,",
+        "complete any remaining work and proceed. Do NOT ask for confirmation -",
+        "just continue implementing. Only discard if changes are fundamentally wrong.",
+        "",
+        "---",
+        "",
+    ])
+
+    return "\n".join(lines)
+
+
 def _build_full_implement_prompt(ctx: RunContext, human_guidance_section: str) -> str:
     """Build the full implementation prompt with all context.
 
@@ -326,11 +458,20 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     if human_feedback:
         human_guidance_section = f"\n## HUMAN GUIDANCE\n\n{human_feedback}\n"
 
+    # Check for uncommitted changes from previous attempts and build context
+    uncommitted_context = _get_uncommitted_changes_context(ctx.workstream.worktree)
+    if uncommitted_context:
+        ctx.log("Detected uncommitted changes from previous attempt - injecting context")
+
     agent = CodexAgent(timeout=ctx.profile.implement_timeout, agents_config=ctx.agents_config)
     log_file = ctx.run_dir / "stages" / "implement.log"
 
+    # Load saved session ID for this workstream (if any)
+    saved_session_id = _load_codex_session_id(ctx.workstream_dir)
+
     # Determine if we should try session resume
-    should_try_resume = ctx.codex_session_active and ctx.review_history
+    # We need BOTH a saved session ID and review history to resume
+    should_try_resume = saved_session_id and ctx.review_history
 
     if should_try_resume:
         # Try session resume with short prompt
@@ -350,19 +491,28 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
             human_guidance_section=human_guidance_section
         )
 
-        ctx.log(f"Running Codex (session resume) for {ctx.microcommit.id}")
+        # Prepend uncommitted changes context if any
+        if uncommitted_context:
+            retry_prompt = uncommitted_context + retry_prompt
+
+        ctx.log(f"Running Codex (session resume: {saved_session_id[:8]}...) for {ctx.microcommit.id}")
 
         if ctx.verbose:
             _verbose_header("IMPLEMENT PROMPT (resume)")
             print(retry_prompt)
             _verbose_footer()
 
-        result = agent.implement(retry_prompt, ctx.workstream.worktree, log_file, stage="implement_resume")
+        result = agent.implement(
+            retry_prompt, ctx.workstream.worktree, log_file,
+            stage="implement_resume", session_id=saved_session_id
+        )
 
         # Check if resume failed due to no session - fall back to fresh
         if _is_session_resume_failure(result):
             ctx.log("Session resume failed (no session found), falling back to fresh session")
             prompt = _build_full_implement_prompt(ctx, human_guidance_section)
+            if uncommitted_context:
+                prompt = uncommitted_context + prompt
 
             if ctx.verbose:
                 _verbose_header("IMPLEMENT PROMPT (fallback)")
@@ -378,6 +528,8 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     else:
         # First attempt: use full prompt
         prompt = _build_full_implement_prompt(ctx, human_guidance_section)
+        if uncommitted_context:
+            prompt = uncommitted_context + prompt
         ctx.log(f"Running Codex for {ctx.microcommit.id}")
 
         if ctx.verbose:
@@ -389,6 +541,12 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
 
     # Mark session as active for next iteration within this commit's review loop
     ctx.codex_session_active = True
+
+    # Save session ID for this workstream for later resume
+    # This prevents the bug where --last resumes a different workstream's session
+    if result.session_id:
+        _save_codex_session_id(ctx.workstream_dir, result.session_id)
+        ctx.log(f"Saved Codex session: {result.session_id[:8]}...")
 
     # Record stats
     record_agent_stats(ctx.workstream_dir, AgentStats(
@@ -839,6 +997,9 @@ def stage_update_state(ctx: RunContext):
     plan_path = ctx.workstream_dir / "plan.md"
     mark_done(str(plan_path), ctx.microcommit.id)
     ctx.log(f"Marked {ctx.microcommit.id} as done")
+
+    # Clear Codex session ID - next commit starts fresh
+    _clear_codex_session_id(ctx.workstream_dir)
 
     # Auto-push if PR is open (so CI re-runs on the fix)
     if ctx.workstream.pr_number:
