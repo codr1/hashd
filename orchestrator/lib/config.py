@@ -262,7 +262,7 @@ def load_workstream(workstream_dir: Path) -> Workstream:
         try:
             pr_number = int(env["PR_NUMBER"])
         except ValueError:
-            pass
+            logger.debug(f"Invalid PR_NUMBER '{env['PR_NUMBER']}' in {workstream_dir}")
 
     return Workstream(
         id=env["ID"],

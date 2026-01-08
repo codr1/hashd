@@ -321,12 +321,12 @@ def _run_merge_gate(ctx: RunContext) -> tuple[str, int]:
             ctx.log("Rebase required - attempting automatic rebase")
             print("\nBranch needs rebase, attempting automatic rebase...")
 
-            worktree = str(ctx.workstream.worktree)
+            worktree = ctx.workstream.worktree
             default_branch = ctx.project.default_branch
 
             # Fetch latest
             fetch_result = subprocess.run(
-                ["git", "-C", worktree, "fetch", "origin", default_branch],
+                ["git", "-C", str(worktree), "fetch", "origin", default_branch],
                 capture_output=True, text=True
             )
             if fetch_result.returncode != 0:
@@ -337,7 +337,7 @@ def _run_merge_gate(ctx: RunContext) -> tuple[str, int]:
 
             # Try rebase
             rebase_result = subprocess.run(
-                ["git", "-C", worktree, "rebase", f"origin/{default_branch}"],
+                ["git", "-C", str(worktree), "rebase", f"origin/{default_branch}"],
                 capture_output=True, text=True
             )
 
@@ -345,7 +345,7 @@ def _run_merge_gate(ctx: RunContext) -> tuple[str, int]:
                 ctx.log("Automatic rebase succeeded, verifying build...")
                 # Verify build still works after rebase
                 build_result = subprocess.run(
-                    ["task", "-d", worktree, "build"],
+                    ["task", "-d", str(worktree), "build"],
                     capture_output=True, text=True, timeout=120
                 )
                 if build_result.returncode != 0:
@@ -373,7 +373,7 @@ def _run_merge_gate(ctx: RunContext) -> tuple[str, int]:
             if conflicted and _try_auto_resolve_conflicts(worktree, conflicted):
                 # Try to continue rebase after auto-resolution
                 continue_result = subprocess.run(
-                    ["git", "-C", worktree, "rebase", "--continue"],
+                    ["git", "-C", str(worktree), "rebase", "--continue"],
                     capture_output=True, text=True,
                     env={**os.environ, "GIT_EDITOR": "true"}  # Skip commit message editor
                 )
@@ -381,7 +381,7 @@ def _run_merge_gate(ctx: RunContext) -> tuple[str, int]:
                     ctx.log("Auto-resolved trivial conflicts and completed rebase")
                     # Verify build after auto-resolution too
                     build_result = subprocess.run(
-                        ["task", "-d", worktree, "build"],
+                        ["task", "-d", str(worktree), "build"],
                         capture_output=True, text=True, timeout=120
                     )
                     if build_result.returncode != 0:
@@ -401,7 +401,7 @@ def _run_merge_gate(ctx: RunContext) -> tuple[str, int]:
             # Still failed - abort and block for human
             ctx.log(f"Rebase failed with conflicts: {rebase_result.stderr}")
             subprocess.run(
-                ["git", "-C", worktree, "rebase", "--abort"],
+                ["git", "-C", str(worktree), "rebase", "--abort"],
                 capture_output=True, text=True
             )
 
@@ -638,7 +638,8 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
     # Reset worktree if human requested it (wf reject --reset)
     if should_reset:
         ctx.log("Human requested reset - discarding uncommitted changes")
-        _reset_worktree(ctx.workstream.worktree)
+        if not _reset_worktree(ctx.workstream.worktree):
+            ctx.log("WARNING: Failed to fully reset worktree, proceeding anyway")
 
     # Add human feedback to history so both models see it
     if human_feedback:
@@ -858,19 +859,19 @@ def _load_build_output(run_dir: Path) -> str:
         return ""
 
 
-def _get_conflicted_files(worktree: str) -> list[str]:
+def _get_conflicted_files(worktree: Path) -> list[str]:
     """Get list of files with conflicts during rebase."""
     result = subprocess.run(
-        ["git", "-C", worktree, "diff", "--name-only", "--diff-filter=U"],
+        ["git", "-C", str(worktree), "diff", "--name-only", "--diff-filter=U"],
         capture_output=True, text=True
     )
     return [f.strip() for f in result.stdout.splitlines() if f.strip()]
 
 
-def _get_conflict_type(worktree: str, filepath: str) -> str:
+def _get_conflict_type(worktree: Path, filepath: str) -> str:
     """Get the conflict type for a file (UU, AA, etc.) from git status."""
     result = subprocess.run(
-        ["git", "-C", worktree, "status", "--porcelain", filepath],
+        ["git", "-C", str(worktree), "status", "--porcelain", filepath],
         capture_output=True, text=True
     )
     # Format is "XY filename" where XY is the two-letter status
@@ -879,7 +880,7 @@ def _get_conflict_type(worktree: str, filepath: str) -> str:
     return ""
 
 
-def _git_show_index(worktree: str, stage: int, filepath: str) -> Optional[str]:
+def _git_show_index(worktree: Path, stage: int, filepath: str) -> Optional[str]:
     """Get file content from git index at given stage.
 
     During merge/rebase conflicts:
@@ -893,7 +894,7 @@ def _git_show_index(worktree: str, stage: int, filepath: str) -> Optional[str]:
       - File can't be decoded as UTF-8
     """
     result = subprocess.run(
-        ["git", "-C", worktree, "show", f":{stage}:{filepath}"],
+        ["git", "-C", str(worktree), "show", f":{stage}:{filepath}"],
         capture_output=True  # returns bytes
     )
     if result.returncode != 0:
@@ -912,7 +913,7 @@ def _git_show_index(worktree: str, stage: int, filepath: str) -> Optional[str]:
         return None
 
 
-def _try_auto_resolve_conflicts(worktree: str, files: list[str]) -> bool:
+def _try_auto_resolve_conflicts(worktree: Path, files: list[str]) -> bool:
     """Try to auto-resolve conflicts using git merge-file --union.
 
     Only attempts resolution for 'both modified' (UU) conflicts where:
@@ -957,7 +958,7 @@ def _try_auto_resolve_conflicts(worktree: str, files: list[str]) -> bool:
             return False
 
         # Write resolved content and stage
-        file_path = Path(worktree) / filepath
+        file_path = worktree / filepath
         try:
             file_path.write_text(resolved_content)
         except IOError as e:
@@ -965,7 +966,7 @@ def _try_auto_resolve_conflicts(worktree: str, files: list[str]) -> bool:
             return False
 
         stage_result = subprocess.run(
-            ["git", "-C", worktree, "add", filepath],
+            ["git", "-C", str(worktree), "add", filepath],
             capture_output=True, text=True
         )
         if stage_result.returncode != 0:
@@ -1006,14 +1007,18 @@ def _merge_union(base: str, ours: str, theirs: str) -> Optional[str]:
         return ours_path.read_text()
 
 
-def _reset_worktree(worktree: Path):
-    """Reset uncommitted changes in worktree for clean retry."""
+def _reset_worktree(worktree: Path) -> bool:
+    """Reset uncommitted changes in worktree for clean retry.
+
+    Returns True on success, False if reset failed.
+    """
     result = subprocess.run(
         ["git", "-C", str(worktree), "checkout", "."],
         capture_output=True, text=True
     )
     if result.returncode != 0:
         logger.warning(f"git checkout failed in {worktree}: {result.stderr}")
+        return False
 
     result = subprocess.run(
         ["git", "-C", str(worktree), "clean", "-fd"],
@@ -1021,6 +1026,9 @@ def _reset_worktree(worktree: Path):
     )
     if result.returncode != 0:
         logger.warning(f"git clean failed in {worktree}: {result.stderr}")
+        return False
+
+    return True
 
 
 def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:

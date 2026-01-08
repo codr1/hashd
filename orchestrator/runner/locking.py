@@ -5,6 +5,7 @@ Uses flock for global locking and per-workstream locking.
 """
 
 import fcntl
+import logging
 import os
 import sys
 import time
@@ -12,6 +13,8 @@ import signal
 import atexit
 from pathlib import Path
 from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
 
 
 class LockTimeout(Exception):
@@ -22,9 +25,11 @@ class LockTimeout(Exception):
 CONCURRENCY_WARNING_THRESHOLD = 3
 
 
-def is_workstream_locked(ops_dir: Path, workstream_id: str) -> bool:
-    """Check if a workstream lock is currently held by a running process."""
-    lock_file = ops_dir / "locks" / "workstreams" / f"{workstream_id}.lock"
+def _is_lock_held(lock_file: Path) -> bool:
+    """Check if a lock file is currently held by another process.
+
+    Returns True if lock is held, False if lock is free or on error.
+    """
     if not lock_file.exists():
         return False
 
@@ -37,12 +42,19 @@ def is_workstream_locked(ops_dir: Path, workstream_id: str) -> bool:
             fcntl.flock(fd, fcntl.LOCK_UN)
             return False
         except BlockingIOError:
-            # Could not get lock - workstream is running
+            # Could not get lock - someone else has it
             return True
         finally:
             fd.close()
-    except (IOError, OSError):
+    except (IOError, OSError) as e:
+        logger.debug(f"Failed to check lock {lock_file}: {e}")
         return False
+
+
+def is_workstream_locked(ops_dir: Path, workstream_id: str) -> bool:
+    """Check if a workstream lock is currently held by a running process."""
+    lock_file = ops_dir / "locks" / "workstreams" / f"{workstream_id}.lock"
+    return _is_lock_held(lock_file)
 
 
 def count_running_workstreams(ops_dir: Path) -> int:
@@ -51,23 +63,7 @@ def count_running_workstreams(ops_dir: Path) -> int:
     if not lock_dir.exists():
         return 0
 
-    count = 0
-    for lock_file in lock_dir.glob("*.lock"):
-        try:
-            fd = open(lock_file, 'r')
-            try:
-                # Try non-blocking exclusive lock
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                # Got lock - means no one else has it, release immediately
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            except BlockingIOError:
-                # Could not get lock - workstream is running
-                count += 1
-            finally:
-                fd.close()
-        except (IOError, OSError):
-            pass
-    return count
+    return sum(1 for lock_file in lock_dir.glob("*.lock") if _is_lock_held(lock_file))
 
 
 def cleanup_stale_lock_files(ops_dir: Path):
@@ -112,8 +108,8 @@ def _acquire_lock(lock_file: Path, timeout: int, lock_name: str):
         try:
             fcntl.flock(fd, fcntl.LOCK_UN)
             fd.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Lock cleanup failed (may be expected): {e}")
 
     atexit.register(cleanup)
     original_sigterm = signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
