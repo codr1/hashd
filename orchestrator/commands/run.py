@@ -625,111 +625,12 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
             pass  # Fall through to normal flow
 
     # === Check for uncommitted changes from previous run ===
-    # If there are uncommitted changes and the last run failed at test/review due to
-    # timeout or infrastructure error (not rejection), resume from that stage instead
-    # of re-implementing.
+    # Uncommitted changes are handled by:
+    # 1. _get_uncommitted_changes_context() in stage_implement - tells Codex what's already there
+    # 2. Session resume - continues previous Codex session with full context
+    # 3. Human can use `wf reset {ws_id}` to discard changes and start fresh
     if has_uncommitted_changes(ctx.workstream.worktree):
-        # Derive ops_dir from run_dir (run_dir is ops_dir/runs/run_id)
-        ops_dir = ctx.run_dir.parent.parent
-        last_run_dir = _find_last_run(ops_dir, ctx.workstream.id)
-        if not last_run_dir or last_run_dir == ctx.run_dir:
-            ctx.log("Uncommitted changes exist but no previous run found - proceeding normally")
-        else:
-            last_result = _load_last_run_result(last_run_dir)
-            if not last_result:
-                ctx.log(f"Uncommitted changes exist but couldn't load last run result - proceeding normally")
-            else:
-                last_status = last_result.get("status")
-                last_stages = last_result.get("stages", {})
-                failed_stage = last_result.get("failed_stage")
-
-                # Check if this is a resumable situation
-                # Resumable: test/review failed due to timeout or other infra error
-                # Not resumable: review rejected (needs re-implement), test failed (code bug)
-                if last_status != "failed":
-                    ctx.log(f"Uncommitted changes exist, last run status was '{last_status}' - proceeding normally")
-                elif failed_stage not in ("test", "review"):
-                    ctx.log(f"Uncommitted changes exist, last run failed at '{failed_stage}' - re-implementing")
-                else:
-                    # At this point: last_status == "failed" and failed_stage in ("test", "review")
-                    stage_notes = last_stages.get(failed_stage, {}).get("notes", "")
-                    # Check if it was a timeout or infrastructure failure (not a rejection)
-                    is_timeout = "timed out" in stage_notes.lower() or "timeout" in stage_notes.lower()
-                    is_rejection = "rejected" in stage_notes.lower()
-
-                    if not is_timeout:
-                        ctx.log(f"Uncommitted changes exist but last run failed at {failed_stage} (not timeout) - re-implementing")
-                    elif is_rejection:
-                        ctx.log(f"Uncommitted changes exist but last run was rejected - re-implementing with feedback")
-                    elif is_timeout and not is_rejection:
-                        ctx.log(f"Found uncommitted changes from previous run that failed at {failed_stage} (timeout)")
-                        ctx.log(f"Resuming from {failed_stage} stage instead of re-implementing")
-
-                        # Run test if needed
-                        if failed_stage == "test":
-                            try:
-                                result = run_stage(ctx, "test", stage_test)
-                                if result == StageResult.BLOCKED:
-                                    reason = ctx.stages.get("test", {}).get("notes", "unknown")
-                                    ctx.write_result("blocked", blocked_reason=reason)
-                                    return "blocked", 8, None
-                            except StageError as e:
-                                ctx.write_result("failed", e.stage)
-                                return "failed", e.exit_code, e.stage
-
-                        # Run review
-                        try:
-                            result = run_stage(ctx, "review", stage_review)
-                            if result == StageResult.BLOCKED:
-                                reason = ctx.stages.get("review", {}).get("notes", "unknown")
-                                ctx.write_result("blocked", blocked_reason=reason)
-                                return "blocked", 8, None
-                            ctx.log("Review approved on resume")
-                        except StageError as e:
-                            if "Review rejected" in e.message:
-                                # Rejection means we need to re-implement
-                                ctx.log("Review rejected on resume - falling through to implement")
-                                # Fall through to normal flow
-                            else:
-                                ctx.write_result("failed", e.stage)
-                                return "failed", e.exit_code, e.stage
-                        else:
-                            # Review passed - go to human gate
-                            ctx.log("Proceeding to human review gate")
-                            try:
-                                result = run_stage(ctx, "human_review", stage_human_review)
-                                if result == StageResult.BLOCKED:
-                                    reason = ctx.stages.get("human_review", {}).get("notes", "unknown")
-                                    ctx.write_result("blocked", blocked_reason=reason)
-                                    return "blocked", 8, None
-                            except StageError as e:
-                                ctx.write_result("failed", e.stage)
-                                return "failed", e.exit_code, e.stage
-
-                            # Human approved - commit
-                            try:
-                                result = run_stage(ctx, "qa_gate", stage_qa_gate)
-                                if result == StageResult.BLOCKED:
-                                    reason = ctx.stages.get("qa_gate", {}).get("notes", "unknown")
-                                    ctx.write_result("blocked", blocked_reason=reason)
-                                    return "blocked", 8, None
-                            except StageError as e:
-                                ctx.write_result("failed", e.stage)
-                                return "failed", e.exit_code, e.stage
-
-                            try:
-                                result = run_stage(ctx, "update_state", stage_update_state)
-                                if result == StageResult.BLOCKED:
-                                    reason = ctx.stages.get("update_state", {}).get("notes", "unknown")
-                                    ctx.write_result("blocked", blocked_reason=reason)
-                                    return "blocked", 8, None
-                            except StageError as e:
-                                ctx.write_result("failed", e.stage)
-                                return "failed", e.exit_code, e.stage
-
-                            ctx.write_result("passed")
-                            ctx.log("Run complete: passed (resumed from timeout)")
-                            return "passed", 0, None
+        ctx.log("Uncommitted changes detected - session resume and context injection will handle")
 
     # === Phase 2: Inner Loop (Implement -> Test -> Review) ===
     human_feedback, should_reset = get_human_feedback(ctx.workstream_dir)  # From previous human rejection
@@ -1105,37 +1006,6 @@ def _merge_union(base: str, ours: str, theirs: str) -> Optional[str]:
         return ours_path.read_text()
 
 
-def _find_last_run(ops_dir: Path, ws_id: str) -> Optional[Path]:
-    """Find the most recent run directory for a workstream.
-
-    Run directories are named: YYYYMMDD-HHMMSS_project_wsid
-    We match on _wsid suffix to avoid false matches (e.g., 'foo' matching 'foobar').
-    """
-    runs_dir = ops_dir / "runs"
-    if not runs_dir.exists():
-        return None
-
-    # Match runs ending with _ws_id to avoid substring false positives
-    suffix = f"_{ws_id}"
-    ws_runs = sorted(
-        [d for d in runs_dir.iterdir() if d.name.endswith(suffix) and d.is_dir()],
-        key=lambda d: d.name,  # Lexicographic sort on timestamp prefix is reliable
-        reverse=True
-    )
-    return ws_runs[0] if ws_runs else None
-
-
-def _load_last_run_result(run_dir: Path) -> Optional[dict]:
-    """Load result.json from a run directory."""
-    result_path = run_dir / "result.json"
-    if not result_path.exists():
-        return None
-    try:
-        return json.loads(result_path.read_text())
-    except (json.JSONDecodeError, IOError):
-        return None
-
-
 def _reset_worktree(worktree: Path):
     """Reset uncommitted changes in worktree for clean retry."""
     result = subprocess.run(
@@ -1302,6 +1172,13 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                         print(f"  Error: {stage_notes}")
                     print(f"  Log: {ctx.run_dir}/stages/{failed_stage}.log")
 
+                # Show reset hint if there are uncommitted changes
+                if status in ("failed", "blocked") and has_uncommitted_changes(ctx.workstream.worktree):
+                    if not (status == "blocked" and "human approval" in hr_notes.lower()):
+                        print(f"\nUncommitted changes remain in worktree.")
+                        print(f"  To retry with changes: wf run {ws_id}")
+                        print(f"  To start fresh:        wf reset {ws_id}")
+
                 return exit_code
 
     except LockTimeout:
@@ -1353,11 +1230,21 @@ def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, 
             else:
                 print(f"Result: {status}")
                 print(f"\nBlocked: {reason or hr_notes}")
+                # Show reset hint if there are uncommitted changes
+                if has_uncommitted_changes(ctx.workstream.worktree):
+                    print(f"\nUncommitted changes remain in worktree.")
+                    print(f"  To retry with changes: wf run {ws_id}")
+                    print(f"  To start fresh:        wf reset {ws_id}")
                 notify_blocked(ws_id, reason or hr_notes)
             return exit_code
 
         if status == "failed":
             print(f"\nFailed at stage: {failed_stage or 'unknown'}")
+            # Show reset hint if there are uncommitted changes
+            if has_uncommitted_changes(ctx.workstream.worktree):
+                print(f"\nUncommitted changes remain in worktree.")
+                print(f"  To retry with changes: wf run {ws_id}")
+                print(f"  To start fresh:        wf reset {ws_id}")
             notify_failed(ws_id, failed_stage or "unknown")
             return exit_code
 

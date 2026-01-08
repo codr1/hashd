@@ -20,7 +20,7 @@ from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.history import format_conversation_history
 from orchestrator.lib.review import load_review, format_review, format_review_for_retry, print_review
 from orchestrator.lib.context import get_codebase_context
-from orchestrator.lib.config import load_escalation_config, get_confidence_threshold
+from orchestrator.lib.config import load_escalation_config, get_confidence_threshold, update_workstream_meta
 from orchestrator.lib.directives import load_directives
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
@@ -32,45 +32,26 @@ from orchestrator.runner.git_utils import has_uncommitted_changes
 def _save_codex_session_id(workstream_dir: Path, session_id: str) -> None:
     """Save Codex session ID for this workstream for later resume.
 
-    Session IDs are stored per-workstream to enable resuming the correct session
-    when multiple workstreams are running concurrently. Without this, Codex's
+    Session IDs are stored in meta.env per-workstream to enable resuming the correct
+    session when multiple workstreams are running concurrently. Without this, Codex's
     `resume --last` would resume the most recent session globally, which could
     be from a different workstream.
 
-    The session file is cleared when a commit is completed (see stage_update_state).
+    The session ID is cleared when a commit is completed (see stage_update_state).
     """
-    session_file = workstream_dir / "codex_session.txt"
     try:
-        session_file.write_text(session_id + "\n")
+        update_workstream_meta(workstream_dir, {"CODEX_SESSION_ID": session_id})
     except OSError as e:
         logger.warning(f"Failed to save Codex session ID: {e}")
-
-
-def _load_codex_session_id(workstream_dir: Path) -> str | None:
-    """Load saved Codex session ID for this workstream.
-
-    Returns None if no session file exists or if reading fails.
-    """
-    session_file = workstream_dir / "codex_session.txt"
-    if not session_file.exists():
-        return None
-    try:
-        return session_file.read_text().strip() or None
-    except OSError as e:
-        logger.warning(f"Failed to load Codex session ID: {e}")
-        return None
 
 
 def _clear_codex_session_id(workstream_dir: Path) -> None:
     """Clear saved Codex session ID.
 
     Called when a commit is completed so the next commit starts with a fresh session.
-    Silently ignores missing files or deletion errors.
     """
-    session_file = workstream_dir / "codex_session.txt"
     try:
-        if session_file.exists():
-            session_file.unlink()
+        update_workstream_meta(workstream_dir, {"CODEX_SESSION_ID": None})
     except OSError as e:
         logger.warning(f"Failed to clear Codex session ID: {e}")
 
@@ -466,8 +447,8 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     agent = CodexAgent(timeout=ctx.profile.implement_timeout, agents_config=ctx.agents_config)
     log_file = ctx.run_dir / "stages" / "implement.log"
 
-    # Load saved session ID for this workstream (if any)
-    saved_session_id = _load_codex_session_id(ctx.workstream_dir)
+    # Get saved session ID from workstream meta (if any)
+    saved_session_id = ctx.workstream.codex_session_id
 
     # Determine if we should try session resume
     # We need BOTH a saved session ID and review history to resume

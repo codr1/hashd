@@ -152,6 +152,7 @@ class Workstream:
     dir: Path
     pr_url: str | None = None  # GitHub PR URL if in PR workflow
     pr_number: int | None = None  # GitHub PR number if in PR workflow
+    codex_session_id: str | None = None  # Codex session UUID for resume
 
 
 def load_project_config(project_dir: Path) -> ProjectConfig:
@@ -274,7 +275,65 @@ def load_workstream(workstream_dir: Path) -> Workstream:
         dir=workstream_dir,
         pr_url=env.get("PR_URL"),
         pr_number=pr_number,
+        codex_session_id=env.get("CODEX_SESSION_ID") or None,
     )
+
+
+def _escape_env_value(value: str) -> str:
+    """Escape a value for safe inclusion in a shell-style env file.
+
+    Escapes backslashes, double quotes, and newlines.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def update_workstream_meta(workstream_dir: Path, updates: dict[str, str | None]) -> None:
+    """Update fields in meta.env.
+
+    Args:
+        workstream_dir: Path to workstream directory
+        updates: Dict of field_name -> value. If value is None, the field is removed.
+
+    Example:
+        update_workstream_meta(ws_dir, {"CODEX_SESSION_ID": "abc-123"})
+        update_workstream_meta(ws_dir, {"CODEX_SESSION_ID": None})  # removes field
+    """
+    meta_path = workstream_dir / "meta.env"
+    if not meta_path.exists():
+        logger.warning(f"meta.env not found at {meta_path}")
+        return
+
+    content = meta_path.read_text()
+    lines = content.splitlines()
+
+    # Track which updates we've applied (to append new fields)
+    applied = set()
+
+    # Update existing fields
+    new_lines = []
+    for line in lines:
+        field_name = None
+        for key in updates:
+            if line.startswith(f"{key}="):
+                field_name = key
+                break
+
+        if field_name:
+            value = updates[field_name]
+            applied.add(field_name)
+            if value is not None:
+                # Update the field with escaped value
+                new_lines.append(f'{field_name}="{_escape_env_value(value)}"')
+            # If value is None, don't add the line (removes the field)
+        else:
+            new_lines.append(line)
+
+    # Append new fields that weren't in the file
+    for key, value in updates.items():
+        if key not in applied and value is not None:
+            new_lines.append(f'{key}="{_escape_env_value(value)}"')
+
+    meta_path.write_text("\n".join(new_lines) + "\n")
 
 
 def get_active_workstreams(project_dir: Path) -> list[Workstream]:
