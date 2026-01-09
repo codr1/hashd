@@ -755,6 +755,26 @@ def _get_story_context(ctx: RunContext) -> str:
     return title
 
 
+def _get_branch_commits(ctx: RunContext) -> str:
+    """Get commits on this branch vs main.
+
+    Returns empty string if branch has no commits yet (HEAD == main) or on error.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", f"{ctx.project.default_branch}..HEAD"],
+            cwd=str(ctx.worktree),
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception as e:
+        logging.debug(f"Failed to get branch commits: {e}")
+    return ""
+
+
 def _build_full_review_prompt(ctx: RunContext, agent: ClaudeAgent) -> str:
     """Build the full contextual review prompt.
 
@@ -762,6 +782,7 @@ def _build_full_review_prompt(ctx: RunContext, agent: ClaudeAgent) -> str:
     """
     system_description = ctx.project.description or f"Project: {ctx.project.name}"
     story_context = _get_story_context(ctx)
+    branch_commits = _get_branch_commits(ctx)
 
     return agent.build_contextual_review_prompt(
         system_description=system_description,
@@ -771,7 +792,8 @@ def _build_full_review_prompt(ctx: RunContext, agent: ClaudeAgent) -> str:
         story_context=story_context,
         commit_title=ctx.microcommit.title,
         commit_description=ctx.microcommit.block_content,
-        review_history=ctx.review_history
+        review_history=ctx.review_history,
+        branch_commits=branch_commits
     )
 
 
