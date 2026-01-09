@@ -209,7 +209,7 @@ def stage_breakdown(ctx: RunContext):
         ctx.log("Supervised mode: pausing for human review of plan.md")
         raise StageBlocked(
             "breakdown",
-            f"Review plan.md, then run: wf run {ctx.workstream.id}"
+            f"Plan ready for review\n  View plan: wf show {ctx.workstream.id}\n  Continue:  wf run {ctx.workstream.id}"
         )
 
 
