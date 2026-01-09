@@ -132,6 +132,43 @@ def _create_pr_and_wait(
     return 0
 
 
+def _sync_local_main(repo_path: Path, default_branch: str) -> None:
+    """
+    Sync local main branch with remote.
+
+    Uses fetch+reset instead of pull to avoid divergent branch errors.
+    Prints warnings on failure but does not raise - archival should proceed
+    even if sync fails (the merge already happened on remote).
+    """
+    print(f"Syncing local {default_branch} with remote...")
+
+    checkout = subprocess.run(
+        ["git", "-C", str(repo_path), "checkout", default_branch],
+        capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+    )
+    if checkout.returncode != 0:
+        print(f"  Warning: checkout failed: {checkout.stderr.strip()}")
+        return
+
+    fetch = subprocess.run(
+        ["git", "-C", str(repo_path), "fetch", "origin"],
+        capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+    )
+    if fetch.returncode != 0:
+        print(f"  Warning: fetch failed: {fetch.stderr.strip()}")
+        return
+
+    reset = subprocess.run(
+        ["git", "-C", str(repo_path), "reset", "--hard", f"origin/{default_branch}"],
+        capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+    )
+    if reset.returncode != 0:
+        print(f"  Warning: reset failed: {reset.stderr.strip()}")
+        return
+
+    print(f"  Local {default_branch} synced with remote")
+
+
 def _attempt_rebase_pr_branch(worktree_path: str, default_branch: str) -> bool:
     """
     Attempt to rebase PR branch on latest main.
@@ -197,13 +234,17 @@ def _handle_pr_open(
         print(f"ERROR: Failed to get PR status: {status.error}")
         return 1
 
-    # Check if already merged
+    # Check if already merged (externally via GitHub UI)
     if status.state == "merged":
-        print("PR already merged!")
+        print("PR already merged externally, completing archival...")
         _update_status(workstream_dir, STATUS_MERGED)
+        _sync_local_main(repo_path, project_config.default_branch)
         project_dir = ops_dir / "projects" / project_config.name
         story = find_story_by_workstream(project_dir, ws.id)
-        return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config, ops_dir, story)
+        return _archive_workstream(
+            workstream_dir, workstreams_dir, ws, project_config, ops_dir, story,
+            push=True  # REQS cleanup needs to be pushed to remote
+        )
 
     # Check if closed without merge
     if status.state == "closed":
@@ -301,33 +342,7 @@ def _handle_pr_approved(
     print("PR merged successfully!")
     _update_status(workstream_dir, STATUS_MERGED)
 
-    # Sync local main with remote (discard any divergent local commits)
-    # Using fetch+reset instead of pull to avoid "divergent branches" errors
-    # Local main should always track remote; any local-only commits are artifacts
-    print(f"Syncing local {project_config.default_branch} with remote...")
-    checkout_result = subprocess.run(
-        ["git", "-C", str(repo_path), "checkout", project_config.default_branch],
-        capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-    )
-    if checkout_result.returncode != 0:
-        print(f"  Warning: checkout failed: {checkout_result.stderr.strip()}")
-    else:
-        fetch_result = subprocess.run(
-            ["git", "-C", str(repo_path), "fetch", "origin"],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-        )
-        if fetch_result.returncode != 0:
-            print(f"  Warning: fetch failed: {fetch_result.stderr.strip()}")
-        else:
-            reset_result = subprocess.run(
-                ["git", "-C", str(repo_path), "reset", "--hard",
-                 f"origin/{project_config.default_branch}"],
-                capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-            )
-            if reset_result.returncode != 0:
-                print(f"  Warning: reset failed: {reset_result.stderr.strip()}")
-            else:
-                print(f"  Local {project_config.default_branch} synced with remote")
+    _sync_local_main(repo_path, project_config.default_branch)
 
     # Archive workstream (always push for GitHub PR mode since repo is remote)
     project_dir = ops_dir / "projects" / project_config.name
