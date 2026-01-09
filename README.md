@@ -164,6 +164,7 @@ wf show other_feature  # Operates on other_feature, context unchanged
 | `wf list` | List all stories and workstreams |
 | `wf show <id>` | Show story or workstream details |
 | `wf approve <id>` | Accept story or approve workstream gate |
+| `wf pr <ws>` | Create GitHub PR (github_pr mode) |
 | `wf merge <ws>` | Merge completed workstream to main |
 | `wf close <id>` | Close story or workstream (abandon) |
 | `wf watch [id]` | Interactive TUI (dashboard, or detail for workstream/STORY-xxxx) |

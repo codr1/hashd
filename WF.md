@@ -214,7 +214,7 @@ Options:
               |
               v
 +-------------------------------------------------------------+
-|                       MERGE GATE                             |
+|                    LOCAL MERGE MODE                          |
 +-------------------------------------------------------------+
 |                                                              |
 |  [Human] $ wf merge <ws>                                     |
@@ -231,14 +231,38 @@ Options:
 |  [Auto] REQS.md cleanup (post-merge)                         |
 |         - WIP-marked sections deleted from main              |
 |         - Committed directly to main after merge             |
-|         - Cannot be lost during rebase conflicts             |
 |                                                              |
++-------------------------------------------------------------+
+
+              -- OR --
+
++-------------------------------------------------------------+
+|                   GITHUB PR MODE                             |
++-------------------------------------------------------------+
+|                                                              |
+|  [Human] $ wf pr <ws>              # Create GitHub PR        |
+|          - Creates PR on GitHub                              |
+|          - Sets status to pr_open                            |
+|          - Shows PR URL                                      |
+|                                                              |
+|  [External] PR review on GitHub                              |
+|             - Team reviews code                              |
+|             - CI checks run                                  |
+|                                                              |
+|  [Human] $ wf merge <ws>           # Merge approved PR       |
+|          - Checks PR status                                  |
+|          - Auto-rebases if needed                            |
+|          - Merges when approved                              |
+|                                                              |
++-------------------------------------------------------------+
+
+              |
+              v
+
 |  [Auto] Archive workstream                                   |
 |         - Worktree removed                                   |
 |         - Moved to _closed/                                  |
 |         - Story marked implemented                           |
-|                                                              |
-+-------------------------------------------------------------+
 
               |
               v
@@ -265,6 +289,7 @@ Options:
 | `wf show <id> [--stats]` | Show story or workstream details |
 | `wf approve <id> [--no-run]` | Accept story or approve gate |
 | `wf reject [id] [-f ".."] [--reset] [--no-run]` | Reject with feedback |
+| `wf pr [id]` | Create GitHub PR (github_pr mode only) |
 | `wf merge [id] [--push]` | Merge to main and archive |
 | `wf close [id] [--force] [--keep-branch]` | Abandon story or workstream |
 
@@ -419,25 +444,42 @@ Directives are automatically included in Codex implementation prompts. Use `wf d
              | ready_to_merge |
              +-------+--------+
                      |
-                     | wf merge (human)
-                     v
-             +----------------+
-             |    merging     |
-             +-------+--------+
-                     |
-           +---------+---------+
-           |                   |
-        conflicts           success
-           |                   |
-           v                   v
-   +---------------+      +--------+
-   |merge_conflicts|      | merged |
-   +---------------+      +---+----+
-                              |
-                              v
-                       +------------+
-                       |  archived  |
-                       +------------+
+        +------------+------------+
+        |                         |
+   [local mode]             [github_pr mode]
+        |                         |
+        | wf merge                | wf pr
+        v                         v
++----------------+         +----------------+
+|    merging     |         |    pr_open     |
++-------+--------+         +-------+--------+
+        |                         |
+   +----+----+              [external review]
+   |         |                    |
+conflicts  success         +------+------+
+   |         |             |             |
+   v         v         approved    changes_req
++----------+ |             |             |
+|merge_    | |             v             v
+|conflicts | |      +-------------+  [active]
++----------+ |      | pr_approved |  (iterate)
+             |      +------+------+
+             |             |
+             |             | wf merge
+             |             v
+             |      +----------------+
+             +----->|    merging     |
+                    +-------+--------+
+                            |
+                            v
+                       +--------+
+                       | merged |
+                       +---+----+
+                            |
+                            v
+                     +------------+
+                     |  archived  |
+                     +------------+
 ```
 
 ---

@@ -10,6 +10,7 @@ Commands:
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,7 +19,6 @@ from orchestrator.lib.config import ProjectConfig, load_workstream
 from orchestrator.lib.agents_config import load_agents_config, get_stage_command
 from orchestrator.lib.planparse import parse_plan
 from orchestrator.lib.prompts import render_prompt
-from orchestrator.lib.review import load_review
 from orchestrator.pm.claude_utils import extract_json_with_preamble
 from orchestrator.pm.stories import (
     list_stories,
@@ -32,6 +32,60 @@ from orchestrator.pm.stories import (
 from orchestrator.pm.planner import run_plan_session, run_refine_session, run_edit_session
 from orchestrator.pm.reqs_annotate import annotate_reqs_for_story
 from orchestrator.runner.impl.breakdown import append_commits_to_plan
+
+
+def extract_final_review_concerns(final_review_path: Path) -> str:
+    """Extract concerns section from final_review.md.
+
+    Returns the concerns text if the verdict was CONCERNS, empty string if APPROVE.
+    If parsing fails, returns the full content so the AI can interpret it.
+    """
+    content = final_review_path.read_text()
+    if not content.strip():
+        return ""
+
+    # Check for APPROVE verdict - multiple formats the AI might use
+    content_upper = content.upper()
+    approve_indicators = ["**APPROVE**", "VERDICT: APPROVE", "## APPROVE", "APPROVED"]
+    if any(indicator in content_upper for indicator in approve_indicators):
+        # Double-check it's not "APPROVED WITH CONCERNS" or similar
+        if "CONCERN" not in content_upper:
+            return ""
+
+    # Check for explicit CONCERNS verdict
+    concerns_indicators = ["**CONCERNS**", "VERDICT: CONCERNS", "## CONCERNS"]
+    has_concerns_verdict = any(indicator in content_upper for indicator in concerns_indicators)
+
+    if not has_concerns_verdict:
+        # Either: (1) APPROVE verdict with "concern" word in discussion text, or
+        #         (2) No clear verdict at all. Either way, no actionable concerns.
+        return ""
+
+    # Try to extract just the concerns section
+    # Pattern: ## Concerns or ### Concerns or ### 1. Concerns, etc.
+    concerns_match = re.search(
+        r'##+ (?:\d+\.\s*)?Concerns\s*\n(.*?)(?=\n##[^#]|\n\*\*[A-Z]|\Z)',
+        content,
+        re.DOTALL | re.IGNORECASE
+    )
+    if concerns_match:
+        extracted = concerns_match.group(1).strip()
+        if extracted:
+            return extracted
+
+    # Parsing failed but we know there are concerns - return everything after the verdict
+    # so the AI can make sense of it
+    verdict_pos = content_upper.find("CONCERNS")
+    if verdict_pos != -1:
+        # Find the next newline after "CONCERNS" and return everything after
+        newline_pos = content.find("\n", verdict_pos)
+        if newline_pos != -1:
+            remainder = content[newline_pos:].strip()
+            if remainder:
+                return remainder
+
+    # Last resort: return the full content
+    return content
 
 
 def cmd_plan(args, ops_dir: Path, project_config: ProjectConfig):
@@ -333,22 +387,22 @@ def cmd_plan_add(args, ops_dir: Path, project_config: ProjectConfig):
     next_num = max_num + 1
     commit_id = f"COMMIT-{ws_prefix}-{next_num:03d}"
 
-    # Load latest review suggestions if available
+    # Build suggestions section from current context only
+    # User feedback takes precedence, otherwise load from final_review.md if at final review stage
     suggestions_section = ""
-    runs_dir = ops_dir / "runs"
-    if runs_dir.exists():
-        ws_runs = sorted(
-            [d for d in runs_dir.iterdir() if ws_id in d.name],
-            key=lambda d: d.stat().st_mtime,
-            reverse=True
-        )
-        for run_dir in ws_runs:
-            review = load_review(run_dir)
-            if review and review.get('suggestions'):
-                suggestions = review['suggestions']
-                suggestions_text = "\n".join(f"- {s}" for s in suggestions)
-                suggestions_section = f"## Reviewer Suggestions to Address\n{suggestions_text}"
-                break
+    if feedback:
+        # User provided explicit feedback - use it directly as the suggestions
+        suggestions_section = f"## Feedback to Address\n{feedback}"
+    else:
+        # Check if at final review stage (all commits done)
+        all_done = all(c.done for c in commits)
+        if all_done:
+            # Load concerns from final_review.md if it exists and has concerns
+            final_review_path = workstream_dir / "final_review.md"
+            if final_review_path.exists():
+                concerns = extract_final_review_concerns(final_review_path)
+                if concerns:
+                    suggestions_section = f"## Final Review Concerns to Address\n{concerns}"
 
     # Build prompt
     plan_content = plan_path.read_text()

@@ -210,6 +210,12 @@ def cmd_merge(args):
     return cmd_merge_module.cmd_merge(args, ops_dir, project_config)
 
 
+def cmd_pr(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_merge_module.cmd_pr(args, ops_dir, project_config)
+
+
 def cmd_archive(args):
     project_config, ops_dir = get_project_config(args)
     return cmd_archive_module.cmd_archive(args, ops_dir, project_config)
@@ -517,6 +523,11 @@ def main():
     p_merge.add_argument('--push', action='store_true', help='Push to remote after merge')
     p_merge.add_argument('--confirm', action='store_true', help='Confirm merge in supervised mode')
     p_merge.set_defaults(func=cmd_merge)
+
+    # wf pr
+    p_pr = subparsers.add_parser('pr', help='Create GitHub PR for workstream')
+    p_pr.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_pr.set_defaults(func=cmd_pr)
 
     # wf archive
     p_archive = subparsers.add_parser('archive', help='View archived work and stories')

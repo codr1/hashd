@@ -138,6 +138,26 @@ class ProjectProfile:
             return False, f"Build runner '{binary}' not found in PATH"
         return True, ""
 
+    @classmethod
+    def default(cls) -> "ProjectProfile":
+        """Return a default ProjectProfile for when project_profile.env is missing."""
+        return cls(
+            test_cmd="make test",
+            build_cmd="make build",
+            merge_gate_test_cmd="make test",
+            build_runner="make",
+            makefile_path="Makefile",
+            build_target="build",
+            test_target="test",
+            merge_gate_test_target="test",
+            implement_timeout=1200,
+            review_timeout=900,
+            test_timeout=300,
+            breakdown_timeout=180,
+            supervised_mode=False,
+            merge_mode="local",
+        )
+
 
 @dataclass
 class Workstream:
