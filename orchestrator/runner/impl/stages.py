@@ -47,6 +47,7 @@ from orchestrator.git import (
     get_log_oneline,
     get_divergence_count,
 )
+from orchestrator.stages import Actor
 
 
 def get_effective_autonomy(ctx: RunContext, escalation_config: EscalationConfig | None = None) -> str:
@@ -211,12 +212,16 @@ def stage_breakdown(ctx: RunContext):
 
     if commits:
         ctx.log(f"Plan already has {len(commits)} micro-commits, skipping breakdown")
+        ctx.transcript.record("breakdown", Actor.SYSTEM, "out", f"Skipped: plan already has {len(commits)} micro-commits")
         return
 
     ctx.log("No micro-commits found - generating breakdown")
 
     # Read plan content for Claude
     plan_content = plan_path.read_text()
+
+    # Record breakdown request to transcript
+    ctx.transcript.record_agent_call("breakdown", Actor.CLAUDE, f"Generate micro-commits from plan:\n\n{plan_content[:500]}...")
 
     # Generate breakdown
     log_file = ctx.run_dir / "stages" / "breakdown.log"
@@ -232,7 +237,12 @@ def stage_breakdown(ctx: RunContext):
     )
 
     if not breakdown:
+        ctx.transcript.record_agent_response("breakdown", Actor.CLAUDE, "Failed to generate micro-commits", success=False)
         raise StageError("breakdown", "Failed to generate micro-commits", 2)
+
+    # Record breakdown result to transcript
+    commits_summary = "\n".join(f"- {c['id']}: {c['title']}" for c in breakdown)
+    ctx.transcript.record_agent_response("breakdown", Actor.CLAUDE, commits_summary, success=True)
 
     # Append to plan.md
     append_commits_to_plan(plan_path, breakdown)
@@ -480,6 +490,9 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     # We need BOTH a saved session ID and review history to resume
     should_try_resume = saved_session_id and ctx.review_history
 
+    # Track prompt for transcript
+    used_prompt = None
+
     if should_try_resume:
         # Try session resume with short prompt
         last_entry = ctx.review_history[-1]
@@ -502,6 +515,7 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         if uncommitted_context:
             retry_prompt = uncommitted_context + retry_prompt
 
+        used_prompt = retry_prompt
         ctx.log(f"Running Codex (session resume: {saved_session_id[:8]}...) for {ctx.microcommit.id}")
 
         if ctx.verbose:
@@ -521,6 +535,7 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
             if uncommitted_context:
                 prompt = uncommitted_context + prompt
 
+            used_prompt = prompt
             if ctx.verbose:
                 _verbose_header("IMPLEMENT PROMPT (fallback)")
                 print(prompt)
@@ -537,6 +552,7 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         prompt = _build_full_implement_prompt(ctx, human_guidance_section)
         if uncommitted_context:
             prompt = uncommitted_context + prompt
+        used_prompt = prompt
         ctx.log(f"Running Codex for {ctx.microcommit.id}")
 
         if ctx.verbose:
@@ -545,6 +561,14 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
             _verbose_footer()
 
         result = agent.implement(prompt, ctx.workstream.worktree, log_file, stage="implement")
+
+    # Record to transcript
+    ctx.transcript.record_agent_call("implement", Actor.CODEX, used_prompt)
+    ctx.transcript.record_agent_response(
+        "implement", Actor.CODEX, result.stdout or "",
+        success=result.success,
+        elapsed_seconds=result.elapsed_seconds,
+    )
 
     # Mark session as active for next iteration within this commit's review loop
     ctx.codex_session_active = True
@@ -847,6 +871,7 @@ def stage_review(ctx: RunContext):
         status_output = get_status_porcelain(ctx.workstream.worktree)
         if not status_output.strip():
             ctx.log("No changes to review")
+            ctx.transcript.record("review", Actor.SYSTEM, "out", "Skipped: no changes to review")
             return
 
     agent = ClaudeAgent(timeout=ctx.profile.review_timeout, agents_config=ctx.agents_config)
@@ -854,6 +879,9 @@ def stage_review(ctx: RunContext):
 
     # Determine if we should try session resume
     should_try_resume = ctx.claude_session_active and ctx.review_history
+
+    # Track prompt for transcript
+    used_prompt = None
 
     if should_try_resume:
         # Try session resume with short prompt
@@ -865,6 +893,7 @@ def stage_review(ctx: RunContext):
             previous_feedback=previous_feedback
         )
 
+        used_prompt = retry_prompt
         ctx.log("Running Claude review (session resume)")
 
         if ctx.verbose:
@@ -878,6 +907,7 @@ def stage_review(ctx: RunContext):
         if _is_claude_session_resume_failure(review):
             ctx.log("Session resume failed (no session found), falling back to fresh session")
             prompt = _build_full_review_prompt(ctx, agent)
+            used_prompt = prompt
 
             if ctx.verbose:
                 _verbose_header("REVIEW PROMPT (fallback)")
@@ -894,6 +924,7 @@ def stage_review(ctx: RunContext):
     else:
         # First attempt: use full contextual prompt
         prompt = _build_full_review_prompt(ctx, agent)
+        used_prompt = prompt
         ctx.log("Running Claude review (contextual)")
 
         if ctx.verbose:
@@ -902,6 +933,23 @@ def stage_review(ctx: RunContext):
             _verbose_footer()
 
         review = agent.contextual_review(prompt, ctx.workstream.worktree, log_file, stage="review")
+
+    # Record to transcript
+    ctx.transcript.record_agent_call("review", Actor.CLAUDE, used_prompt)
+    review_response = json.dumps({
+        "decision": review.decision,
+        "confidence": review.confidence,
+        "concerns": review.concerns,
+        "blockers": review.blockers,
+        "required_changes": review.required_changes,
+    }, indent=2)
+    ctx.transcript.record_agent_response(
+        "review", Actor.CLAUDE, review_response,
+        success=review.success,
+        elapsed_seconds=review.elapsed_seconds,
+        input_tokens=review.input_tokens,
+        output_tokens=review.output_tokens,
+    )
 
     # Mark session as active for next iteration within this commit's review loop
     ctx.claude_session_active = True
@@ -1270,6 +1318,10 @@ def stage_human_review(ctx: RunContext):
                 reason += " (sensitive paths touched)"
 
     if should_auto_continue:
+        ctx.transcript.record(
+            "human_review", Actor.SYSTEM, "out",
+            f"Auto-approved: confidence {confidence:.0%} >= {threshold:.0%} threshold"
+        )
         return
 
     approval_file = ctx.workstream_dir / "human_approval.json"
@@ -1300,6 +1352,7 @@ def stage_human_review(ctx: RunContext):
 
     if action == "approve":
         ctx.log("Human approved")
+        ctx.transcript.record_human_input("human_review", "approved")
         # Clean up approval file
         approval_file.unlink()
         _update_workstream_status(ctx.workstream_dir, "active")
@@ -1309,6 +1362,7 @@ def stage_human_review(ctx: RunContext):
         feedback = approval.get("feedback", "")
         reset = approval.get("reset", False)
         ctx.log(f"Human rejected (reset={reset}) with feedback: {feedback[:100]}...")
+        ctx.transcript.record_human_input("human_review", "rejected", feedback)
         # Store feedback and reset flag for next implement run
         _store_human_feedback(ctx.workstream_dir, feedback, reset)
         # Clean up approval file

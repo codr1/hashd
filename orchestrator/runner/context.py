@@ -187,3 +187,7 @@ class RunContext:
         validate_before_write(result, "result", self.run_dir / "result.json")
 
         (self.run_dir / "result.json").write_text(json.dumps(result, indent=2))
+
+        # Save transcript if any entries were recorded
+        if self._transcript and self._transcript.entries:
+            self._transcript.save()
