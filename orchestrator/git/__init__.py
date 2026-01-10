@@ -34,6 +34,7 @@ from orchestrator.git.branch import (
     get_commit_count,
     is_ancestor,
     get_log_oneline,
+    get_divergence_count,
 )
 from orchestrator.git.commit import (
     stage_files,
@@ -72,6 +73,7 @@ __all__ = [
     "get_commit_count",
     "is_ancestor",
     "get_log_oneline",
+    "get_divergence_count",
     # commit
     "stage_files",
     "stage_all",

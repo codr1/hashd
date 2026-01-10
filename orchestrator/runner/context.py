@@ -13,6 +13,7 @@ from orchestrator.lib.config import ProjectConfig, ProjectProfile, Workstream
 from orchestrator.lib.planparse import MicroCommit
 from orchestrator.lib.validate import validate_before_write
 from orchestrator.lib.agents_config import AgentsConfig, load_agents_config
+from orchestrator.stages.transcript import Transcript
 
 
 @dataclass
@@ -48,6 +49,9 @@ class RunContext:
     # Cached agents config (loaded lazily)
     _agents_config: Optional[AgentsConfig] = field(default=None, repr=False)
 
+    # Transcript for observability (created lazily)
+    _transcript: Optional[Transcript] = field(default=None, repr=False)
+
     @property
     def project_dir(self) -> Path:
         """Project directory (ops_dir/projects/project_name)."""
@@ -59,6 +63,13 @@ class RunContext:
         if self._agents_config is None:
             self._agents_config = load_agents_config(self.project_dir)
         return self._agents_config
+
+    @property
+    def transcript(self) -> Transcript:
+        """Transcript for run observability (created once, cached)."""
+        if self._transcript is None:
+            self._transcript = Transcript(self.run_dir)
+        return self._transcript
 
     @classmethod
     def create(cls, ops_dir: Path, project: ProjectConfig, profile: ProjectProfile,
@@ -165,12 +176,10 @@ class RunContext:
 
         # Get git info if available
         if self.workstream.worktree.exists():
-            git_result = subprocess.run(
-                ["git", "-C", str(self.workstream.worktree), "rev-parse", "HEAD"],
-                capture_output=True, text=True
-            )
-            if git_result.returncode == 0:
-                result["commit_sha"] = git_result.stdout.strip()
+            from orchestrator.git import get_commit_sha
+            commit_sha = get_commit_sha(self.workstream.worktree)
+            if commit_sha:
+                result["commit_sha"] = commit_sha
 
         result["base_sha"] = self.workstream.base_sha
 

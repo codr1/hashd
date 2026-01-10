@@ -26,7 +26,27 @@ from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
 from orchestrator.lib.stats import AgentStats, record_agent_stats
-from orchestrator.runner.git_utils import has_uncommitted_changes
+from orchestrator.git import (
+    has_uncommitted_changes,
+    get_current_branch,
+    commit_exists,
+    get_status_porcelain,
+    get_staged_stat,
+    get_unstaged_stat,
+    get_untracked_files,
+    stage_files,
+    stage_all,
+    commit as git_commit,
+    get_commit_sha,
+    push,
+    fetch,
+    is_ancestor,
+    get_diff_check,
+    has_changes_vs_head,
+    get_diff_names,
+    get_log_oneline,
+    get_divergence_count,
+)
 
 
 def get_effective_autonomy(ctx: RunContext, escalation_config: EscalationConfig | None = None) -> str:
@@ -159,23 +179,15 @@ def stage_load(ctx: RunContext):
         raise StageError("load", f"Worktree not found: {ctx.workstream.worktree}", 2)
 
     # Check worktree is on correct branch
-    result = subprocess.run(
-        ["git", "-C", str(ctx.workstream.worktree), "branch", "--show-current"],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
+    current_branch = get_current_branch(ctx.workstream.worktree)
+    if current_branch is None:
         raise StageError("load", "Could not determine current branch", 2)
 
-    current_branch = result.stdout.strip()
     if current_branch != ctx.workstream.branch:
         raise StageError("load", f"Worktree on wrong branch: {current_branch} (expected {ctx.workstream.branch})", 2)
 
     # Check BASE_SHA exists
-    result = subprocess.run(
-        ["git", "-C", str(ctx.workstream.worktree), "cat-file", "-t", ctx.workstream.base_sha],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
+    if not commit_exists(ctx.workstream.worktree, ctx.workstream.base_sha):
         raise StageError("load", f"BASE_SHA not found: {ctx.workstream.base_sha}", 2)
 
     # Check plan.md exists
@@ -297,25 +309,14 @@ def _get_uncommitted_changes_context(worktree: Path) -> str:
         or empty string if the worktree is clean.
     """
     # Check for staged changes
-    staged_result = subprocess.run(
-        ["git", "-C", str(worktree), "diff", "--cached", "--stat"],
-        capture_output=True, text=True
-    )
-    staged_stat = staged_result.stdout.strip()
+    staged_stat = get_staged_stat(worktree)
 
     # Check for unstaged changes
-    unstaged_result = subprocess.run(
-        ["git", "-C", str(worktree), "diff", "--stat"],
-        capture_output=True, text=True
-    )
-    unstaged_stat = unstaged_result.stdout.strip()
+    unstaged_stat = get_unstaged_stat(worktree)
 
     # Check for untracked files
-    untracked_result = subprocess.run(
-        ["git", "-C", str(worktree), "ls-files", "--others", "--exclude-standard"],
-        capture_output=True, text=True
-    )
-    untracked = untracked_result.stdout.strip()
+    untracked_files = get_untracked_files(worktree)
+    untracked = "\n".join(untracked_files)
 
     if not staged_stat and not unstaged_stat and not untracked:
         return ""
@@ -624,11 +625,8 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
             raise StageBlocked("implement", f"Codex blocked: {reason}")
 
     # Verify Codex wrote something
-    git_status = subprocess.run(
-        ["git", "-C", str(ctx.workstream.worktree), "status", "--porcelain"],
-        capture_output=True, text=True
-    )
-    if not git_status.stdout.strip():
+    status_output = get_status_porcelain(ctx.workstream.worktree)
+    if not status_output.strip():
         # If Codex had something to say but made no changes, surface it
         if result.stdout and result.stdout.strip():
             msg = result.stdout.strip()
@@ -637,7 +635,7 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
             raise StageError("implement", f"Codex made no changes. Output:\n{msg}", 4)
         raise StageError("implement", "Codex made no changes", 4)
 
-    ctx.log(f"Implementation complete, {len(git_status.stdout.strip().splitlines())} files changed")
+    ctx.log(f"Implementation complete, {len(status_output.strip().splitlines())} files changed")
 
 
 def _auto_stage_changes(worktree: Path, ctx: RunContext) -> None:
@@ -652,14 +650,11 @@ def _auto_stage_changes(worktree: Path, ctx: RunContext) -> None:
     what will be committed. The commit stage does `git add -A` anyway, so this
     just catches issues earlier and avoids unnecessary feedback loops.
     """
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "status", "--porcelain"],
-        capture_output=True, text=True
-    )
+    status_output = get_status_porcelain(worktree)
 
     # Parse status: ?? = untracked, ' M' = modified unstaged, 'M ' = modified staged
     # We want to stage anything that's not already fully staged
-    lines = result.stdout.splitlines()
+    lines = status_output.splitlines()
     untracked = [line[3:] for line in lines if line.startswith("??")]
     modified_unstaged = [line[3:] for line in lines if line.startswith(" M") or line.startswith(" D")]
 
@@ -682,11 +677,8 @@ def _auto_stage_changes(worktree: Path, ctx: RunContext) -> None:
             ctx.log(f"  ... and {len(modified_unstaged) - 5} more")
 
     # Stage all unstaged changes
-    add_result = subprocess.run(
-        ["git", "-C", str(worktree), "add", "--"] + to_stage,
-        capture_output=True, text=True
-    )
-    if add_result.returncode != 0:
+    add_result = stage_files(worktree, to_stage)
+    if not add_result.success:
         ctx.log(f"  Warning: git add failed: {add_result.stderr.strip()}")
 
 
@@ -786,15 +778,8 @@ def _get_branch_commits(ctx: RunContext) -> str:
     Returns empty string if branch has no commits yet (HEAD == main) or on error.
     """
     try:
-        result = subprocess.run(
-            ["git", "log", "--oneline", f"{ctx.project.default_branch}..HEAD"],
-            cwd=str(ctx.worktree),
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
+        ref_range = f"{ctx.project.default_branch}..HEAD"
+        return get_log_oneline(ctx.workstream.worktree, ref_range)
     except Exception as e:
         logging.debug(f"Failed to get branch commits: {e}")
     return ""
@@ -857,17 +842,10 @@ def stage_review(ctx: RunContext):
         raise StageError("review", "No micro-commit selected", 9)
 
     # Check there are changes to review
-    result = subprocess.run(
-        ["git", "-C", str(ctx.workstream.worktree), "diff", "--quiet", "HEAD"],
-        capture_output=True
-    )
-    if result.returncode == 0:
+    if not has_changes_vs_head(ctx.workstream.worktree):
         # Also check for untracked files
-        status = subprocess.run(
-            ["git", "-C", str(ctx.workstream.worktree), "status", "--porcelain"],
-            capture_output=True, text=True
-        )
-        if not status.stdout.strip():
+        status_output = get_status_porcelain(ctx.workstream.worktree)
+        if not status_output.strip():
             ctx.log("No changes to review")
             return
 
@@ -994,31 +972,21 @@ def stage_update_state(ctx: RunContext):
         return
 
     # COMMIT - all gates have passed, now we commit
-    worktree = str(ctx.workstream.worktree)
+    worktree = ctx.workstream.worktree
 
     # Stage all changes
-    result = subprocess.run(
-        ["git", "-C", worktree, "add", "-A"],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        raise StageError("update_state", f"git add failed: {result.stderr}", 9)
+    add_result = stage_all(worktree)
+    if not add_result.success:
+        raise StageError("update_state", f"git add failed: {add_result.stderr}", 9)
 
     # Create commit
     commit_msg = f"{ctx.microcommit.id}: {ctx.microcommit.title}"
-    result = subprocess.run(
-        ["git", "-C", worktree, "commit", "-m", commit_msg],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        raise StageError("update_state", f"git commit failed: {result.stderr}", 9)
+    commit_result = git_commit(worktree, commit_msg)
+    if not commit_result.success:
+        raise StageError("update_state", f"git commit failed: {commit_result.stderr}", 9)
 
     # Get the commit SHA
-    result = subprocess.run(
-        ["git", "-C", worktree, "rev-parse", "HEAD"],
-        capture_output=True, text=True
-    )
-    commit_sha = result.stdout.strip() if result.returncode == 0 else "unknown"
+    commit_sha = get_commit_sha(worktree) or "unknown"
     ctx.log(f"Committed: {commit_sha[:8]} - {commit_msg}")
 
     # Mark micro-commit as done
@@ -1033,11 +1001,8 @@ def stage_update_state(ctx: RunContext):
     if ctx.workstream.pr_number:
         print(f"Pushing to update PR #{ctx.workstream.pr_number}...")
         ctx.log(f"Pushing to update PR #{ctx.workstream.pr_number}...")
-        push_result = subprocess.run(
-            ["git", "-C", worktree, "push"],
-            capture_output=True, text=True, timeout=60
-        )
-        if push_result.returncode == 0:
+        push_result = push(worktree)
+        if push_result.success:
             print("  Pushed successfully")
             ctx.log("Pushed successfully")
         else:
@@ -1126,30 +1091,15 @@ def stage_merge_gate(ctx: RunContext) -> dict:
 
     # 2. Check branch is up to date with main
     # First, fetch to ensure we have latest main
-    subprocess.run(
-        ["git", "-C", worktree_str, "fetch", "origin", default_branch],
-        capture_output=True, text=True
-    )
+    fetch(worktree, "origin", default_branch)
 
     # Check if main is ancestor of HEAD (meaning we're rebased on main)
-    result = subprocess.run(
-        ["git", "-C", worktree_str, "merge-base", "--is-ancestor",
-         f"origin/{default_branch}", "HEAD"],
-        capture_output=True, text=True
-    )
-
-    if result.returncode != 0:
+    if not is_ancestor(worktree, f"origin/{default_branch}", "HEAD"):
         # Get divergence info for context
-        diverge_result = subprocess.run(
-            ["git", "-C", worktree_str, "rev-list", "--left-right", "--count",
-             f"origin/{default_branch}...HEAD"],
-            capture_output=True, text=True
-        )
+        divergence = get_divergence_count(worktree, f"origin/{default_branch}", "HEAD")
         output = f"Branch needs rebase on {default_branch}.\n"
-        if diverge_result.returncode == 0:
-            parts = diverge_result.stdout.strip().split()
-            if len(parts) == 2:
-                output += f"Main is {parts[0]} commits ahead, branch is {parts[1]} commits ahead.\n"
+        if divergence:
+            output += f"Main is {divergence[0]} commits ahead, branch is {divergence[1]} commits ahead.\n"
         output += f"Run: git rebase origin/{default_branch}"
 
         raise StageError(
@@ -1162,17 +1112,12 @@ def stage_merge_gate(ctx: RunContext) -> dict:
     ctx.log(f"Branch is up to date with {default_branch}")
 
     # 3. Check for conflict markers in tracked files
-    result = subprocess.run(
-        ["git", "-C", worktree_str, "diff", "--check", f"origin/{default_branch}...HEAD"],
-        capture_output=True, text=True
-    )
+    has_issues, diff_output = get_diff_check(worktree, f"origin/{default_branch}...HEAD")
 
-    if result.returncode != 0 and result.stdout.strip():
-        output = result.stdout.strip()
-
+    if has_issues and diff_output:
         # Detect actual issue type - git diff --check reports both conflicts and whitespace
-        has_conflicts = any(m in output for m in ["<<<<<<<", "=======", ">>>>>>>"])
-        has_whitespace = "trailing whitespace" in output.lower() or "space before tab" in output.lower()
+        has_conflicts = any(m in diff_output for m in ["<<<<<<<", "=======", ">>>>>>>"])
+        has_whitespace = "trailing whitespace" in diff_output.lower() or "space before tab" in diff_output.lower()
 
         if has_conflicts:
             message = "Conflict markers detected in files"
@@ -1188,7 +1133,7 @@ def stage_merge_gate(ctx: RunContext) -> dict:
             "merge_gate",
             message,
             12,
-            details={"type": error_type, "output": output}
+            details={"type": error_type, "output": diff_output}
         )
 
     ctx.log("No conflict markers found")
@@ -1199,18 +1144,11 @@ def stage_merge_gate(ctx: RunContext) -> dict:
 
 def _get_changed_files(worktree: Path) -> list[str]:
     """Get list of changed files in the worktree (staged + unstaged)."""
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "diff", "--name-only", "HEAD"],
-        capture_output=True, text=True
-    )
-    files = result.stdout.strip().split("\n") if result.stdout.strip() else []
+    files = get_diff_names(worktree, "HEAD")
 
     # Also include untracked files
-    status = subprocess.run(
-        ["git", "-C", str(worktree), "status", "--porcelain"],
-        capture_output=True, text=True
-    )
-    for line in status.stdout.strip().split("\n"):
+    status_output = get_status_porcelain(worktree)
+    for line in status_output.strip().split("\n"):
         if line and line.startswith("??"):
             files.append(line[3:].strip())
 
