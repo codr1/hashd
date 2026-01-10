@@ -59,8 +59,8 @@ class ProjectProfile:
     review_timeout: int
     test_timeout: int
     breakdown_timeout: int
-    supervised_mode: bool
     merge_mode: str  # "local" or "github_pr"
+    # Note: autonomy mode (supervised/gatekeeper/autonomous) is in escalation.json, not here
 
     def get_test_command(self) -> list[str]:
         """Get the command to run tests.
@@ -154,7 +154,6 @@ class ProjectProfile:
             review_timeout=900,
             test_timeout=300,
             breakdown_timeout=180,
-            supervised_mode=False,
             merge_mode="local",
         )
 
@@ -264,8 +263,8 @@ def load_project_profile(project_dir: Path) -> ProjectProfile:
         review_timeout=int(env.get("REVIEW_TIMEOUT", "900")),  # Increased from 600 - large changes need more time
         test_timeout=int(env.get("TEST_TIMEOUT", "300")),
         breakdown_timeout=int(env.get("BREAKDOWN_TIMEOUT", "180")),
-        supervised_mode=env.get("SUPERVISED_MODE", "false").lower() == "true",
         merge_mode=merge_mode,
+        # Note: SUPERVISED_MODE is deprecated - autonomy is now in escalation.json
     )
 
 

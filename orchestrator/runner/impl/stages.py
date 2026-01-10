@@ -20,13 +20,38 @@ from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.history import format_conversation_history
 from orchestrator.lib.review import load_review, format_review, format_review_for_retry, print_review
 from orchestrator.lib.context import get_codebase_context
-from orchestrator.lib.config import load_escalation_config, get_confidence_threshold, update_workstream_meta
+from orchestrator.lib.config import load_escalation_config, get_confidence_threshold, update_workstream_meta, AUTONOMY_MODES, EscalationConfig
 from orchestrator.lib.directives import load_directives
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
 from orchestrator.lib.stats import AgentStats, record_agent_stats
 from orchestrator.runner.git_utils import has_uncommitted_changes
+
+
+def get_effective_autonomy(ctx: RunContext, escalation_config: EscalationConfig | None = None) -> str:
+    """Get the effective autonomy mode, respecting CLI override.
+
+    Args:
+        ctx: Run context with optional autonomy_override.
+        escalation_config: Pre-loaded EscalationConfig. If None, loads from project_dir.
+
+    Returns:
+        "supervised", "gatekeeper", or "autonomous"
+
+    Raises:
+        ValueError: If autonomy_override is not a valid mode.
+    """
+    if ctx.autonomy_override:
+        if ctx.autonomy_override not in AUTONOMY_MODES:
+            raise ValueError(
+                f"Invalid autonomy mode '{ctx.autonomy_override}'. "
+                f"Valid modes: {', '.join(sorted(AUTONOMY_MODES))}"
+            )
+        return ctx.autonomy_override
+    if escalation_config is None:
+        escalation_config = load_escalation_config(ctx.project_dir)
+    return escalation_config.autonomy
 
 
 def _save_codex_session_id(workstream_dir: Path, session_id: str) -> None:
@@ -205,7 +230,7 @@ def stage_breakdown(ctx: RunContext):
         ctx.log(f"  - {c['id']}: {c['title']}")
 
     # In supervised mode, pause for human review of plan.md
-    if ctx.profile.supervised_mode:
+    if get_effective_autonomy(ctx) == "supervised":
         ctx.log("Supervised mode: pausing for human review of plan.md")
         raise StageBlocked(
             "breakdown",
@@ -1283,7 +1308,8 @@ def stage_human_review(ctx: RunContext):
     sensitive_touched = threshold > escalation_config.commit_confidence_threshold
 
     # Determine if we should auto-continue
-    autonomy = escalation_config.autonomy
+    # Use get_effective_autonomy to respect CLI override (--supervised/--gatekeeper)
+    autonomy = get_effective_autonomy(ctx, escalation_config)
     review_approved = review_decision == "approve"
 
     # Decision logic

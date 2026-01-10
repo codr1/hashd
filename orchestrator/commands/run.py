@@ -1077,15 +1077,18 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             review_timeout=900,
             test_timeout=300,
             breakdown_timeout=180,
-            supervised_mode=False,
             merge_mode=get_default_merge_mode(),
         )
 
-    # Override supervised_mode from CLI flags
+    # Determine autonomy override from CLI flags
+    # This overrides the project's escalation.json setting for this run
+    autonomy_override = None
     if getattr(args, 'gatekeeper', False):
-        profile.supervised_mode = False
+        autonomy_override = "gatekeeper"
     elif getattr(args, 'supervised', False):
-        profile.supervised_mode = True
+        autonomy_override = "supervised"
+    elif getattr(args, 'autonomous', False):
+        autonomy_override = "autonomous"
 
     # Warn if main repo has uncommitted changes (will block merges)
     result = subprocess.run(
@@ -1116,10 +1119,10 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
             if args.loop:
                 # Loop mode - run until blocked or complete
-                return run_loop(ops_dir, project_config, profile, workstream, workstream_dir, ws_id, args.verbose)
+                return run_loop(ops_dir, project_config, profile, workstream, workstream_dir, ws_id, args.verbose, autonomy_override)
             else:
                 # Single run
-                ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir, args.verbose)
+                ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir, args.verbose, autonomy_override)
                 print(f"Run ID: {ctx.run_id}")
 
                 status, exit_code, failed_stage = run_once(ctx)
@@ -1195,7 +1198,7 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         return 3
 
 
-def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, workstream_dir: Path, ws_id: str, verbose: bool = False) -> int:
+def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, workstream_dir: Path, ws_id: str, verbose: bool = False, autonomy_override: str | None = None) -> int:
     """Run until blocked or all micro-commits complete."""
     iteration = 0
 
@@ -1208,7 +1211,7 @@ def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, 
         # Reload workstream in case state changed
         workstream = load_workstream(workstream_dir)
 
-        ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir, verbose)
+        ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir, verbose, autonomy_override)
         print(f"Run ID: {ctx.run_id}")
 
         status, exit_code, failed_stage = run_once(ctx)

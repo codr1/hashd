@@ -41,6 +41,10 @@ class RunContext:
     codex_session_active: bool = False
     claude_session_active: bool = False
 
+    # CLI autonomy override (e.g., --supervised or --gatekeeper)
+    # If set, overrides the project's escalation.json autonomy setting for this run
+    autonomy_override: Optional[str] = None
+
     # Cached agents config (loaded lazily)
     _agents_config: Optional[AgentsConfig] = field(default=None, repr=False)
 
@@ -58,8 +62,14 @@ class RunContext:
 
     @classmethod
     def create(cls, ops_dir: Path, project: ProjectConfig, profile: ProjectProfile,
-               workstream: Workstream, workstream_dir: Path, verbose: bool = False) -> 'RunContext':
-        """Create a new run context with fresh run directory."""
+               workstream: Workstream, workstream_dir: Path, verbose: bool = False,
+               autonomy_override: Optional[str] = None) -> 'RunContext':
+        """Create a new run context with fresh run directory.
+
+        Args:
+            autonomy_override: CLI override for autonomy mode ("supervised", "gatekeeper", or "autonomous").
+                              If set, overrides the project's escalation.json setting.
+        """
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         run_id = f"{timestamp}_{project.name}_{workstream.id}"
 
@@ -77,6 +87,7 @@ class RunContext:
             workstream=workstream,
             workstream_dir=workstream_dir,
             verbose=verbose,
+            autonomy_override=autonomy_override,
         )
 
     def log(self, message: str):

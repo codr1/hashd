@@ -496,8 +496,9 @@ def main():
     p_run.add_argument('--verbose', '-v', action='store_true', help='Show implement/review exchange')
     p_run.add_argument('--yes', '-y', action='store_true', help='Skip confirmation prompts')
     run_mode = p_run.add_mutually_exclusive_group()
-    run_mode.add_argument('--gatekeeper', action='store_true', help='Auto-approve if tests and review pass')
+    run_mode.add_argument('--gatekeeper', action='store_true', help='Auto-continue if AI confidence >= 70%')
     run_mode.add_argument('--supervised', action='store_true', help='Always pause for human review')
+    run_mode.add_argument('--autonomous', action='store_true', help='Auto-continue commits + auto-merge')
     p_run.add_argument('--feedback', '-f', help='Provide feedback/guidance for this run')
     p_run.set_defaults(func=cmd_run)
 

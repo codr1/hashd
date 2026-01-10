@@ -4,10 +4,12 @@
 
 | Mode | Flag | Description |
 |------|------|-------------|
-| **supervised** | `--supervised` | Human approves at each gate (default) |
-| **gatekeeper** | `--gatekeeper` | AI runs autonomously, human approves only at merge |
+| **supervised** | `--supervised` | Human approves at each gate |
+| **gatekeeper** | `--gatekeeper` | Auto-continue if AI confidence >= 70% (default) |
+| **autonomous** | `--autonomous` | Auto-continue commits + auto-merge if thresholds met |
 
-Mode is set per-run: `wf run --gatekeeper` or `wf run --supervised`
+Mode is set per-project via `wf interview` or `escalation.json`.
+Override per-run: `wf run --supervised`, `wf run --gatekeeper`, or `wf run --autonomous`
 
 ---
 
@@ -292,6 +294,8 @@ Options:
 | `wf pr [id]` | Create GitHub PR (github_pr mode only) |
 | `wf merge [id] [--push]` | Merge to main and archive |
 | `wf close [id] [--force] [--keep-branch]` | Abandon story or workstream |
+| `wf skip [id] [commit] [-m ".."]` | Mark commit as done without changes |
+| `wf reset [id] [--force] [--hard]` | Reset workstream to start fresh |
 
 ### Supporting Commands
 
@@ -338,7 +342,11 @@ Options:
 
 | Command | Description |
 |---------|-------------|
+| `wf project add <path> [--no-interview]` | Register a new project |
+| `wf project list` | List registered projects |
+| `wf project use <name>` | Set active project |
 | `wf project show` | Show project configuration |
+| `wf interview` | Update project configuration interactively |
 | `wf --completion bash\|zsh\|fish` | Generate shell completion |
 
 ---
