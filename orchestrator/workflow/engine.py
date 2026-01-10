@@ -19,12 +19,14 @@ from orchestrator.runner.impl.stages import (
     stage_breakdown,
     stage_select,
     stage_clarification_check,
-    stage_implement,
-    stage_test,
-    stage_review,
-    stage_qa_gate,
-    stage_update_state,
     stage_human_review,
+)
+from orchestrator.workflow.tasks import (
+    task_implement,
+    task_test,
+    task_review,
+    task_qa_gate,
+    task_update_state,
 )
 from orchestrator.runner.impl.state_files import get_human_feedback
 from orchestrator.runner.git_utils import has_uncommitted_changes
@@ -104,7 +106,7 @@ def run_once(ctx: "RunContext") -> tuple[str, int, str | None]:
         try:
             result = run_stage(
                 ctx, "implement",
-                lambda c: stage_implement(c, human_feedback)
+                lambda c: task_implement(c, human_feedback)
             )
             if result == StageResult.BLOCKED:
                 reason = ctx.stages.get("implement", {}).get("notes", "unknown")
@@ -123,7 +125,7 @@ def run_once(ctx: "RunContext") -> tuple[str, int, str | None]:
 
         # TEST
         try:
-            result = run_stage(ctx, "test", stage_test)
+            result = run_stage(ctx, "test", task_test)
             if result == StageResult.BLOCKED:
                 reason = ctx.stages.get("test", {}).get("notes", "unknown")
                 ctx.write_result("blocked", blocked_reason=reason)
@@ -155,7 +157,7 @@ def run_once(ctx: "RunContext") -> tuple[str, int, str | None]:
 
         # REVIEW
         try:
-            result = run_stage(ctx, "review", stage_review)
+            result = run_stage(ctx, "review", task_review)
             if result == StageResult.BLOCKED:
                 reason = ctx.stages.get("review", {}).get("notes", "unknown")
                 ctx.write_result("blocked", blocked_reason=reason)
@@ -195,8 +197,8 @@ def run_once(ctx: "RunContext") -> tuple[str, int, str | None]:
 
     # === Phase 4: Final gates and commit ===
     for stage_name, stage_fn in [
-        ("qa_gate", stage_qa_gate),
-        ("update_state", stage_update_state),
+        ("qa_gate", task_qa_gate),
+        ("update_state", task_update_state),
     ]:
         try:
             result = run_stage(ctx, stage_name, stage_fn)
@@ -363,8 +365,8 @@ def _check_pending_approval(ctx: "RunContext") -> tuple[str, int, str | None] | 
         approval_file.unlink()
 
         for stage_name, stage_fn in [
-            ("qa_gate", stage_qa_gate),
-            ("update_state", stage_update_state),
+            ("qa_gate", task_qa_gate),
+            ("update_state", task_update_state),
         ]:
             try:
                 result = run_stage(ctx, stage_name, stage_fn)

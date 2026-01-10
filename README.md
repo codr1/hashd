@@ -252,11 +252,26 @@ All micro-commits complete -> MERGE_GATE (full test suite + rebase check)
                           archived             (loops back to SELECT)
 ```
 
+## Automatic Retries
+
+Hashd uses [Prefect](https://www.prefect.io/) to automatically retry transient failures:
+
+| Stage | Retries | Delay | Handles |
+|-------|---------|-------|---------|
+| implement | 2 | 10s | Codex timeouts, API errors |
+| test | 2 | 5s | Subprocess timeouts |
+| review | 1 | 30s | Claude rate limits |
+| qa_gate | 1 | 5s | Validation errors |
+| update_state | 2 | 5s | Git push failures |
+
+This is transparent - `wf run` works exactly as before. Prefect handles retries automatically without any configuration.
+
 ## Requirements
 
 - Python 3.11+
 - Git
 - [uv](https://github.com/astral-sh/uv) - for dependency management
+- [Prefect](https://www.prefect.io/) - for workflow orchestration (automatic retry)
 - [Claude CLI](https://github.com/anthropics/claude-cli) - for code review
 - [Codex CLI](https://github.com/openai/codex) - for implementation
 - A project with a Makefile and test target

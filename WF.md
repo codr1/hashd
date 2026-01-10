@@ -523,12 +523,28 @@ cleanup cannot be lost during rebase conflicts.
 
 ## Retry Limits
 
+### Business Logic Retries
+
 | Stage | Max Retries | On Exhaust |
 |-------|-------------|------------|
 | Implement/Test/Review loop | 3 | HITL |
 | Final Review fixes | 3 | HITL |
 | Merge conflict resolution | 3 | HITL |
 | PR auto-rebase | 3 | HITL |
+
+### Automatic Transient Failure Retries (Prefect)
+
+Transient failures (API timeouts, rate limits, git push failures) are automatically retried:
+
+| Stage | Retries | Delay | Handles |
+|-------|---------|-------|---------|
+| implement | 2 | 10s | Codex timeouts, API errors |
+| test | 2 | 5s | Subprocess timeouts |
+| review | 1 | 30s | Claude rate limits |
+| qa_gate | 1 | 5s | Validation errors |
+| update_state | 2 | 5s | Git push failures |
+
+These retries happen transparently before business logic retries kick in.
 
 ---
 
