@@ -45,6 +45,7 @@ from orchestrator.lib.timeline import (
     get_workstream_timeline,
     parse_run_log_status,
 )
+from orchestrator.lib.tui import ConfirmModal
 from orchestrator.pm.models import Story
 from orchestrator.pm.stories import list_stories, load_story, is_story_locked, update_story
 
@@ -1048,17 +1049,27 @@ class StoryHeaderWidget(Static):
 class CriterionItem(ListItem):
     """A single acceptance criterion in the list."""
 
+    is_expanded: reactive[bool] = reactive(False)
+
     def __init__(self, index: int, text: str) -> None:
         super().__init__()
         self.criterion_index = index
         self.criterion_text = text
         # Truncate for display (full text kept for editing)
         max_len = 90
-        display_text = text[:max_len] + "..." if len(text) > max_len else text
-        self.display_text = display_text
+        self.display_text = text[:max_len] + "..." if len(text) > max_len else text
 
     def compose(self) -> ComposeResult:
-        yield Label(f"[ ] {self.display_text}")
+        prefix = "[v]" if self.is_expanded else "[>]"
+        display = self.criterion_text if self.is_expanded else self.display_text
+        yield Label(f"{prefix} {display}")
+
+    def watch_is_expanded(self) -> None:
+        """Re-render when expansion state changes."""
+        self.refresh(recompose=True)
+
+    def toggle(self) -> None:
+        self.is_expanded = not self.is_expanded
 
 
 class StoryDetailScreen(Screen):
@@ -1096,13 +1107,14 @@ class StoryDetailScreen(Screen):
     }
 
     CriterionItem {
-        height: 1;
+        height: auto;
+        min-height: 1;
         padding: 0 1;
         margin: 0;
     }
 
     CriterionItem Label {
-        height: 1;
+        height: auto;
         padding: 0;
         margin: 0;
     }
@@ -1130,8 +1142,9 @@ class StoryDetailScreen(Screen):
     BINDINGS = [
         Binding("escape", "back_to_dashboard", "Back", show=True),
         Binding("A", "approve_story", "Approve", show=False),  # Shift+a to prevent accidental approval
+        Binding("enter", "toggle_criterion", "Expand", show=False),
         Binding("e", "edit_criterion", "Edit criterion", show=False),
-        Binding("enter", "edit_criterion", "Edit criterion", show=False),
+        Binding("d", "delete_criterion", "Delete criterion", show=False),
         Binding("E", "edit_story", "AI edit story", show=False),
         Binding("R", "run_story", "Run", show=False),  # Shift+r to prevent accidental run
         Binding("C", "close_story", "Close", show=False),  # Shift+c to prevent accidental close
@@ -1233,17 +1246,52 @@ class StoryDetailScreen(Screen):
             actions.append("[Esc] back")
 
         status = self.story.status
+        is_locked = status in ("implementing", "implemented")
+
+        # Check if criterion is selected
+        criteria_list = self.query_one("#criteria-list", ListView)
+        has_selection = criteria_list.highlighted_child is not None
 
         if status == "draft":
-            actions.extend(["[A]pprove", "[e]dit", "[E] AI edit", "[C]lose", "[v]iew", "[q]uit"])
+            actions.append("[A]pprove")
         elif status == "accepted":
-            actions.extend(["[R]un", "[e]dit", "[E] AI edit", "[C]lose", "[v]iew", "[q]uit"])
-        elif status == "implementing":
-            actions.extend(["[v]iew", "[q]uit"])  # Limited actions when locked
-        else:
-            actions.extend(["[v]iew", "[q]uit"])
+            actions.append("[R]un")
+
+        # Show edit/delete options when not locked and criterion selected
+        if not is_locked and has_selection:
+            actions.extend(["[e]dit", "[d]elete"])
+
+        if not is_locked:
+            actions.extend(["[E] AI edit", "[C]lose"])
+
+        actions.extend(["[v]iew", "[q]uit"])
 
         return " | ".join(actions)
+
+    def _update_action_bar(self) -> None:
+        """Update the action bar display."""
+        action_bar = self.query_one("#story-action-bar", Static)
+        action_bar.update(self._get_action_bar())
+
+    def _get_selected_criterion(self) -> Optional[CriterionItem]:
+        """Get selected criterion if story is editable, else notify and return None."""
+        if not self.story:
+            self.notify("No story loaded", severity="warning")
+            return None
+        if is_story_locked(self.story):
+            self.notify("Story is locked", severity="warning")
+            return None
+        criteria_list = self.query_one("#criteria-list", ListView)
+        if criteria_list.highlighted_child is None:
+            self.notify("No criterion selected", severity="warning")
+            return None
+        item = criteria_list.highlighted_child
+        return item if isinstance(item, CriterionItem) else None
+
+    @on(ListView.Highlighted)
+    def on_criterion_highlighted(self, event: ListView.Highlighted) -> None:
+        """Update action bar when criterion selection changes."""
+        self._update_action_bar()
 
     def action_back_to_dashboard(self) -> None:
         """Return to dashboard."""
@@ -1317,46 +1365,43 @@ class StoryDetailScreen(Screen):
 
         self.app.push_screen(FeedbackModal("Edit guidance:"), handle_feedback)
 
-    def action_edit_criterion(self) -> None:
-        """Edit the selected acceptance criterion."""
-        if not self.story:
-            self.notify("No story loaded", severity="warning")
-            return
-
-        if is_story_locked(self.story):
-            self.notify("Story is locked (cannot edit)", severity="warning")
-            return
-
-        # Get selected criterion from ListView
+    def action_toggle_criterion(self) -> None:
+        """Toggle expansion of selected criterion."""
         criteria_list = self.query_one("#criteria-list", ListView)
         if criteria_list.highlighted_child is None:
-            self.notify("No criterion selected", severity="warning")
             return
 
         selected_item = criteria_list.highlighted_child
-        if not isinstance(selected_item, CriterionItem):
+        if isinstance(selected_item, CriterionItem):
+            selected_item.toggle()
+
+    def action_edit_criterion(self) -> None:
+        """Edit the selected acceptance criterion."""
+        selected = self._get_selected_criterion()
+        if not selected:
             return
 
-        criterion_index = selected_item.criterion_index
-        criterion_text = selected_item.criterion_text
+        criterion_text = selected.criterion_text
 
         def handle_edit(new_text: str) -> None:
             if not new_text or new_text == criterion_text:
                 return  # No change
 
-            # Re-fetch story to avoid stale data from polling
             fresh_story = load_story(self.project_dir, self.story_id)
             if not fresh_story:
                 self.notify("Story not found", severity="error")
                 return
 
-            if criterion_index >= len(fresh_story.acceptance_criteria):
+            # Find by text to avoid stale index issues
+            try:
+                idx = fresh_story.acceptance_criteria.index(criterion_text)
+            except ValueError:
                 self.notify("Criterion no longer exists", severity="error")
                 self.refresh_data()
                 return
 
             new_criteria = list(fresh_story.acceptance_criteria)
-            new_criteria[criterion_index] = new_text
+            new_criteria[idx] = new_text
 
             result = update_story(
                 self.project_dir,
@@ -1372,9 +1417,52 @@ class StoryDetailScreen(Screen):
             self.refresh_data()
 
         self.app.push_screen(
-            CriterionEditModal(criterion_text, f"Edit Criterion {criterion_index + 1}:"),
+            CriterionEditModal(criterion_text, "Edit Criterion:"),
             handle_edit
         )
+
+    def action_delete_criterion(self) -> None:
+        """Delete the selected acceptance criterion."""
+        selected = self._get_selected_criterion()
+        if not selected:
+            return
+
+        criterion_text = selected.criterion_text
+
+        def handle_confirm(confirmed: bool) -> None:
+            if not confirmed:
+                return
+
+            fresh_story = load_story(self.project_dir, self.story_id)
+            if not fresh_story:
+                self.notify("Story not found", severity="error")
+                return
+
+            # Find by text to avoid stale index issues
+            try:
+                idx = fresh_story.acceptance_criteria.index(criterion_text)
+            except ValueError:
+                self.notify("Criterion no longer exists", severity="error")
+                self.refresh_data()
+                return
+
+            new_criteria = list(fresh_story.acceptance_criteria)
+            del new_criteria[idx]
+
+            result = update_story(
+                self.project_dir,
+                self.story_id,
+                {"acceptance_criteria": new_criteria}
+            )
+
+            if result:
+                self.notify("Criterion deleted", severity="information")
+            else:
+                self.notify("Failed to delete criterion", severity="error")
+
+            self.refresh_data()
+
+        self.app.push_screen(ConfirmModal("Delete this criterion?"), handle_confirm)
 
     def action_run_story(self) -> None:
         """Run story (create workstream)."""
@@ -1518,16 +1606,27 @@ class WatchApp(App):
             self.push_screen(DashboardScreen(self.ops_dir, self.project_config))
 
     def action_help(self) -> None:
-        """Show help screen."""
-        help_text = """[bold]wf watch - Keyboard Shortcuts[/bold]
+        """Show context-aware help screen."""
+        current_screen = self.screen
 
-[bold]Dashboard[/bold]
-  1-9     Select workstream by number
-  a-i     Select story by letter
+        if isinstance(current_screen, StoryDetailScreen):
+            help_text = """[bold]Story Detail - Keyboard Shortcuts[/bold]
+
+  Esc     Back to dashboard
+  Enter   Expand/collapse criterion
+  e       Edit selected criterion
+  d       Delete selected criterion
+  E       AI-powered story edit
+  A       Approve story (draft only)
+  R       Run - create workstream from story
+  C       Close/abandon story
+  v       View full story markdown
   ?       Show this help
   q       Quit
+"""
+        elif isinstance(current_screen, DetailScreen):
+            help_text = """[bold]Workstream Detail - Keyboard Shortcuts[/bold]
 
-[bold]Workstream Detail[/bold]
   Esc     Back to dashboard
   a       Approve current work / merge PR
   r       Reject with feedback (when awaiting review)
@@ -1539,16 +1638,12 @@ class WatchApp(App):
   o       Open PR in browser
   ?       Show this help
   q       Quit
+"""
+        else:  # DashboardScreen or other
+            help_text = """[bold]Dashboard - Keyboard Shortcuts[/bold]
 
-[bold]Story Detail[/bold]
-  Esc     Back to dashboard
-  e       Edit selected criterion
-  Enter   Edit selected criterion
-  E       AI-powered story edit
-  A       Approve story (draft only)
-  R       Run - create workstream from story
-  C       Close/abandon story
-  v       View full story markdown
+  1-9     Select workstream by number
+  a-i     Select story by letter
   ?       Show this help
   q       Quit
 """
