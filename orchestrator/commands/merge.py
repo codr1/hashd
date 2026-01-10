@@ -20,6 +20,7 @@ from orchestrator.lib.config import (
     get_current_workstream,
     clear_current_workstream,
 )
+from orchestrator.runner.locking import global_lock
 from orchestrator.lib.github import (
     check_gh_cli,
     get_pr_status,
@@ -625,57 +626,60 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         _update_status(workstream_dir, STATUS_PR_OPEN)
         return _handle_pr_open(args, ops_dir, project_config, ws, workstream_dir, workstreams_dir)
 
-    # Local merge workflow
-    print(f"Merging {commit_count} commit(s) from {ws.branch} to {project_config.default_branch}")
+    # Local merge workflow - acquire global lock to serialize merges
+    # Lock covers only the merge operation, not archive (which doesn't touch main)
+    print(f"Acquiring merge lock...")
+    with global_lock(ops_dir):
+        print(f"Merging {commit_count} commit(s) from {ws.branch} to {project_config.default_branch}")
 
-    # 3.5 Check main repo for uncommitted changes BEFORE checkout
-    result = _run_git(["git", "status", "--porcelain"], repo_path)
-    if result.stdout.strip():
-        print("ERROR: Main repo has uncommitted changes - cannot merge")
-        print(result.stdout)
-        print()
-        print("Options:")
-        print(f"  cd {repo_path} && git stash     # Save changes for later")
-        print(f"  cd {repo_path} && git checkout . # Discard changes")
-        return 2
+        # 3.5 Check main repo for uncommitted changes BEFORE checkout
+        result = _run_git(["git", "status", "--porcelain"], repo_path)
+        if result.stdout.strip():
+            print("ERROR: Main repo has uncommitted changes - cannot merge")
+            print(result.stdout)
+            print()
+            print("Options:")
+            print(f"  cd {repo_path} && git stash     # Save changes for later")
+            print(f"  cd {repo_path} && git checkout . # Discard changes")
+            return 2
 
-    # 4. Checkout main branch
-    print(f"Checking out {project_config.default_branch}...")
-    result = _run_git(["git", "checkout", project_config.default_branch], repo_path)
-    if result.returncode != 0:
-        print(f"ERROR: Failed to checkout {project_config.default_branch}")
-        print(result.stderr)
-        return 1
+        # 4. Checkout main branch
+        print(f"Checking out {project_config.default_branch}...")
+        result = _run_git(["git", "checkout", project_config.default_branch], repo_path)
+        if result.returncode != 0:
+            print(f"ERROR: Failed to checkout {project_config.default_branch}")
+            print(result.stderr)
+            return 1
 
-    # 5. Pull latest (optional, only if remote exists)
-    result = _run_git(["git", "remote"], repo_path)
-    if result.stdout.strip():
-        print("Pulling latest...")
-        pull_result = _run_git(["git", "pull", "--ff-only"], repo_path)
-        if pull_result.returncode != 0:
-            print(f"WARNING: Pull failed (continuing anyway): {pull_result.stderr.strip()}")
+        # 5. Pull latest (optional, only if remote exists)
+        result = _run_git(["git", "remote"], repo_path)
+        if result.stdout.strip():
+            print("Pulling latest...")
+            pull_result = _run_git(["git", "pull", "--ff-only"], repo_path)
+            if pull_result.returncode != 0:
+                print(f"WARNING: Pull failed (continuing anyway): {pull_result.stderr.strip()}")
 
-    # 6. Attempt merge with conflict resolution loop
-    merge_msg = f"Merge {ws.branch}: {ws.title}"
-    merge_result = _attempt_merge_with_retry(
-        repo_path, ws, merge_msg, profile
-    )
+        # 6. Attempt merge with conflict resolution loop
+        merge_msg = f"Merge {ws.branch}: {ws.title}"
+        merge_result = _attempt_merge_with_retry(
+            repo_path, ws, merge_msg, profile
+        )
 
-    if merge_result == "blocked":
-        _update_status(workstream_dir, "merge_conflicts")
-        print(f"\nBlocked: merge conflicts require human resolution")
-        print(f"  Resolve conflicts in {repo_path}")
-        print(f"  Then run: wf merge {ws_id}")
-        return 8  # Blocked exit code
+        if merge_result == "blocked":
+            _update_status(workstream_dir, "merge_conflicts")
+            print(f"\nBlocked: merge conflicts require human resolution")
+            print(f"  Resolve conflicts in {repo_path}")
+            print(f"  Then run: wf merge {ws_id}")
+            return 8  # Blocked exit code
 
-    if merge_result == "failed":
-        return 1
+        if merge_result == "failed":
+            return 1
 
-    # Merge succeeded - update status IMMEDIATELY
-    print(f"Merged: {merge_msg}")
-    _update_status(workstream_dir, STATUS_MERGED)
+        # Merge succeeded - update status IMMEDIATELY
+        print(f"Merged: {merge_msg}")
+        _update_status(workstream_dir, STATUS_MERGED)
 
-    # 7. Archive (push happens inside, after REQS cleanup)
+    # 7. Archive (outside lock - doesn't touch main branch)
     return _archive_workstream(
         workstream_dir, workstreams_dir, ws, project_config, ops_dir, story,
         push=getattr(args, 'push', False)
