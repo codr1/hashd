@@ -121,4 +121,26 @@ Phase 2 (future): Maintain sessions across commits within a workstream.
 ### Infrastructure
 - Integration tests (after design stabilizes)
 
+### Workflow Reliability (optional)
+
+**Prefect Level 2: Observability Dashboard**
+
+Self-hosted Prefect server for workflow visibility. No code changes needed.
+
+```bash
+prefect server start          # Dashboard at localhost:4200
+export PREFECT_API_URL=http://localhost:4200/api
+```
+
+Provides: run history, task timing, failure tracking, flow visualization.
+
+**State Machine Formalization**
+
+Replace ad-hoc state handling with explicit state machine. Benefits:
+- Formal state transitions (no invalid states)
+- Easier debugging (clear state at any point)
+- Better resume logic (state determines valid actions)
+
+Current states are implicit in code flow. A state machine would make them explicit and validated.
+
 See PRD.md section 24 for full deferred feature specs.

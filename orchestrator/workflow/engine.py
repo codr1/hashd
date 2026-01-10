@@ -1,6 +1,7 @@
 """Workflow engine for workstream execution.
 
 Contains the core orchestration logic for running micro-commit cycles.
+Wrapped with Prefect @flow for observability and future state management.
 """
 
 import json
@@ -8,6 +9,8 @@ import logging
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from prefect import flow
 
 from orchestrator.lib.config import ProjectConfig, ProjectProfile, Workstream, load_workstream
 from orchestrator.lib.review import load_review
@@ -42,6 +45,7 @@ logger = logging.getLogger(__name__)
 MAX_REVIEW_ATTEMPTS = 5
 
 
+@flow(name="workstream_run_once")
 def run_once(ctx: "RunContext") -> tuple[str, int, str | None]:
     """Run a single micro-commit cycle with retry loop and human gate.
 
