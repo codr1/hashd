@@ -1,0 +1,66 @@
+# Agent configuration for hashd
+# Copy to projects/<name>/agents.yaml and uncomment stages to override.
+
+stages:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PLANNING PHASE
+  # Story discovery, refinement, and requirements markup.
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # pm_discovery: claude --print
+  # pm_refine: claude --print
+  # pm_edit: claude --print
+  # pm_annotate: claude --print --permission-mode acceptEdits
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # IMPLEMENTATION PHASE
+  # Code generation, review, and iteration.
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # breakdown: claude -p --output-format json
+
+  # First implementation attempt (runs in worktree)
+  # implement: codex exec --dangerously-bypass-approvals-and-sandbox -C {worktree} {prompt}
+
+  # Resume previous session for retry after review rejection
+  # implement_resume: codex exec resume {session_id} --dangerously-bypass-approvals-and-sandbox -C {worktree} {prompt}
+
+  # review: claude --output-format json --dangerously-skip-permissions -p {prompt}
+  # review_resume: claude --continue --output-format json --dangerously-skip-permissions -p {prompt}
+
+  # fix_generation: claude -p --output-format json
+  # plan_add: claude -p --output-format json
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # COMPLETION PHASE
+  # Final review, spec generation, and documentation.
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # final_review: claude -p --output-format json
+  # pm_spec: claude -p --output-format json
+  # pm_docs: claude --print --permission-mode acceptEdits
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEMPLATE VARIABLES
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# {prompt}     - The prompt text. If in template, passed as CLI arg; otherwise via stdin.
+# {worktree}   - Path to git worktree (implement, implement_resume only)
+# {session_id} - Session UUID for resuming (implement_resume only)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMON OVERRIDES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Use Claude for implementation (if you don't have Codex):
+#
+# stages:
+#   implement: claude --dangerously-skip-permissions --cwd {worktree} -p {prompt}
+#   implement_resume: claude --continue --dangerously-skip-permissions --cwd {worktree} -p {prompt}
+
+# Use a different model for Codex:
+#
+# stages:
+#   implement: codex exec --model gpt-4 --dangerously-bypass-approvals-and-sandbox -C {worktree} {prompt}

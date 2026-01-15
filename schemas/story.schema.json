@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Story",
+  "description": "A refined story carved from dirty requirements",
+  "type": "object",
+  "required": ["id", "title", "status", "created", "source_refs", "problem"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^STORY-\\d{4}$",
+      "description": "Story ID (e.g., STORY-0001)"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Short descriptive title"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "accepted", "implemented"],
+      "description": "Story lifecycle status"
+    },
+    "created": {
+      "type": "string",
+      "description": "ISO timestamp of creation"
+    },
+    "source_refs": {
+      "type": "string",
+      "description": "Free text references to requirements (e.g., 'REQS.md Section 4.4, Issue #32')"
+    },
+    "problem": {
+      "type": "string",
+      "description": "What problem this story solves"
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Testable conditions for completion"
+    },
+    "non_goals": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What this story explicitly does NOT do"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What needs to exist before this can be implemented"
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Unresolved questions or ambiguities"
+    },
+    "workstream": {
+      "type": ["string", "null"],
+      "description": "Linked workstream ID when accepted"
+    },
+    "implemented_at": {
+      "type": ["string", "null"],
+      "description": "ISO timestamp when implemented"
+    }
+  }
+}
