@@ -8,6 +8,8 @@ from pathlib import Path
 
 from orchestrator.lib.config import ProjectConfig, load_workstream
 from orchestrator.lib.planparse import parse_plan
+from orchestrator.lib.review import load_review
+from orchestrator.lib.stats import get_workstream_stats_summary, format_duration, format_stats_summary, load_workstream_stats
 from orchestrator.pm.stories import load_story, is_story_locked
 
 
@@ -71,6 +73,15 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
                 print(f"  {marker} {c.id}: {c.title}")
             print()
 
+    # Show agent stats
+    stats = get_workstream_stats_summary(workstream_dir)
+    if stats:
+        print("Agent Stats")
+        print("-" * 40)
+        for line in format_stats_summary(stats):
+            print(line)
+        print()
+
     # Show diff
     if workstream.worktree.exists():
         print("Pending Changes")
@@ -84,100 +95,83 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
 
         if diff_result.stdout.strip():
             print(diff_result.stdout)
-
-            # Ask if they want full diff
-            if not args.brief:
-                print()
-                print("Full Diff")
-                print("-" * 40)
-                full_diff = subprocess.run(
-                    ["git", "-C", str(workstream.worktree), "diff", "HEAD"],
-                    capture_output=True, text=True
-                )
-                print(full_diff.stdout)
+            print(f"  Use 'wf diff {args.id}' for full diff")
+            print()
         else:
             print("  No uncommitted changes")
             print()
 
     # Show review feedback if exists
     if matching_runs:
-        review_file = matching_runs[0] / "stages" / "review.log"
-        if review_file.exists():
-            content = review_file.read_text()
-            if "decision" in content:
+        review = load_review(matching_runs[0])
+        if review:
+            print()
+            print("Review Feedback")
+            print("-" * 40)
+            decision = review.get("decision", "unknown")
+            print(f"  Decision: {decision}")
+
+            # Show blockers
+            blockers = review.get("blockers", [])
+            if blockers:
                 print()
-                print("Review Feedback")
-                print("-" * 40)
-                # Try to extract structured feedback
-                try:
-                    # Find JSON in stdout section
-                    if "STDOUT ===" in content:
-                        stdout_section = content.split("=== STDOUT ===")[1].split("=== STDERR ===")[0]
-                        wrapper = json.loads(stdout_section.strip())
+                print("  Blockers:")
+                for blocker in blockers:
+                    severity = blocker.get("severity", "issue")
+                    file_loc = f"{blocker.get('file', '?')}:{blocker.get('line', '?')}"
+                    print(f"    [{severity}] {file_loc}")
+                    print(f"           {blocker.get('issue', '?')}")
 
-                        # The result field is double-encoded JSON, possibly wrapped in markdown
-                        if "result" in wrapper and isinstance(wrapper["result"], str):
-                            result_str = wrapper["result"]
-                            # Strip markdown code block if present
-                            if result_str.startswith("```"):
-                                result_str = result_str.split("\n", 1)[1]  # Remove first line
-                                if result_str.endswith("```"):
-                                    result_str = result_str[:-3]
-                                result_str = result_str.strip()
-                            review = json.loads(result_str)
-                        else:
-                            review = wrapper
+            # Show required changes
+            changes = review.get("required_changes", [])
+            if changes:
+                print()
+                print("  Required Changes:")
+                for change in changes:
+                    print(f"    - {change}")
 
-                        decision = review.get("decision", "unknown")
-                        print(f"  Decision: {decision}")
+            # Show suggestions
+            suggestions = review.get("suggestions", [])
+            if suggestions:
+                print()
+                print("  Suggestions:")
+                for suggestion in suggestions:
+                    print(f"    - {suggestion}")
 
-                        # Show blockers
-                        blockers = review.get("blockers", [])
-                        if blockers:
-                            print()
-                            print("  Blockers:")
-                            for blocker in blockers:
-                                severity = blocker.get("severity", "issue")
-                                file_loc = f"{blocker.get('file', '?')}:{blocker.get('line', '?')}"
-                                print(f"    [{severity}] {file_loc}")
-                                print(f"           {blocker.get('issue', '?')}")
+            # Show notes
+            notes = review.get("notes", "")
+            if notes:
+                print()
+                print("  Notes:")
+                print(f"    {notes}")
 
-                        # Show required changes
-                        changes = review.get("required_changes", [])
-                        if changes:
-                            print()
-                            print("  Required Changes:")
-                            for change in changes:
-                                print(f"    - {change}")
+            # Show next steps based on decision
+            print()
+            print("Next Steps")
+            print("-" * 40)
+            if decision == "approve":
+                print(f"  wf merge {args.id}                    # Merge to main")
+                print(f"  wf plan add {args.id} \"...\"          # Address suggestions or add requirements")
+            else:
+                print(f"  wf run {args.id}                      # Retry implementation")
+                print(f"  wf plan add {args.id} \"...\"          # Add guidance for retry")
 
-                        # Show suggestions
-                        suggestions = review.get("suggestions", [])
-                        if suggestions:
-                            print()
-                            print("  Suggestions:")
-                            for suggestion in suggestions:
-                                print(f"    - {suggestion}")
-
-                        # Show notes
-                        notes = review.get("notes", "")
-                        if notes:
-                            print()
-                            print("  Notes:")
-                            print(f"    {notes}")
-
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    print("  (Unable to parse review data)")
-                    print()
-
-    # Show available actions
+    # Show available actions (only for micro-commit review, not final review)
     if workstream.status == "awaiting_human_review":
-        print()
-        print("Actions")
-        print("-" * 40)
-        print("  wf approve {id}            - Approve and commit")
-        print("  wf reject {id}             - Iterate on current changes")
-        print("  wf reject {id} -f '...'    - Iterate with feedback")
-        print("  wf reject {id} --reset     - Discard changes, start fresh")
+        # Check if all commits are done - if so, we're at final review, not micro-commit review
+        plan_path = workstream_dir / "plan.md"
+        commits = parse_plan(str(plan_path)) if plan_path.exists() else []
+        all_done = commits and all(c.done for c in commits)
+
+        if not all_done:
+            # Still have pending micro-commits - show approval actions
+            print()
+            print("Actions")
+            print("-" * 40)
+            print(f"  wf approve {args.id}            - Approve and commit")
+            print(f"  wf reject {args.id}             - Iterate on current changes")
+            print(f"  wf reject {args.id} -f '...'    - Iterate with feedback")
+            print(f"  wf reject {args.id} --reset     - Discard changes, start fresh")
 
     return 0
 
@@ -268,5 +262,46 @@ def cmd_show_story(args, ops_dir: Path, project_config: ProjectConfig, story_id:
             print(f"  wf run {story.workstream}         - Continue implementation")
     elif story.status == "implemented":
         print(f"  wf plan clone {story_id}   - Create editable copy")
+
+    return 0
+
+
+def cmd_show_stats(args, ops_dir: Path, project_config: ProjectConfig):
+    """Show detailed agent stats for a workstream."""
+    workstream_dir = ops_dir / "workstreams" / args.id
+    if not workstream_dir.exists():
+        print(f"ERROR: Workstream '{args.id}' not found")
+        return 1
+
+    workstream = load_workstream(workstream_dir)
+
+    print(f"Agent Stats: {workstream.id}")
+    print("=" * 60)
+
+    # Load raw stats
+    stats_list = load_workstream_stats(workstream_dir)
+    if not stats_list:
+        print("No stats recorded yet.")
+        return 0
+
+    # Summary
+    summary = get_workstream_stats_summary(workstream_dir, stats=stats_list)
+    if summary:
+        print()
+        print("Summary")
+        print("-" * 40)
+        for line in format_stats_summary(summary):
+            print(line)
+
+    # Per-call breakdown
+    print()
+    print("Call History")
+    print("-" * 40)
+    for s in stats_list:
+        tokens_str = ""
+        if s.input_tokens or s.output_tokens:
+            tokens_str = f" ({s.input_tokens or 0}/{s.output_tokens or 0} tokens)"
+        mc_str = f" [{s.microcommit_id}]" if s.microcommit_id else ""
+        print(f"  {s.timestamp[:19]}  {s.agent:6}  {format_duration(s.elapsed_seconds):>8}{tokens_str}{mc_str}")
 
     return 0

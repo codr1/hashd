@@ -346,8 +346,9 @@ wf list
 wf show <id>
 wf approve <id>
 wf merge <ws>
+wf docs [ws]
 wf close <id>
-wf watch <ws>
+wf watch [ws]
 ```
 
 ### 10.3 Command Details
@@ -358,6 +359,7 @@ wf watch <ws>
 - `wf plan new "title"` - Ad-hoc with title hint
 - `wf plan STORY-xxx` - Edit existing story (if unlocked)
 - `wf plan clone STORY-xxx` - Copy locked story to new editable story
+- `wf plan add <ws_id> "title" [-d "desc"]` - Add micro-commit to existing workstream
 
 **wf run** - Execute workstream
 - `wf run theme_crud` - Run existing workstream
@@ -382,9 +384,17 @@ wf watch <ws>
 
 **wf merge** - Complete workstream
 - `wf merge theme_crud` - Merge branch to main, archive workstream
+- Auto-runs SPEC.md update and REQS.md cleanup before merge
+
+**wf docs** - Update SPEC.md from workstream
+- `wf docs theme_crud` - Generate and write SPEC update (usually auto-run by merge)
+- `wf docs show theme_crud` - Preview SPEC update without writing
+- `wf docs diff theme_crud` - Show diff between current and proposed SPEC
+- Uses story + micro-commits + code diff as source of truth
 
 **wf watch** - Interactive TUI
-- `wf watch theme_crud` - Monitor workstream in real-time (see Appendix I)
+- `wf watch` - Dashboard showing all active workstreams (see Appendix I)
+- `wf watch theme_crud` - Monitor single workstream in real-time
 
 ### 10.4 Supporting Commands
 
@@ -397,7 +407,8 @@ wf review <id>              # Run final AI review
 wf reject <id> [-f "..."]   # Iterate on current changes
 wf reject <id> --reset      # Discard changes and start fresh
 wf open <id>                # Resurrect archived workstream
-wf archive                  # List archived workstreams
+wf archive work             # List archived workstreams
+wf archive stories          # List archived stories
 wf clarify <subcommand>     # Manage clarifications
 ```
 
@@ -423,6 +434,30 @@ draft -> accepted -> implementing -> implemented
   - `wf close <workstream>` - Cancel implementation, unlocks story
 - `wf close <workstream>` unlocks the linked story (returns to `accepted`)
 - `wf merge <workstream>` marks story as `implemented`
+
+### 10.6.1 Requirements Lifecycle
+
+Requirements flow from REQS.md through stories into SPEC.md:
+
+```
+REQS.md (shrinks) -> Stories -> SPEC.md (grows)
+```
+
+**On story creation (`wf plan refine`):**
+- Claude annotates REQS.md with WIP markers around consumed text
+- Format: `<!-- BEGIN WIP: STORY-xxxx --> ... <!-- END WIP: STORY-xxxx -->`
+
+**On merge (`wf merge`):**
+1. SPEC.md is updated with documentation generated from:
+   - Story details (problem, acceptance criteria)
+   - Micro-commit plan and descriptions
+   - Actual code diff (what was implemented)
+2. WIP-marked sections are deleted from REQS.md
+3. Both changes committed to branch before merge
+
+**Manual SPEC preview (`wf docs`):**
+- `wf docs show <ws>` - Preview without writing
+- `wf docs diff <ws>` - Show diff against current SPEC
 
 ### 10.7 Shell Completion
 
@@ -1728,7 +1763,7 @@ Interactive TUI for workstream monitoring and control. Polls artifact state ever
 └─────────────────────────────────────────────────┘
 ```
 
-**Detail Mode** (`wf watch <ws>` or press 1-9 from dashboard): Single workstream view.
+**Detail Mode** (`wf watch [ws]` or press 1-9 from dashboard): Single workstream view.
 
 ```
 ┌─ workstream_id ───────────────────────────────────────┐

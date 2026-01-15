@@ -21,8 +21,124 @@ All paths implemented. Validation pending.
 
 ## Later
 
+### Architecture: Hashd as Central Tool
+**Status:** [ ] Designed, not started
+
+Current sister directory model is clumsy. Target: hashd is the central tool, projects register with it.
+
+```
+~/tools/hashd/                    # Clone once, this IS the tool
+  orchestrator/
+  bin/wf
+  projects/                       # All ops state lives HERE
+    pickleicious/
+      project.env                 # repo_path=/path/to/pickleicious
+      pm/stories/
+      workstreams/
+      runs/
+
+~/wherever/pickleicious/          # Project repo (anywhere)
+  REQS.md
+  SPEC.md
+```
+
+**Commands:**
+- `wf project add /path/to/repo` - Register project
+- `wf project list` - Show registered projects
+- `wf project use <name>` - Select active project
+
+---
+
+### Requirements Lifecycle (COMPLETE)
+
+**Goal:** REQS.md shrinks as requirements are consumed by stories, SPEC.md grows on merge.
+
+```
+REQS.md (shrinks) → Stories (WIP) → SPEC.md (grows)
+```
+
+**Key Constraints:**
+- REQS.md is unstructured garbage prose - no reliable sections
+- Stories stay clean - NO changes to Story model
+- Annotation is semantic - Claude decides which text is covered, not string matching
+- REQS sections get DELETED on merge, not marked "IMPLEMENTED"
+
+See `/home/vess/.claude/plans/valiant-hopping-barto.md` for full design details.
+
+---
+
+#### Phase 1: Stories Visible to Planning Agent
+**Status:** [x] COMPLETE
+
+Make stories visible to `wf plan` so Claude avoids proposing duplicate work.
+
+- [x] `orchestrator/pm/planner.py` - `gather_context()`: Add active stories to context
+- [x] `orchestrator/pm/planner.py` - `build_plan_prompt()`: Build stories section
+- [x] `prompts/plan_discovery.md` - Add `{stories_section}` variable
+
+---
+
+#### Phase 1.5: Codebase Access for Planning Agent
+**Status:** [x] COMPLETE
+
+Planning agent now runs via Claude Code with full file access.
+
+- [x] `run_claude_code()` function in `claude_utils.py`
+- [x] `run_plan_session()` uses Claude Code with project repo as cwd
+- [x] `run_refine_session()` uses Claude Code similarly
+- [x] `plan_discovery.md` instructs Claude to grep/read codebase before proposing
+- [x] `refine_story.md` instructs Claude to explore before creating story
+
+---
+
+#### Phase 2: REQS Annotation During Refine
+**Status:** [x] COMPLETE
+
+When story is created via `wf plan refine`, Claude annotates REQS.md with WIP markers.
+
+**Flow:**
+1. `wf plan refine <chunk>` creates story
+2. `annotate_reqs_for_story()` runs Claude Code to wrap relevant REQS text
+3. Git commits the annotation
+
+- [x] `orchestrator/pm/reqs_annotate.py` - semantic annotation (inline prompt)
+- [x] `orchestrator/commands/plan.py` - calls annotation after story creation
+- [x] Also has `remove_reqs_annotations()` and `delete_reqs_sections()` for cleanup
+
+---
+
+#### Phase 3: `wf docs` Command
+**Status:** [x] COMPLETE
+
+**Runs BEFORE merge** (after final review passes), so docs are part of the merge commit.
+
+**Flow:**
+1. Final review passes
+2. `wf merge` auto-runs SPEC update (integrated, not separate command)
+3. Claude generates SPEC.md from story + micro-commits + code diff
+4. DELETE WIP blocks from REQS.md
+5. Commit docs changes to branch
+6. Then merge proceeds
+
+**Commands:**
+- `wf docs [ws]` - update SPEC.md manually
+- `wf docs show [ws]` - preview what would be generated
+- `wf docs diff [ws]` - show diff between current and proposed SPEC
+
+- [x] `orchestrator/commands/docs.py` - `wf docs` command (prompt inline)
+- [x] `orchestrator/cli.py` - Wire up `wf docs`, `wf docs show`, `wf docs diff`
+- [x] `orchestrator/commands/merge.py` - Integrated SPEC update before merge
+
+---
+
+#### Phase 4: Documentation
+**Status:** [x] COMPLETE
+
+- [x] `PRD.md` - Add requirements lifecycle section (10.6.1) and `wf docs` command
+
+---
+
 ### Features (designed, not built)
-- `wf watch` dashboard mode (multi-workstream view with drill-down) - see PRD Appendix I
 - Autonomy levels: autonomous mode (auto-approve gates) - see PRD section 19
 - Escalation rules config - see PRD section 19
 - Interactive story Q&A (`wf plan edit` without `-f`) - see below
@@ -61,8 +177,7 @@ Refining story with Claude PM...
 - "done" sends all answers to Claude PM for story refinement
 
 ### CLI Improvements
-- `--gatekeeper` / `--supervised` / `--autonomous` flags for `wf run`
-- Currently controlled by `SUPERVISED_MODE` env var only
+- `--autonomous` flag deferred (requires skipping merge gate human review - see PRD section 19)
 
 ### Project Maintenance Commands (not designed)
 - `wf project describe` - AI-assisted update of project.yaml description field
@@ -76,7 +191,6 @@ Refining story with Claude PM...
 - Show when commits are flagged for tech stack violations
 
 ### Ideas (not designed)
-- `wf diff` - pretty-printed diff viewer
 - Parallel workstream scheduling - conflict-aware concurrent execution
 - Rich run reports - HTML dashboard for run history
 

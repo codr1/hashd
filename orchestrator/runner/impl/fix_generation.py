@@ -60,6 +60,8 @@ def generate_fix_commits(
 
     prompt = f'''The merge gate has failed. Analyze the failure and generate 1-3 fix micro-commits.
 
+You have access to the codebase. Use Read/Grep/Glob to examine the failing code before proposing fixes.
+
 IMPORTANT: Your response must be ONLY raw JSON. No markdown fences. No prose. Just the JSON array starting with [ and ending with ].
 
 ## Failure Type
@@ -98,7 +100,8 @@ Rules:
 - Descriptions should explain the fix and why it resolves the failure
 '''
 
-    cmd = ["claude", "--output-format", "json"]
+    # Use -p (print mode) for non-interactive + file access (Read, Grep, Glob)
+    cmd = ["claude", "-p", "--output-format", "json"]
 
     # Remove ANTHROPIC_API_KEY so Claude uses OAuth credentials
     env = os.environ.copy()

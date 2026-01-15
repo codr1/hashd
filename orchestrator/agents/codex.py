@@ -7,6 +7,7 @@ Codex is used for the IMPLEMENT stage - it makes code changes.
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -21,6 +22,8 @@ class CodexResult:
     commit_sha: Optional[str] = None
     files_changed: list[str] = field(default_factory=list)
     clarification_needed: Optional[dict] = None
+    # Stats tracking
+    elapsed_seconds: float = 0.0
 
 
 class CodexAgent:
@@ -40,6 +43,7 @@ class CodexAgent:
             prompt
         ]
 
+        start_time = time.time()
         try:
             result = subprocess.run(
                 cmd,
@@ -48,12 +52,15 @@ class CodexAgent:
                 timeout=self.timeout
             )
         except subprocess.TimeoutExpired:
+            elapsed = time.time() - start_time
             return CodexResult(
                 success=False,
                 exit_code=-1,
                 stdout="",
-                stderr="Timeout expired",
+                stderr=f"Timed out after {self.timeout}s. Retry or increase IMPLEMENT_TIMEOUT.",
+                elapsed_seconds=elapsed,
             )
+        elapsed = time.time() - start_time
 
         # Log if requested
         if log_file:
@@ -69,6 +76,7 @@ class CodexAgent:
             exit_code=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
+            elapsed_seconds=elapsed,
         )
 
         # Try to get commit SHA from git

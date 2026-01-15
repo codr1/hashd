@@ -18,9 +18,11 @@ from orchestrator.runner.stages import StageError, StageBlocked
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit, mark_done
 from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.history import format_conversation_history
+from orchestrator.lib.review import load_review, format_review, print_review
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
+from orchestrator.lib.stats import AgentStats, record_agent_stats
 
 
 def _verbose_header(title: str):
@@ -33,6 +35,30 @@ def _verbose_header(title: str):
 def _verbose_footer():
     """Print a section footer for verbose output."""
     print('='*60 + "\n")
+
+
+def _load_last_review_output(ctx: RunContext) -> dict | None:
+    """Load the most recent review output for context."""
+    runs_dir = ctx.run_dir.parent  # run_dir is {ops_dir}/runs/{run_id}
+    if not runs_dir.exists():
+        return None
+
+    if not ctx.workstream:
+        return None
+
+    ws_id = ctx.workstream.id
+
+    # Find most recent run for this workstream
+    ws_runs = sorted(
+        [d for d in runs_dir.iterdir() if ws_id in d.name],
+        key=lambda d: d.stat().st_mtime,
+        reverse=True
+    )
+    for run_dir in ws_runs:
+        review = load_review(run_dir)
+        if review:
+            return review
+    return None
 
 
 def _print_review_result(review):
@@ -156,6 +182,11 @@ def stage_select(ctx: RunContext):
         ctx.log("All micro-commits complete")
         raise StageBlocked("select", "all_complete")
 
+    # Transition from awaiting_human_review when we have work to do
+    if ctx.workstream.status == "awaiting_human_review":
+        ctx.log("Pending commits found - transitioning to implementing")
+        _update_workstream_status(ctx.workstream_dir, "implementing")
+
     ctx.microcommit = next_commit
     ctx.log(f"Selected micro-commit: {next_commit.id} - {next_commit.title}")
 
@@ -201,6 +232,16 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     if human_feedback:
         human_guidance_section = f"## HUMAN GUIDANCE\n\n{human_feedback}\n"
 
+    # Build review context section from last review output
+    review_context_section = ""
+    last_review = _load_last_review_output(ctx)
+    if last_review:
+        review_content = format_review(last_review)
+        review_context_section = render_prompt(
+            "implement_review_context",
+            review_content=review_content
+        )
+
     # Build the full prompt from template
     prompt = render_prompt(
         "implement",
@@ -211,6 +252,7 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         commit_id=ctx.microcommit.id,
         commit_title=ctx.microcommit.title,
         commit_description=ctx.microcommit.block_content,
+        review_context_section=review_context_section,
         conversation_history_section=conversation_history_section,
         human_guidance_section=human_guidance_section
     )
@@ -226,6 +268,15 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     log_file = ctx.run_dir / "stages" / "implement.log"
 
     result = agent.implement(prompt, ctx.workstream.worktree, log_file)
+
+    # Record stats
+    record_agent_stats(ctx.workstream_dir, AgentStats(
+        timestamp=datetime.now().isoformat(),
+        run_id=ctx.run_id,
+        agent="codex",
+        elapsed_seconds=result.elapsed_seconds,
+        microcommit_id=ctx.microcommit.id if ctx.microcommit else None,
+    ))
 
     if ctx.verbose and result.stdout:
         _verbose_header("IMPLEMENT OUTPUT")
@@ -371,13 +422,23 @@ def stage_review(ctx: RunContext):
 
     review = agent.contextual_review(prompt, ctx.workstream.worktree, log_file)
 
+    # Record stats
+    record_agent_stats(ctx.workstream_dir, AgentStats(
+        timestamp=datetime.now().isoformat(),
+        run_id=ctx.run_id,
+        agent="claude",
+        elapsed_seconds=review.elapsed_seconds,
+        input_tokens=review.input_tokens,
+        output_tokens=review.output_tokens,
+        microcommit_id=ctx.microcommit.id if ctx.microcommit else None,
+    ))
+
     if ctx.verbose:
         _verbose_header("REVIEW RESULT")
         _print_review_result(review)
         _verbose_footer()
 
     # Save review result
-    import json
     (ctx.run_dir / "claude_review.json").write_text(json.dumps({
         "version": 1,
         "decision": review.decision,
@@ -411,7 +472,6 @@ def stage_qa_gate(ctx: RunContext):
     # Check review result
     review_path = ctx.run_dir / "claude_review.json"
     if review_path.exists():
-        import json
         review = json.loads(review_path.read_text())
         if review.get("decision") != "approve":
             raise StageError("qa_gate", "Review not approved", 7)

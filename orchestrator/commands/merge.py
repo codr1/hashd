@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 from orchestrator.lib.config import (
     ProjectConfig,
@@ -19,6 +20,14 @@ from orchestrator.lib.config import (
 )
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit
 from orchestrator.agents.codex import CodexAgent
+from orchestrator.pm.models import Story
+from orchestrator.pm.stories import (
+    find_story_by_workstream,
+    mark_story_implemented,
+    archive_story,
+)
+from orchestrator.pm.reqs_annotate import delete_reqs_sections
+from orchestrator.commands.docs import run_docs_update
 
 
 MAX_CONFLICT_RESOLUTION_ATTEMPTS = 3
@@ -50,7 +59,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             makefile_path="Makefile",
             make_target_test="test",
             merge_gate_test_target="test",
-            implement_timeout=600,
+            implement_timeout=1200,
             review_timeout=300,
             test_timeout=300,
             breakdown_timeout=180,
@@ -88,6 +97,71 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print(result.stdout)
             return 2
 
+    # 2.4 Update SPEC.md (before merge, so it's in the commit)
+    # Find story now and pass to _archive_workstream to avoid duplicate lookup
+    # Note: If SPEC update succeeds but later steps fail, the SPEC commit remains
+    # in the branch. This is acceptable - the commit is valid, merge just didn't complete.
+    story = find_story_by_workstream(project_dir, ws.id)
+    if ws.worktree.exists():
+        print(f"Updating SPEC.md...")
+        spec_ok, spec_content = run_docs_update(
+            ws.id, ops_dir, project_config,
+            timeout=300,
+            spec_source_dir=ws.worktree,  # Read from worktree, not main repo
+        )
+        if spec_ok:
+            # Write to worktree so it's part of the merge
+            spec_path = ws.worktree / "SPEC.md"
+            spec_path.write_text(spec_content)
+            # Stage and commit
+            add_result = subprocess.run(
+                ["git", "-C", str(ws.worktree), "add", "SPEC.md"],
+                capture_output=True, text=True
+            )
+            if add_result.returncode == 0:
+                story_ref = f"Story: {story.id}" if story else f"Workstream: {ws.id}"
+                commit_result = subprocess.run(
+                    ["git", "-C", str(ws.worktree), "commit", "-m",
+                     f"Update SPEC.md with implemented functionality\n\n{story_ref}"],
+                    capture_output=True, text=True
+                )
+                if commit_result.returncode == 0:
+                    print("  Committed SPEC update")
+                elif "nothing to commit" in commit_result.stdout:
+                    print("  SPEC unchanged")
+                else:
+                    print(f"  Warning: git commit failed: {commit_result.stderr.strip()}")
+        else:
+            print(f"  Warning: SPEC update failed: {spec_content}")
+
+    # 2.5 Delete REQS sections for this story (before merge, so it's in the commit)
+    story = find_story_by_workstream(project_dir, ws.id) if not story else story
+    if story and ws.worktree.exists():
+        # Delete from worktree so changes are included in merge
+        success, msg, extracted = delete_reqs_sections(story.id, project_config, ws.worktree)
+        if not success:
+            print(f"  Warning: REQS cleanup failed: {msg}")
+        elif extracted:
+            print(f"Cleaning REQS.md: {msg}")
+            # Commit the REQS cleanup in the worktree
+            reqs_file = project_config.reqs_path
+            add_result = subprocess.run(
+                ["git", "-C", str(ws.worktree), "add", reqs_file],
+                capture_output=True, text=True
+            )
+            if add_result.returncode != 0:
+                print(f"  Warning: git add failed: {add_result.stderr}")
+            else:
+                commit_result = subprocess.run(
+                    ["git", "-C", str(ws.worktree), "commit", "-m",
+                     f"Remove implemented requirements from REQS.md\n\nStory: {story.id}"],
+                    capture_output=True, text=True
+                )
+                if commit_result.returncode == 0:
+                    print("  Committed REQS cleanup")
+                else:
+                    print(f"  Warning: git commit failed: {commit_result.stderr.strip()}")
+
     # 3. Verify branch is ahead of base
     git_dir = str(ws.worktree) if ws.worktree.exists() else str(project_config.repo_path)
     result = subprocess.run(
@@ -102,6 +176,20 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     print(f"Merging {commit_count} commit(s) from {ws.branch} to {project_config.default_branch}")
 
     repo_path = project_config.repo_path
+
+    # 3.5 Check main repo for uncommitted changes BEFORE checkout
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "status", "--porcelain"],
+        capture_output=True, text=True
+    )
+    if result.stdout.strip():
+        print("ERROR: Main repo has uncommitted changes - cannot merge")
+        print(result.stdout)
+        print()
+        print("Options:")
+        print(f"  cd {repo_path} && git stash     # Save changes for later")
+        print(f"  cd {repo_path} && git checkout . # Discard changes")
+        return 2
 
     # 4. Checkout main branch
     print(f"Checking out {project_config.default_branch}...")
@@ -159,8 +247,8 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print("WARNING: Push failed")
             print(result.stderr)
 
-    # 8. Archive
-    return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config, ops_dir)
+    # 8. Archive (pass story to avoid duplicate lookup)
+    return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config, ops_dir, story)
 
 
 def _attempt_merge_with_retry(repo_path: Path, ws, merge_msg: str,
@@ -359,7 +447,8 @@ def _update_status(workstream_dir: Path, status: str):
 
 
 def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
-                        ws, project_config: ProjectConfig, ops_dir: Path) -> int:
+                        ws, project_config: ProjectConfig, ops_dir: Path,
+                        story: Optional[Story] = None) -> int:
     """Archive workstream to _closed/."""
     print("Archiving workstream...")
     repo_path = project_config.repo_path
@@ -390,6 +479,15 @@ def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
     # Clear context if this was the current workstream
     if get_current_workstream(ops_dir) == ws.id:
         clear_current_workstream(ops_dir)
+
+    # Archive associated story
+    project_dir = ops_dir / "projects" / project_config.name
+    if not story:
+        story = find_story_by_workstream(project_dir, ws.id)
+    if story:
+        mark_story_implemented(project_dir, story.id)
+        if archive_story(project_dir, story.id):
+            print(f"  Story '{story.id}' archived")
 
     print(f"\nWorkstream '{ws.id}' merged and archived.")
     print(f"  Branch '{ws.branch}' preserved in git history")

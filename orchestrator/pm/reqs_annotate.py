@@ -21,7 +21,6 @@ def annotate_reqs_for_story(
     story: Story,
     project_config: ProjectConfig,
     timeout: int = 180,
-    project_dir: Optional[Path] = None,
 ) -> tuple[bool, str]:
     """
     Use Claude Code to annotate REQS.md with story WIP markers.
@@ -79,13 +78,7 @@ Rules:
 After editing, respond with a brief summary of what you annotated.
 """
 
-    success, response = run_claude(
-        prompt,
-        cwd=project_config.repo_path,
-        timeout=timeout,
-        stage="pm_annotate",
-        project_dir=project_dir,
-    )
+    success, response = run_claude(prompt, cwd=project_config.repo_path, timeout=timeout, accept_edits=True)
 
     if not success:
         logger.warning(f"REQS annotation failed: {response}")

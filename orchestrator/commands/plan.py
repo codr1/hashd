@@ -8,10 +8,13 @@ Commands:
   wf plan STORY-xxx        - Edit existing story (if unlocked)
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
 from orchestrator.lib.config import ProjectConfig
+from orchestrator.lib.planparse import parse_plan
+from orchestrator.lib.review import load_review
 from orchestrator.pm.stories import (
     list_stories,
     load_story,
@@ -19,8 +22,11 @@ from orchestrator.pm.stories import (
     create_story,
     update_story,
     is_story_locked,
+    resurrect_story,
 )
 from orchestrator.pm.planner import run_plan_session, run_refine_session, run_edit_session
+from orchestrator.pm.reqs_annotate import annotate_reqs_for_story
+from orchestrator.runner.impl.breakdown import append_commits_to_plan
 
 
 def cmd_plan(args, ops_dir: Path, project_config: ProjectConfig):
@@ -37,6 +43,14 @@ def cmd_plan(args, ops_dir: Path, project_config: ProjectConfig):
     if getattr(args, 'edit', False):
         story_id = getattr(args, 'story_id', None)
         return cmd_plan_edit(args, ops_dir, project_config, story_id)
+
+    # wf plan add <ws_id> "title"
+    if getattr(args, 'add', False):
+        return cmd_plan_add(args, ops_dir, project_config)
+
+    # wf plan resurrect STORY-xxx
+    if getattr(args, 'resurrect', False):
+        return cmd_plan_resurrect(args, ops_dir, project_config)
 
     # wf plan (discovery from REQS.md)
     return cmd_plan_discover(args, ops_dir, project_config)
@@ -81,7 +95,41 @@ def cmd_plan_new(args, ops_dir: Path, project_config: ProjectConfig):
     # Create the story
     story = create_story(project_dir, story_data)
     print(f"Created {story.id}: {story.title}")
-    print(f"\nTo start implementation: wf open {story.id}")
+
+    # Annotate REQS.md with WIP markers
+    print("Annotating REQS.md...")
+    success, msg = annotate_reqs_for_story(story, project_config)
+    if success:
+        # Truncate at word boundary if too long
+        if len(msg) > 80:
+            truncated = msg[:80].rsplit(' ', 1)[0]
+            print(f"  {truncated}...")
+        else:
+            print(f"  {msg}")
+
+        # Commit the annotation
+        reqs_file = project_config.reqs_path
+        repo_path = project_config.repo_path
+        add_result = subprocess.run(
+            ["git", "-C", str(repo_path), "add", reqs_file],
+            capture_output=True, text=True
+        )
+        if add_result.returncode == 0:
+            commit_result = subprocess.run(
+                ["git", "-C", str(repo_path), "commit", "-m",
+                 f"Mark requirements as WIP for {story.id}\n\n{story.title}"],
+                capture_output=True, text=True
+            )
+            if commit_result.returncode == 0:
+                print("  Committed REQS annotation")
+            elif "nothing to commit" in (commit_result.stdout + commit_result.stderr):
+                pass  # No changes to commit
+            else:
+                print(f"  Warning: commit failed: {commit_result.stderr.strip()}")
+    else:
+        print(f"  Warning: {msg}")
+
+    print(f"\nTo start implementation: wf run {story.id}")
     return 0
 
 
@@ -104,6 +152,41 @@ def cmd_plan_clone(args, ops_dir: Path, project_config: ProjectConfig):
 
     print(f"Created {clone.id}: {clone.title}")
     print(f"(cloned from {story_id})")
+    return 0
+
+
+def cmd_plan_resurrect(args, ops_dir: Path, project_config: ProjectConfig):
+    """Resurrect an abandoned story."""
+    project_dir = ops_dir / "projects" / project_config.name
+    story_id = args.resurrect_id
+
+    # Check if story exists in main directory first
+    existing = load_story(project_dir, story_id)
+    if existing:
+        print(f"Story {story_id} is not abandoned (status: {existing.status})")
+        return 1
+
+    story = resurrect_story(project_dir, story_id)
+    if not story:
+        print(f"Story not found: {story_id}")
+        print("  Check 'wf archive stories' for available abandoned stories")
+        return 1
+
+    print(f"Resurrected {story_id}: {story.title}")
+
+    # Re-annotate REQS
+    print("Re-annotating REQS.md...")
+    success, msg = annotate_reqs_for_story(story, project_config)
+    if success:
+        if len(msg) > 80:
+            truncated = msg[:80].rsplit(' ', 1)[0]
+            print(f"  {truncated}...")
+        else:
+            print(f"  {msg}")
+    else:
+        print(f"  Warning: {msg}")
+
+    print(f"\nTo edit: wf plan edit {story_id}")
     return 0
 
 
@@ -181,4 +264,97 @@ def cmd_plan_edit(args, ops_dir: Path, project_config: ProjectConfig, story_id: 
     print("Tip: Use -f to provide feedback inline:")
     print(f"  wf plan edit {story_id} -f \"your feedback here\"")
 
+    return 0
+
+
+def cmd_plan_add(args, ops_dir: Path, project_config: ProjectConfig):
+    """Add a micro-commit to an existing workstream's plan.md."""
+    ws_id = args.ws_id
+    title = getattr(args, 'title', None)
+    feedback = getattr(args, 'feedback', '') or ''
+
+    # If no title but feedback provided, use feedback as the instruction
+    if not title and feedback:
+        title = feedback
+        feedback = ''
+    elif not title:
+        print("ERROR: Provide a title or use -f for feedback")
+        print("  wf plan add <ws_id> \"instruction\"")
+        print("  wf plan add <ws_id> -f \"instruction\"")
+        return 1
+
+    description = feedback
+
+    # Load latest review suggestions if available
+    runs_dir = ops_dir / "runs"
+    if runs_dir.exists():
+        ws_runs = sorted(
+            [d for d in runs_dir.iterdir() if ws_id in d.name],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True
+        )
+        for run_dir in ws_runs:
+            review = load_review(run_dir)
+            if review and review.get('suggestions'):
+                suggestions = review['suggestions']
+                suggestions_text = "\n".join(f"- {s}" for s in suggestions)
+                if description:
+                    description = f"{description}\n\nReviewer suggestions:\n{suggestions_text}"
+                else:
+                    description = f"Reviewer suggestions:\n{suggestions_text}"
+                break
+
+    # Validate workstream exists
+    workstream_dir = ops_dir / "workstreams" / ws_id
+    if not workstream_dir.exists():
+        print(f"ERROR: Workstream '{ws_id}' not found")
+        return 1
+
+    plan_path = workstream_dir / "plan.md"
+
+    if not plan_path.exists():
+        print(f"ERROR: No plan.md found for workstream '{ws_id}'")
+        return 1
+
+    # Parse existing commits to find next number
+    commits = parse_plan(str(plan_path))
+    if not commits:
+        print(f"ERROR: No existing commits in plan.md - cannot determine prefix")
+        print("Use 'wf run' first to generate initial commits.")
+        return 1
+
+    # Extract WS prefix from existing commit ID (e.g., BUILD_TASKFILE from COMMIT-BUILD_TASKFILE-001)
+    first_id = commits[0].id  # e.g., "COMMIT-BUILD_TASKFILE-001"
+    parts = first_id.split('-')
+    if len(parts) < 3:
+        print(f"ERROR: Cannot parse commit ID format: {first_id}")
+        return 1
+
+    # Prefix is everything between COMMIT- and -NNN
+    ws_prefix = '-'.join(parts[1:-1])  # e.g., "BUILD_TASKFILE"
+
+    # Find max commit number
+    max_num = 0
+    for c in commits:
+        c_parts = c.id.split('-')
+        if len(c_parts) >= 3:
+            try:
+                num = int(c_parts[-1])
+                max_num = max(max_num, num)
+            except ValueError:
+                pass
+
+    next_num = max_num + 1
+    commit_id = f"COMMIT-{ws_prefix}-{next_num:03d}"
+
+    # Append the new commit
+    new_commit = {
+        'id': commit_id,
+        'title': title,
+        'description': description,
+    }
+    append_commits_to_plan(plan_path, [new_commit])
+
+    print(f"Added {commit_id}: {title}")
+    print(f"\nTo implement: wf run {ws_id}")
     return 0

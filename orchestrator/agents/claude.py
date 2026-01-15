@@ -5,14 +5,27 @@ Claude is used for the REVIEW stage - it reviews code changes.
 """
 
 import json
+import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.history import format_review_history
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FreeformResult:
+    """Result from a freeform (non-structured) Claude call."""
+    text: str
+    elapsed_seconds: float
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
 
 
 @dataclass
@@ -26,13 +39,17 @@ class ClaudeReview:
     required_changes: list[str] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
     notes: str = ""
+    # Stats tracking
+    elapsed_seconds: float = 0.0
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
 
 
 class ClaudeAgent:
     def __init__(self, timeout: int = 120):
         self.timeout = timeout
 
-    def review_freeform(self, prompt: str, cwd: Path) -> str:
+    def review_freeform(self, prompt: str, cwd: Path) -> FreeformResult:
         """
         Run Claude and return raw text response (no JSON parsing).
 
@@ -40,12 +57,14 @@ class ClaudeAgent:
         """
         cmd = [
             "claude",
+            "-p",
             "--output-format", "json",
         ]
 
         # Remove ANTHROPIC_API_KEY so Claude uses OAuth credentials instead
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
+        start_time = time.time()
         try:
             result = subprocess.run(
                 cmd,
@@ -57,18 +76,36 @@ class ClaudeAgent:
                 env=env,
             )
         except subprocess.TimeoutExpired:
-            return "ERROR: Review timed out"
+            elapsed = time.time() - start_time
+            return FreeformResult(text="ERROR: Review timed out", elapsed_seconds=elapsed)
+        elapsed = time.time() - start_time
 
         if result.returncode != 0:
-            return f"ERROR: Claude failed with exit code {result.returncode}\n{result.stderr}"
+            return FreeformResult(
+                text=f"ERROR: Claude failed with exit code {result.returncode}\n{result.stderr}",
+                elapsed_seconds=elapsed,
+            )
 
-        # Parse JSON wrapper to extract the text result
+        # Parse JSON wrapper to extract the text result and usage
         try:
-            import json
             wrapper = json.loads(result.stdout.strip())
-            return wrapper.get("result", result.stdout)
+            text_result = wrapper.get("result", result.stdout)
+            # Extract usage if available
+            input_tokens = None
+            output_tokens = None
+            if "usage" in wrapper:
+                input_tokens = wrapper["usage"].get("input_tokens")
+                output_tokens = wrapper["usage"].get("output_tokens")
+            else:
+                logger.debug("No usage info in Claude response (expected 'usage' key in JSON wrapper)")
+            return FreeformResult(
+                text=text_result,
+                elapsed_seconds=elapsed,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
         except json.JSONDecodeError:
-            return result.stdout
+            return FreeformResult(text=result.stdout, elapsed_seconds=elapsed)
 
     def build_contextual_review_prompt(self, system_description: str,
                                        tech_preferred: str, tech_acceptable: str, tech_avoid: str,
@@ -107,13 +144,14 @@ class ClaudeAgent:
         """
         cmd = [
             "claude",
-            "--print",
+            "--output-format", "json",
             "--dangerously-skip-permissions",
             "-p", prompt,
         ]
 
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
+        start_time = time.time()
         try:
             result = subprocess.run(
                 cmd,
@@ -124,13 +162,16 @@ class ClaudeAgent:
                 env=env,
             )
         except subprocess.TimeoutExpired:
+            elapsed = time.time() - start_time
             return ClaudeReview(
                 success=False,
                 exit_code=-1,
                 stdout="",
                 stderr="Timeout expired",
                 notes=f"Review timed out after {self.timeout}s. Contextual reviews may need longer timeout.",
+                elapsed_seconds=elapsed,
             )
+        elapsed = time.time() - start_time
 
         if log_file:
             log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -146,15 +187,25 @@ class ClaudeAgent:
             exit_code=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
+            elapsed_seconds=elapsed,
         )
 
         if result.returncode != 0:
             return review
 
-        # Parse JSON from Claude's final response
+        # Parse JSON wrapper from --output-format json, then extract review from result
         try:
-            response_text = result.stdout.strip()
+            wrapper = json.loads(result.stdout.strip())
+            response_text = wrapper.get("result", result.stdout)
 
+            # Extract usage stats from wrapper
+            if "usage" in wrapper:
+                review.input_tokens = wrapper["usage"].get("input_tokens")
+                review.output_tokens = wrapper["usage"].get("output_tokens")
+            else:
+                logger.debug("No usage info in Claude response (expected 'usage' key in JSON wrapper)")
+
+            # Now parse the review JSON from the result text
             # Find and extract JSON from markdown code blocks
             # Claude sometimes adds prose before the code block
             if "```" in response_text:

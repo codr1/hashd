@@ -28,6 +28,9 @@ from orchestrator.commands import plan as cmd_plan_module
 from orchestrator.commands import open as cmd_open_module
 from orchestrator.commands import log as cmd_log_module
 from orchestrator.commands import watch as cmd_watch_module
+from orchestrator.commands import diff as cmd_diff_module
+from orchestrator.commands import project as cmd_project_module
+from orchestrator.commands import docs as cmd_docs_module
 
 
 def get_ops_dir() -> Path:
@@ -182,6 +185,16 @@ def cmd_archive(args):
     return cmd_archive_module.cmd_archive(args, ops_dir, project_config)
 
 
+def cmd_archive_work(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_archive_module.cmd_archive_work(args, ops_dir, project_config)
+
+
+def cmd_archive_stories(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_archive_module.cmd_archive_stories(args, ops_dir, project_config)
+
+
 def cmd_archive_delete(args):
     project_config, ops_dir = get_project_config(args)
     return cmd_archive_module.cmd_archive_delete(args, ops_dir, project_config)
@@ -221,6 +234,11 @@ def cmd_show(args):
 
     # Otherwise show workstream
     args.id = resolve_workstream_id(args, ops_dir)
+
+    # Handle --stats flag
+    if getattr(args, 'stats', False):
+        return cmd_show_module.cmd_show_stats(args, ops_dir, project_config)
+
     return cmd_show_module.cmd_show(args, ops_dir, project_config)
 
 
@@ -238,7 +256,7 @@ def cmd_review(args):
 
 def cmd_watch(args):
     project_config, ops_dir = get_project_config(args)
-    args.id = resolve_workstream_id(args, ops_dir)
+    # Don't resolve - None is valid for dashboard mode
     return cmd_watch_module.cmd_watch(args, ops_dir, project_config)
 
 
@@ -262,6 +280,35 @@ def cmd_clarify_ask(args):
     return cmd_clarify_module.cmd_clarify_ask(args, ops_dir, project_config)
 
 
+def cmd_diff(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_diff_module.cmd_diff(args, ops_dir, project_config)
+
+
+def cmd_project_show(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_project_module.cmd_project_show(args, ops_dir, project_config)
+
+
+def cmd_docs(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_docs_module.cmd_docs(args, ops_dir, project_config)
+
+
+def cmd_docs_show(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_docs_module.cmd_docs_show(args, ops_dir, project_config)
+
+
+def cmd_docs_diff(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_docs_module.cmd_docs_diff(args, ops_dir, project_config)
+
+
 def main():
     # Handle --completion before parsing subcommands
     if len(sys.argv) == 2 and sys.argv[1] == '--completion':
@@ -283,24 +330,36 @@ def main():
 
     # wf plan
     p_plan = subparsers.add_parser('plan', help='Plan stories from REQS.md or ad-hoc')
-    p_plan.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, story_id=None)
+    p_plan.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, resurrect=False, story_id=None)
     plan_sub = p_plan.add_subparsers(dest='plan_cmd')
 
     # wf plan new "title"
     p_plan_new = plan_sub.add_parser('new', help='Create ad-hoc story')
     p_plan_new.add_argument('title', nargs='?', help='Story title hint')
-    p_plan_new.set_defaults(func=cmd_plan, new=True, clone=False, edit=False)
+    p_plan_new.set_defaults(func=cmd_plan, new=True, clone=False, edit=False, resurrect=False)
 
     # wf plan clone STORY-xxx
     p_plan_clone = plan_sub.add_parser('clone', help='Clone a locked story')
     p_plan_clone.add_argument('clone_id', help='Story ID to clone (e.g., STORY-0001)')
-    p_plan_clone.set_defaults(func=cmd_plan, new=False, clone=True, edit=False)
+    p_plan_clone.set_defaults(func=cmd_plan, new=False, clone=True, edit=False, resurrect=False)
 
     # wf plan edit STORY-xxx [-f "feedback"]
     p_plan_edit = plan_sub.add_parser('edit', help='Edit an existing story')
     p_plan_edit.add_argument('story_id', help='Story ID to edit (e.g., STORY-0001)')
     p_plan_edit.add_argument('-f', '--feedback', help='Feedback to refine the story')
-    p_plan_edit.set_defaults(func=cmd_plan, new=False, clone=False, edit=True)
+    p_plan_edit.set_defaults(func=cmd_plan, new=False, clone=False, edit=True, resurrect=False)
+
+    # wf plan add <ws_id> [title] [-f "feedback"]
+    p_plan_add = plan_sub.add_parser('add', help='Add micro-commit to existing workstream')
+    p_plan_add.add_argument('ws_id', help='Workstream ID')
+    p_plan_add.add_argument('title', nargs='?', help='Commit title (optional if -f provided)')
+    p_plan_add.add_argument('-f', '--feedback', help='Feedback/description for the commit', default='')
+    p_plan_add.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, add=True, resurrect=False)
+
+    # wf plan resurrect STORY-xxx
+    p_plan_resurrect = plan_sub.add_parser('resurrect', help='Resurrect abandoned story')
+    p_plan_resurrect.add_argument('resurrect_id', help='Story ID to resurrect')
+    p_plan_resurrect.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, add=False, resurrect=True)
 
     # wf list
     p_list = subparsers.add_parser('list', help='List stories and workstreams')
@@ -320,7 +379,7 @@ def main():
     # wf show
     p_show = subparsers.add_parser('show', help='Show story or workstream details')
     p_show.add_argument('id', nargs='?', help='Story ID (STORY-xxxx) or workstream ID')
-    p_show.add_argument('--brief', '-b', action='store_true', help='Show only diff stats, not full diff')
+    p_show.add_argument('--stats', action='store_true', help='Show agent stats for workstream')
     p_show.set_defaults(func=cmd_show)
 
     # wf log
@@ -356,12 +415,16 @@ def main():
     p_run.add_argument('--loop', action='store_true', help='Run until blocked')
     p_run.add_argument('--verbose', '-v', action='store_true', help='Show implement/review exchange')
     p_run.add_argument('--yes', '-y', action='store_true', help='Skip confirmation prompts')
+    run_mode = p_run.add_mutually_exclusive_group()
+    run_mode.add_argument('--gatekeeper', action='store_true', help='Auto-approve if tests and review pass')
+    run_mode.add_argument('--supervised', action='store_true', help='Always pause for human review')
     p_run.set_defaults(func=cmd_run)
 
     # wf close
     p_close = subparsers.add_parser('close', help='Close story or workstream (abandon)')
     p_close.add_argument('id', nargs='?', help='Story ID (STORY-xxxx) or workstream ID')
     p_close.add_argument('--force', action='store_true', help='Close even with uncommitted changes')
+    p_close.add_argument('--keep-branch', action='store_true', help='Keep git branch for potential resurrection')
     p_close.set_defaults(func=cmd_close)
 
     # wf merge
@@ -371,9 +434,17 @@ def main():
     p_merge.set_defaults(func=cmd_merge)
 
     # wf archive
-    p_archive = subparsers.add_parser('archive', help='List archived workstreams')
+    p_archive = subparsers.add_parser('archive', help='View archived work and stories')
     p_archive.set_defaults(func=cmd_archive)
     archive_sub = p_archive.add_subparsers(dest='archive_cmd')
+
+    # wf archive work
+    p_archive_work = archive_sub.add_parser('work', help='List archived workstreams')
+    p_archive_work.set_defaults(func=cmd_archive_work)
+
+    # wf archive stories
+    p_archive_stories = archive_sub.add_parser('stories', help='List archived stories')
+    p_archive_stories.set_defaults(func=cmd_archive_stories)
 
     # wf archive delete
     p_archive_delete = archive_sub.add_parser('delete', help='Permanently delete archived workstream')
@@ -431,6 +502,41 @@ def main():
     p_clarify_ask.add_argument('--context', '-c', help='Additional context')
     p_clarify_ask.add_argument('--urgency', '-u', choices=['blocking', 'non-blocking'], default='blocking')
     p_clarify_ask.set_defaults(func=cmd_clarify_ask)
+
+    # wf diff
+    p_diff = subparsers.add_parser('diff', help='Show workstream diff')
+    p_diff.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_diff.add_argument('--stat', action='store_true', help='Show diffstat only')
+    diff_mode = p_diff.add_mutually_exclusive_group()
+    diff_mode.add_argument('--staged', action='store_true', help='Show staged changes only')
+    diff_mode.add_argument('--branch', action='store_true', help='Show full branch diff from base')
+    p_diff.add_argument('--no-color', action='store_true', help='Disable colors')
+    p_diff.set_defaults(func=cmd_diff)
+
+    # wf project
+    p_project = subparsers.add_parser('project', help='Project management')
+    p_project.set_defaults(func=cmd_project_show)
+    project_sub = p_project.add_subparsers(dest='project_cmd')
+
+    # wf project show
+    p_project_show = project_sub.add_parser('show', help='Show project configuration')
+    p_project_show.set_defaults(func=cmd_project_show)
+
+    # wf docs
+    p_docs = subparsers.add_parser('docs', help='Update SPEC.md from workstream')
+    p_docs.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_docs.set_defaults(func=cmd_docs)
+    docs_sub = p_docs.add_subparsers(dest='docs_cmd')
+
+    # wf docs show
+    p_docs_show = docs_sub.add_parser('show', help='Preview SPEC update without writing')
+    p_docs_show.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_docs_show.set_defaults(func=cmd_docs_show)
+
+    # wf docs diff
+    p_docs_diff = docs_sub.add_parser('diff', help='Show diff between current and proposed SPEC')
+    p_docs_diff.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_docs_diff.set_defaults(func=cmd_docs_diff)
 
     args = parser.parse_args()
 

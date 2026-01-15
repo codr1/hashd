@@ -33,9 +33,11 @@ def generate_story_id(project_dir: Path) -> str:
     """Generate next story ID for project."""
     stories_dir = get_stories_dir(project_dir)
 
-    existing = []
-    if stories_dir.exists():
-        existing = [f.stem for f in stories_dir.glob("STORY-*.json")]
+    if not stories_dir.exists():
+        return "STORY-0001"
+
+    # Find all stories recursively (includes _implemented/, _abandoned/, etc.)
+    existing = [f.stem for f in stories_dir.glob("**/STORY-*.json")]
 
     if not existing:
         return "STORY-0001"
@@ -248,6 +250,99 @@ def mark_story_implemented(project_dir: Path, story_id: str) -> Optional[Story]:
         "status": "implemented",
         "implemented_at": datetime.now().isoformat(),
     })
+
+
+def find_story_by_workstream(project_dir: Path, workstream_id: str) -> Optional[Story]:
+    """Find a story by its linked workstream ID.
+
+    Args:
+        project_dir: Project directory
+        workstream_id: Workstream ID to search for
+
+    Returns:
+        Story if found, None otherwise
+    """
+    for story in list_stories(project_dir):
+        if story.workstream == workstream_id:
+            return story
+    return None
+
+
+def archive_story(project_dir: Path, story_id: str, subdir: str = "_implemented") -> bool:
+    """Archive a story to a subdirectory.
+
+    Args:
+        project_dir: Project directory
+        story_id: Story ID to archive
+        subdir: Subdirectory name (default: "_implemented", also: "_abandoned")
+
+    Returns:
+        True if archived, False otherwise
+    """
+    stories_dir = get_stories_dir(project_dir)
+    archive_dir = stories_dir / subdir
+
+    json_path = stories_dir / f"{story_id}.json"
+    md_path = stories_dir / f"{story_id}.md"
+
+    if not json_path.exists():
+        return False
+
+    archive_dir.mkdir(exist_ok=True)
+
+    # Move JSON file
+    json_path.rename(archive_dir / json_path.name)
+
+    # Move markdown file if exists
+    if md_path.exists():
+        md_path.rename(archive_dir / md_path.name)
+
+    return True
+
+
+def resurrect_story(project_dir: Path, story_id: str) -> Optional[Story]:
+    """Move story from _abandoned/ back to main stories/, set status to draft.
+
+    Args:
+        project_dir: Project directory
+        story_id: Story ID to resurrect
+
+    Returns:
+        Story if resurrected, None if not found in _abandoned/
+    """
+    stories_dir = get_stories_dir(project_dir)
+    abandoned_dir = stories_dir / "_abandoned"
+
+    json_src = abandoned_dir / f"{story_id}.json"
+    md_src = abandoned_dir / f"{story_id}.md"
+
+    if not json_src.exists():
+        return None
+
+    json_dest = stories_dir / json_src.name
+    md_dest = stories_dir / md_src.name
+
+    # Check if destination already exists
+    if json_dest.exists():
+        logger.warning(f"Cannot resurrect {story_id}: already exists in stories/")
+        return None
+
+    # Move files back
+    try:
+        json_src.rename(json_dest)
+    except OSError as e:
+        logger.warning(f"Failed to move {json_src}: {e}")
+        return None
+
+    if md_src.exists():
+        try:
+            md_src.rename(md_dest)
+        except OSError as e:
+            logger.warning(f"Failed to move markdown file: {e}")
+            # JSON already moved, continue anyway
+
+    # Update status to draft
+    return update_story(project_dir, story_id, {"status": "draft"})
 
 
 def clone_story(project_dir: Path, story_id: str) -> Optional[Story]:
