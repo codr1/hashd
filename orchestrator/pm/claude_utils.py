@@ -4,6 +4,7 @@ Shared Claude invocation utilities for PM module.
 
 import json
 import os
+import re
 import subprocess
 
 
@@ -37,7 +38,10 @@ def run_claude(prompt: str, timeout: int = 300) -> tuple[bool, str]:
         return False, "Claude CLI not found. Install: https://claude.ai/claude-code"
 
     if result.returncode != 0:
-        return False, f"Claude failed (exit {result.returncode}): {result.stderr}"
+        error_msg = result.stderr.strip() or result.stdout.strip()
+        if not error_msg:
+            error_msg = "(no output - check 'claude --version' and auth status)"
+        return False, f"Claude failed (exit {result.returncode}): {error_msg}"
 
     # Parse JSON wrapper
     try:
@@ -60,3 +64,46 @@ def strip_markdown_fences(text: str) -> str:
             lines = lines[:-1]
         text = "\n".join(lines)
     return text
+
+
+def extract_json_with_preamble(text: str) -> tuple[str, str]:
+    """Extract JSON from text that may have explanation before/after it.
+
+    Returns (preamble, json_str) where preamble is the explanatory text
+    and json_str is the extracted JSON block.
+
+    If no JSON found, returns (text, "").
+    """
+    text = text.strip()
+
+    # Try to find JSON in markdown code fence first
+    fence_match = re.search(r'```(?:json)?\s*\n(\{[\s\S]*?\})\s*\n```', text)
+    if fence_match:
+        json_str = fence_match.group(1)
+        # Everything before the fence is preamble
+        preamble = text[:fence_match.start()].strip()
+        return preamble, json_str
+
+    # Try to find bare JSON object (starts with { on its own line)
+    # Look for a line that starts with { and find the matching }
+    lines = text.split('\n')
+    json_start = None
+    brace_count = 0
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if json_start is None and stripped.startswith('{'):
+            json_start = i
+            brace_count = 0
+
+        if json_start is not None:
+            brace_count += stripped.count('{') - stripped.count('}')
+            if brace_count == 0:
+                # Found complete JSON
+                json_lines = lines[json_start:i+1]
+                json_str = '\n'.join(json_lines)
+                preamble = '\n'.join(lines[:json_start]).strip()
+                return preamble, json_str
+
+    # No JSON found
+    return text, ""

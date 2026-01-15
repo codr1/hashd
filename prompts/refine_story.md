@@ -3,7 +3,6 @@ Template: refine_story.md
 Purpose: Refine a chunk into a proper story with acceptance criteria
 Variables:
   - chunk_name: Name of the chunk to refine
-  - feedback_section: Optional detailed requirements from user
   - existing_ws_ids_section: List of existing workstream IDs to avoid
   - reqs_section: Requirements from REQS.md
   - spec_section: Current SPEC.md content
@@ -11,9 +10,6 @@ Variables:
 Note: {{ and }} are escaped braces for literal JSON output
 -->
 Refine the chunk '{chunk_name}' into a proper story.
-{feedback_section}
-
-You have access to the codebase. Before creating the story, use Read/Grep/Glob tools to understand what already exists. This helps you write accurate acceptance criteria and identify real dependencies.
 
 Create a well-structured story with:
 - A clear title
@@ -27,7 +23,7 @@ Create a well-structured story with:
 
 {existing_ws_ids_section}
 
-After exploring the codebase, respond with valid JSON matching this format:
+Respond with ONLY valid JSON (no markdown, no explanation).
 
 ## Required Response Format
 {{

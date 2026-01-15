@@ -7,7 +7,7 @@ Defines the stage pipeline and error handling.
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
+from typing import Callable, Optional
 
 from orchestrator.runner.context import RunContext
 
@@ -25,6 +25,7 @@ class StageError(Exception):
     stage: str
     message: str
     exit_code: int
+    details: Optional[dict] = None  # Structured details (e.g., {"type": "test_failure", "output": "..."})
 
     def __str__(self):
         return f"[{self.stage}] {self.message}"

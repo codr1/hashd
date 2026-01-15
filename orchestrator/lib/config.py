@@ -17,6 +17,10 @@ class ProjectConfig:
     repo_path: Path
     default_branch: str
     reqs_path: str  # Relative to repo_path, e.g., "REQS.md"
+    description: str  # Brief system description for reviewer context
+    tech_preferred: str  # Preferred technologies - use by default
+    tech_acceptable: str  # Acceptable - okay when needed, prefer alternatives
+    tech_avoid: str  # Avoid - don't introduce unless extraordinary reason
 
 
 @dataclass
@@ -24,9 +28,12 @@ class ProjectProfile:
     """Build/test configuration from project_profile.env"""
     makefile_path: str
     make_target_test: str
+    merge_gate_test_target: str
     implement_timeout: int
     review_timeout: int
     test_timeout: int
+    breakdown_timeout: int
+    supervised_mode: bool
 
 
 @dataclass
@@ -50,18 +57,26 @@ def load_project_config(project_dir: Path) -> ProjectConfig:
         repo_path=Path(env["REPO_PATH"]),
         default_branch=env.get("DEFAULT_BRANCH", "main"),
         reqs_path=env.get("REQS_PATH", "REQS.md"),
+        description=env.get("PROJECT_DESCRIPTION", ""),
+        tech_preferred=env.get("TECH_PREFERRED", ""),
+        tech_acceptable=env.get("TECH_ACCEPTABLE", ""),
+        tech_avoid=env.get("TECH_AVOID", ""),
     )
 
 
 def load_project_profile(project_dir: Path) -> ProjectProfile:
     """Load project_profile.env and return ProjectProfile."""
     env = envparse.load_env(str(project_dir / "project_profile.env"))
+    make_target_test = env.get("MAKE_TARGET_TEST", "test")
     return ProjectProfile(
         makefile_path=env.get("MAKEFILE_PATH", "Makefile"),
-        make_target_test=env.get("MAKE_TARGET_TEST", "test"),
+        make_target_test=make_target_test,
+        merge_gate_test_target=env.get("MAKE_TARGET_MERGE_GATE_TEST", make_target_test),
         implement_timeout=int(env.get("IMPLEMENT_TIMEOUT", "600")),
-        review_timeout=int(env.get("REVIEW_TIMEOUT", "120")),
+        review_timeout=int(env.get("REVIEW_TIMEOUT", "300")),  # Contextual reviews need more time
         test_timeout=int(env.get("TEST_TIMEOUT", "300")),
+        breakdown_timeout=int(env.get("BREAKDOWN_TIMEOUT", "180")),
+        supervised_mode=env.get("SUPERVISED_MODE", "false").lower() == "true",
     )
 
 

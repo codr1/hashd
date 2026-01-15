@@ -49,9 +49,12 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         profile = ProjectProfile(
             makefile_path="Makefile",
             make_target_test="test",
+            merge_gate_test_target="test",
             implement_timeout=600,
-            review_timeout=120,
+            review_timeout=300,
             test_timeout=300,
+            breakdown_timeout=180,
+            supervised_mode=False,
         )
 
     # If already merged but not archived, just archive

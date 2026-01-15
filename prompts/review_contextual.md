@@ -31,7 +31,7 @@ You have full access to the codebase. Examine the changes, read files for contex
 ## Commit
 Title: {commit_title}
 Description: {commit_description}
-{branch_commits_section}
+
 {review_history_section}
 
 ## Review Criteria
@@ -44,13 +44,11 @@ Description: {commit_description}
 - Any dead code or unnecessary duplication?
 
 ## Required Response Format
-When done, output a JSON object with your review:
+CRITICAL: When done, output ONLY raw JSON. No markdown fences. No prose. Just the JSON object:
 
 {{
-  "version": 2,
+  "version": 1,
   "decision": "approve" | "request_changes",
-  "confidence": 0.85,
-  "concerns": ["concern 1 if confidence < 0.9"],
   "blockers": [
     {{"file": "path/to/file.py", "line": 42, "issue": "description", "severity": "critical|major|minor"}}
   ],
@@ -67,15 +65,4 @@ Rules:
 - suggestions: improvements that would make the code more maintainable
 - If you asked for a change in a previous review and it was addressed, don't re-flag it
 
-Confidence scoring (0.0 to 1.0):
-- 0.9-1.0: Highly confident - code is solid, well-tested patterns, clear intent
-- 0.7-0.9: Confident - looks good but some uncertainty (unfamiliar area, complex logic)
-- 0.5-0.7: Uncertain - code works but lacks context, may miss edge cases
-- Below 0.5: Low confidence - significant uncertainty, recommend human review
-
-If confidence < 0.9, explain why in the "concerns" array. Examples:
-- "Modifies authentication flow but no tests added"
-- "Complex state machine - may have missed edge cases"
-- "Unfamiliar with this part of codebase"
-
-Your final output must include this JSON object.
+Your final output must be valid JSON and nothing else. No preamble. No commentary after.

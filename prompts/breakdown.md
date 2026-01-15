@@ -9,11 +9,6 @@ Note: {{ and }} are escaped braces for literal JSON output
 -->
 Analyze this story plan and break it down into 2-5 micro-commits.
 
-You have access to the codebase. BEFORE generating commits:
-1. Use Glob/Read to identify the project's language and structure (Go, Python, JS, etc.)
-2. Check existing code patterns, file locations, and naming conventions
-3. Reference actual file paths in your commit descriptions
-
 IMPORTANT: Your response must be ONLY raw JSON. No markdown fences. No prose. Just the JSON array starting with [ and ending with ].
 
 ## Plan Content

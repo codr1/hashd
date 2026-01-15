@@ -32,8 +32,20 @@ def parse_plan(filepath: str) -> list[MicroCommit]:
     commits = []
     current = None
     current_lines = []
+    in_comment = False
 
     for lineno, line in enumerate(lines, 1):
+        # Track HTML comment blocks
+        if '<!--' in line:
+            in_comment = True
+        if '-->' in line:
+            in_comment = False
+            continue
+
+        # Skip lines inside HTML comments
+        if in_comment:
+            continue
+
         heading_match = HEADING_RE.match(line)
 
         if heading_match:

@@ -1,5 +1,5 @@
 """
-wf close - Archive workstream without merging (abandon path).
+wf close - Close story or workstream (abandon path).
 """
 
 import shutil
@@ -13,6 +13,7 @@ from orchestrator.lib.config import (
     get_current_workstream,
     clear_current_workstream,
 )
+from orchestrator.pm.stories import load_story, update_story, list_stories, unlock_story
 
 
 def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
@@ -79,9 +80,50 @@ def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     if get_current_workstream(ops_dir) == ws_id:
         clear_current_workstream(ops_dir)
 
+    # Unlock any linked story
+    project_dir = ops_dir / "projects" / project_config.name
+    for story in list_stories(project_dir):
+        if story.workstream == ws_id and story.status == "implementing":
+            unlocked = unlock_story(project_dir, story.id)
+            if unlocked:
+                print(f"Unlocked story: {story.id}")
+
     print(f"Workstream '{ws_id}' closed (not merged).")
     print(f"  Branch '{ws.branch}' preserved for potential resurrection")
-    print(f"  Use 'wf open {ws_id}' to resurrect (future)")
+    print(f"  Use 'wf open {ws_id}' to resurrect")
     print(f"  Use 'wf archive delete {ws_id} --confirm' to permanently delete")
 
+    return 0
+
+
+def cmd_close_story(args, ops_dir: Path, project_config: ProjectConfig, story_id: str) -> int:
+    """Close (abandon) a story."""
+    project_dir = ops_dir / "projects" / project_config.name
+
+    story = load_story(project_dir, story_id)
+    if not story:
+        print(f"Story not found: {story_id}")
+        return 1
+
+    # Check if story has active workstream
+    if story.status == "implementing" and story.workstream:
+        print(f"Story has active workstream: {story.workstream}")
+        print(f"Close the workstream first:")
+        print(f"  wf close {story.workstream}")
+        return 1
+
+    if story.status == "implemented":
+        print(f"Story is already implemented. Cannot close.")
+        return 1
+
+    # Move story to abandoned status
+    updated = update_story(project_dir, story_id, {
+        "status": "abandoned",
+    })
+
+    if not updated:
+        print(f"Failed to close story {story_id}")
+        return 1
+
+    print(f"Closed story: {story_id}")
     return 0

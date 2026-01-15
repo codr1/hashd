@@ -203,75 +203,49 @@ These flow to both implementer and reviewer prompts to maintain stack consistenc
 
 ### 7.2 project_profile.md and project_profile.env
 
-AOS must support a user interview step that writes these. See section 7.3 for `wf project add` and `wf interview`.
+AOS must support a user interview step that writes these.
 
-project_profile.env schema:
+project_profile.env schema (minimum):
 
-```env
-# Command-based config (recommended)
-TEST_CMD="make test"              # Full test command (e.g., "npm test", "pytest")
-BUILD_CMD=""                      # Optional build command before tests
-MERGE_GATE_TEST_CMD="make test"   # Full test suite at merge gate
-
-# Merge settings
-MERGE_MODE=local                  # "local" or "github_pr"
-SUPERVISED_MODE=false             # Pause for human review after each commit
-
-# Timeouts (seconds)
-IMPLEMENT_TIMEOUT=1200
-REVIEW_TIMEOUT=900
-TEST_TIMEOUT=300
-BREAKDOWN_TIMEOUT=180
-```
-
-**Legacy config** (still supported for backward compatibility):
-```env
-BUILD_RUNNER=make
+REPO_PATH=...
+DEFAULT_BRANCH=main
+REQ_RAW_PATHS=requirements,docs,notes
+REQ_CLEAN_PATH=requirements/clean
+REQ_STORIES_PATH=requirements/stories
+REQ_ADR_PATH=adr
 MAKEFILE_PATH=Makefile
-TEST_TARGET=test
-MERGE_GATE_TEST_TARGET=test
-```
+MAKE_TARGET_UNIT=test-unit
+MAKE_TARGET_INTEGRATION=test-integration
+MAKE_TARGET_SMOKE=test-smoke
+MAKE_TARGET_E2E=test-e2e
+STACK=mixed
+TEST_RUNNERS=jest,playwright
+DOCKER_ALLOWED=yes
+HITL_MODE=strict
+COMMITSIZE=<=200 LOC, <=10 files
+REVIEW_STRICTNESS=blocker on missing tests + doc/REQ mismatch
+BREAKDOWN_TIMEOUT=180
+SUPERVISED_MODE=false
 
-**Merge Mode:**
-- `MERGE_MODE=local` (default): Direct git merge to main
-- `MERGE_MODE=github_pr`: Create GitHub PR, merge via `gh pr merge`
+7.3 Interview requirements (wf interview)
 
-7.3 Project Registration and Interview
+wf interview must:
 
-**Commands:**
-- `wf project add <path>` - Register project and run interactive interview
-- `wf project add <path> --no-interview` - Quick register without interview
-- `wf project list` - List registered projects
-- `wf project use <name>` - Set active project
-- `wf interview` - Update existing project configuration
+    ask the user a small set of questions (paths, Make targets, runner hints)
 
-**Auto-detection:**
-The interview auto-detects build systems and suggests test commands:
-| File Found | Suggested TEST_CMD |
-|------------|-------------------|
-| Makefile with `test:` target | `make test` |
-| package.json with `test` script | `npm test` |
-| pyproject.toml | `pytest` |
-| Taskfile.yml | `task test` |
-| Cargo.toml | `cargo test` |
-| go.mod | `go test ./...` |
+    write/update:
 
-**Interview prompts:**
-- Project name (detected from git remote or directory)
-- Default branch (detected from git)
-- Test command (detected or manual)
-- Build command (optional)
-- Merge gate test command (defaults to test command)
-- Requirements file path
-- Merge mode (local or github_pr)
-- Supervised mode (pause after each commit)
+        project_profile.md
 
-**Output:**
-Writes `projects/<name>/project.env` and `projects/<name>/project_profile.env`
+        project_profile.env
 
-**Constraints:**
-- Must NOT scan or print secrets
-- Must NOT modify product repo
+It must NOT:
+
+    scan secrets
+
+    print secrets
+
+    modify product repo
 
 8) Workstream: data model and files
 8.1 Workstream directory
@@ -372,9 +346,8 @@ wf list
 wf show <id>
 wf approve <id>
 wf merge <ws>
-wf docs [ws]
 wf close <id>
-wf watch [ws]
+wf watch <ws>
 ```
 
 ### 10.3 Command Details
@@ -385,7 +358,6 @@ wf watch [ws]
 - `wf plan new "title"` - Ad-hoc with title hint
 - `wf plan STORY-xxx` - Edit existing story (if unlocked)
 - `wf plan clone STORY-xxx` - Copy locked story to new editable story
-- `wf plan add <ws_id> "title" [-d "desc"]` - Add micro-commit to existing workstream
 
 **wf run** - Execute workstream
 - `wf run theme_crud` - Run existing workstream
@@ -410,18 +382,9 @@ wf watch [ws]
 
 **wf merge** - Complete workstream
 - `wf merge theme_crud` - Merge branch to main, archive workstream
-- Auto-runs SPEC.md update and REQS.md cleanup before merge
-- Behavior depends on `MERGE_MODE` setting (see 10.6.2)
-
-**wf docs** - Update SPEC.md from workstream
-- `wf docs theme_crud` - Generate and write SPEC update (usually auto-run by merge)
-- `wf docs show theme_crud` - Preview SPEC update without writing
-- `wf docs diff theme_crud` - Show diff between current and proposed SPEC
-- Uses story + micro-commits + code diff as source of truth
 
 **wf watch** - Interactive TUI
-- `wf watch` - Dashboard showing all active workstreams (see Appendix I)
-- `wf watch theme_crud` - Monitor single workstream in real-time
+- `wf watch theme_crud` - Monitor workstream in real-time (see Appendix I)
 
 ### 10.4 Supporting Commands
 
@@ -434,8 +397,7 @@ wf review <id>              # Run final AI review
 wf reject <id> [-f "..."]   # Iterate on current changes
 wf reject <id> --reset      # Discard changes and start fresh
 wf open <id>                # Resurrect archived workstream
-wf archive work             # List archived workstreams
-wf archive stories          # List archived stories
+wf archive                  # List archived workstreams
 wf clarify <subcommand>     # Manage clarifications
 ```
 
@@ -461,75 +423,6 @@ draft -> accepted -> implementing -> implemented
   - `wf close <workstream>` - Cancel implementation, unlocks story
 - `wf close <workstream>` unlocks the linked story (returns to `accepted`)
 - `wf merge <workstream>` marks story as `implemented`
-
-### 10.6.1 Requirements Lifecycle
-
-Requirements flow from REQS.md through stories into SPEC.md:
-
-```
-REQS.md (shrinks) -> Stories -> SPEC.md (grows)
-```
-
-**On story creation (`wf plan refine`):**
-- Claude annotates REQS.md with WIP markers around consumed text
-- Format: `<!-- BEGIN WIP: STORY-xxxx --> ... <!-- END WIP: STORY-xxxx -->`
-
-**On merge (`wf merge`):**
-1. SPEC.md is updated with documentation generated from:
-   - Story details (problem, acceptance criteria)
-   - Micro-commit plan and descriptions
-   - Actual code diff (what was implemented)
-2. WIP-marked sections are deleted from REQS.md
-3. Both changes committed to branch before merge
-
-**Manual SPEC preview (`wf docs`):**
-- `wf docs show <ws>` - Preview without writing
-- `wf docs diff <ws>` - Show diff against current SPEC
-
-### 10.6.2 Merge Modes
-
-Projects can configure how merging works via `MERGE_MODE` in `project_profile.env`.
-
-**`MERGE_MODE=local`** (default):
-- Current behavior
-- `wf merge` does `git merge --no-ff` directly to main
-- No external review beyond Claude's final review
-
-**`MERGE_MODE=github_pr`**:
-- PR-based workflow for GitHub-hosted projects
-- Requires `gh` CLI to be configured
-
-**GitHub PR Flow:**
-```
-final_review passes → human approves → PR created → external review → wf merge
-                                            ↓
-                                     changes requested
-                                            ↓
-                                     (same as reject → back to active)
-```
-
-1. After final review approval, PR is created automatically
-2. Branch pushed to remote, `gh pr create` invoked
-3. New status: `pr_open` - waiting for external approval
-4. External reviewers (CodeRabbit, humans) review on GitHub
-5. CI checks run
-6. If changes requested: use `wf pr feedback` to view, then `wf reject -f "..."` to fix
-7. When PR approved + CI green: `wf merge` invokes `gh pr merge`
-
-**New workstream statuses:**
-- `pr_open`: PR created, awaiting external review
-- `pr_approved`: External review passed, ready for merge
-
-**`wf watch` integration:**
-- Detail view shows PR URL, status, CI check results
-- `r` key rejects: opens modal pre-filled with PR feedback for editing
-- `a` key merges when PR is approved (reuses approve action)
-- `o` key opens PR in browser
-
-**Error handling:**
-- If `gh` CLI not configured: error with setup instructions
-- If PR creation fails: error with details, status unchanged (retry with `wf merge`)
-- If merge fails: error with conflict details
 
 ### 10.7 Shell Completion
 
@@ -1208,25 +1101,20 @@ AOS supports configurable autonomy levels per project, controlling how much huma
 
 | Level | Name | Behavior | Status |
 |-------|------|----------|--------|
-| `supervised` | Supervised | Human approves each micro-commit after AI review. Human triggers merge with `--confirm`. | **implemented** |
-| `gatekeeper` | Gatekeeper | Auto-continue commits if AI confidence >= threshold (default 70%). Human approves at merge. | **implemented** |
-| `autonomous` | Autonomous | Auto-continue commits >= 70%. Auto-merge locally (GitHub PR mode still requires PR approval). | **implemented** |
+| `supervised` | Supervised | Human approves each micro-commit after AI review. Human triggers merge. | **current default** |
+| `gatekeeper` | Gatekeeper | AI runs all micro-commits autonomously. Final branch review runs. Human approves only at merge. | planned |
+| `autonomous` | Autonomous | AI runs to completion. Auto-merge if escalation rules pass. Human notified on completion or escalation. | future |
 
-### 19.2 Confidence-based escalation
+### 19.2 Escalation rules
 
-AI reviews include a confidence score (0.0-1.0). When confidence falls below the threshold, the system escalates to human review.
+Escalation rules determine when autonomous/gatekeeper modes should block and notify a human instead of proceeding.
 
-**Confidence scoring:**
-- 0.9-1.0: Highly confident - code is solid, well-tested patterns
-- 0.7-0.9: Confident - looks good but some uncertainty
-- 0.5-0.7: Uncertain - may miss edge cases
-- Below 0.5: Low confidence - recommend human review
-
-**Escalation triggers:**
-- Test failures (always)
-- Review rejects changes (always)
-- Confidence below threshold (gatekeeper/autonomous modes)
-- Sensitive paths touched (raises required threshold)
+**Default escalation triggers:**
+- Test failures
+- Final review requests changes (AI not confident)
+- Unresolved merge conflicts
+- Lines changed > threshold
+- Sensitive paths modified (auth, security, env files)
 
 ### 19.3 Escalation config schema
 
@@ -1234,26 +1122,18 @@ Config file: `projects/<name>/escalation.json`
 
 ```json
 {
-  "autonomy": "gatekeeper",
-  "commit_confidence_threshold": 0.7,
-  "merge_confidence_threshold": 0.8,
-  "sensitive_paths": {
-    "patterns": ["**/auth/**", "**/*.env*", "**/security/**", "**/migrations/**"],
-    "threshold_boost": 0.15
+  "autonomy": "supervised",
+  "block_on": {
+    "test_failure": true,
+    "review_requests_changes": true,
+    "unresolved_conflicts": true,
+    "lines_changed_threshold": 1000,
+    "sensitive_paths": ["**/auth/**", "**/security/**", "**/.env*"]
   }
 }
 ```
 
-**Fields:**
-- `autonomy`: One of "supervised", "gatekeeper", "autonomous"
-- `commit_confidence_threshold`: Minimum confidence to auto-continue commits (default 0.7)
-- `merge_confidence_threshold`: Minimum confidence for auto-merge (default 0.8)
-- `sensitive_paths.patterns`: Glob patterns for sensitive files
-- `sensitive_paths.threshold_boost`: How much to raise threshold when sensitive paths touched (default 0.15)
-
-**Example:** If commit touches `auth/handler.py` and base threshold is 0.7, required threshold becomes 0.85.
-
-Run `wf interview` to configure escalation settings for your project.
+MVP implementation: `supervised` is the only implemented mode. Escalation config is future work.
 
 ---
 
@@ -1306,12 +1186,8 @@ wf status [id]              # Shows final review excerpt if exists
 ### 20.5 Workstream status
 
 After final review:
-- `awaiting_human_review`: All micro-commits done, final review passed, waiting for human approval
-- If review flagged issues: status remains `active`, work continues
-
-PR workflow statuses (when `MERGE_MODE=github_pr`):
-- `pr_open`: PR created, awaiting external review
-- `pr_approved`: External review passed, ready for merge
+- `ready_to_merge`: All micro-commits done, final review passed
+- `review_concerns`: Final review flagged issues
 
 ---
 
@@ -1852,7 +1728,7 @@ Interactive TUI for workstream monitoring and control. Polls artifact state ever
 └─────────────────────────────────────────────────┘
 ```
 
-**Detail Mode** (`wf watch [ws]` or press 1-9 from dashboard): Single workstream view.
+**Detail Mode** (`wf watch <ws>` or press 1-9 from dashboard): Single workstream view.
 
 ```
 ┌─ workstream_id ───────────────────────────────────────┐
