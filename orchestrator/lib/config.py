@@ -4,10 +4,14 @@ Configuration loaders for AOS.
 Loads project and workstream configuration from .env files.
 """
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from . import envparse
 from . import validate
+from .github import VALID_MERGE_MODES
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,6 +38,7 @@ class ProjectProfile:
     test_timeout: int
     breakdown_timeout: int
     supervised_mode: bool
+    merge_mode: str  # "local" or "github_pr"
 
 
 @dataclass
@@ -47,6 +52,8 @@ class Workstream:
     base_sha: str
     status: str
     dir: Path
+    pr_url: str | None = None  # GitHub PR URL if in PR workflow
+    pr_number: int | None = None  # GitHub PR number if in PR workflow
 
 
 def load_project_config(project_dir: Path) -> ProjectConfig:
@@ -68,6 +75,17 @@ def load_project_profile(project_dir: Path) -> ProjectProfile:
     """Load project_profile.env and return ProjectProfile."""
     env = envparse.load_env(str(project_dir / "project_profile.env"))
     make_target_test = env.get("MAKE_TARGET_TEST", "test")
+
+    # Validate merge mode - default based on environment
+    from orchestrator.lib.github import get_default_merge_mode, VALID_MERGE_MODES
+    merge_mode = env.get("MERGE_MODE") or get_default_merge_mode()
+    if merge_mode not in VALID_MERGE_MODES:
+        logger.warning(
+            f"Unknown MERGE_MODE '{merge_mode}', defaulting to 'local'. "
+            f"Valid modes: {', '.join(sorted(VALID_MERGE_MODES))}"
+        )
+        merge_mode = "local"
+
     return ProjectProfile(
         makefile_path=env.get("MAKEFILE_PATH", "Makefile"),
         make_target_test=make_target_test,
@@ -77,6 +95,7 @@ def load_project_profile(project_dir: Path) -> ProjectProfile:
         test_timeout=int(env.get("TEST_TIMEOUT", "300")),
         breakdown_timeout=int(env.get("BREAKDOWN_TIMEOUT", "180")),
         supervised_mode=env.get("SUPERVISED_MODE", "false").lower() == "true",
+        merge_mode=merge_mode,
     )
 
 
@@ -87,6 +106,14 @@ def load_workstream(workstream_dir: Path) -> Workstream:
     # Validate against schema
     validate.validate(env, "meta")
 
+    # Parse PR number if present
+    pr_number = None
+    if env.get("PR_NUMBER"):
+        try:
+            pr_number = int(env["PR_NUMBER"])
+        except ValueError:
+            pass
+
     return Workstream(
         id=env["ID"],
         title=env["TITLE"],
@@ -96,6 +123,8 @@ def load_workstream(workstream_dir: Path) -> Workstream:
         base_sha=env["BASE_SHA"],
         status=env.get("STATUS", "active"),
         dir=workstream_dir,
+        pr_url=env.get("PR_URL"),
+        pr_number=pr_number,
     )
 
 

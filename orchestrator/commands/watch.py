@@ -13,6 +13,7 @@ import json
 import logging
 import subprocess
 import sys
+import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,12 @@ from orchestrator.lib.config import (
     get_active_workstreams,
     load_workstream,
 )
+from orchestrator.lib.github import (
+    get_pr_status,
+    STATUS_PR_OPEN,
+    STATUS_PR_APPROVED,
+)
+from orchestrator.runner.locking import is_workstream_locked
 from orchestrator.lib.planparse import parse_plan
 from orchestrator.lib.timeline import (
     EVENT_COLORS,
@@ -40,6 +47,8 @@ from orchestrator.lib.timeline import (
     TimelineEvent,
     get_workstream_timeline,
 )
+from orchestrator.pm.models import Story
+from orchestrator.pm.stories import list_stories, load_story, is_story_locked
 
 # Configuration
 POLL_INTERVAL_SECONDS = 2.0
@@ -50,6 +59,7 @@ TIMELINE_RECENT_LIMIT = 10
 TIMELINE_FULL_LIMIT = 50
 TIMELINE_LOOKBACK_DAYS = 1
 MAX_SELECTABLE_WORKSTREAMS = 9
+MAX_SELECTABLE_STORIES = 9
 
 
 def _format_event_rich(event: TimelineEvent) -> str:
@@ -167,56 +177,84 @@ class ContentScreen(ModalScreen):
 
 
 class DashboardWidget(Static):
-    """Displays list of active workstreams."""
+    """Displays list of active workstreams and stories."""
 
     workstreams: reactive[list] = reactive(list, always_update=True)
+    stories: reactive[list] = reactive(list, always_update=True)
 
     def render(self) -> str:
-        if not self.workstreams:
-            return "[dim]No active workstreams[/dim]\n\nUse 'wf run <story>' to start one."
+        lines = []
 
-        lines = ["[bold]Active Workstreams[/bold]\n"]
-        for i, (ws, ws_dir) in enumerate(self.workstreams[:MAX_SELECTABLE_WORKSTREAMS], 1):
-            stage = _get_workstream_stage(ws, ws_dir)
-            done, total = _get_workstream_progress(ws_dir)
+        # Stories section
+        if self.stories:
+            lines.append("[bold]Stories[/bold]\n")
+            for i, story in enumerate(self.stories[:MAX_SELECTABLE_STORIES]):
+                letter = chr(ord('a') + i)
+                status_str = self._format_story_status(story)
+                title = story.title[:35] + "..." if len(story.title) > 35 else story.title
+                lines.append(
+                    f"  \\[{letter}] {story.id:<12} {status_str:<12} {title}"
+                )
+            lines.append("")
 
-            # Format progress
-            if total > 0:
-                progress = f"{done}/{total}"
-            else:
-                progress = "0/?"
+        # Workstreams section
+        if self.workstreams:
+            lines.append("[bold]Workstreams[/bold]\n")
+            for i, (ws, ws_dir, is_running) in enumerate(self.workstreams[:MAX_SELECTABLE_WORKSTREAMS], 1):
+                stage = _get_workstream_stage(ws, ws_dir)
+                done, total = _get_workstream_progress(ws_dir)
 
-            # Format status indicator
-            if ws.status == "awaiting_human_review":
-                status_str = "[yellow]review[/yellow]"
-            elif ws.status == "complete":
-                status_str = "[green]done[/green]"
-            elif ws.status == "blocked":
-                status_str = "[red]blocked[/red]"
-            else:
-                status_str = "[cyan]running[/cyan]"
+                # Format progress
+                if total > 0:
+                    progress = f"{done}/{total}"
+                else:
+                    progress = "0/?"
 
-            lines.append(
-                f"  [{i}] {ws.id:<20} {stage:<10} {progress:<6} {status_str}"
-            )
+                # Format status indicator
+                if ws.status == "awaiting_human_review":
+                    status_str = "[yellow]review[/yellow]"
+                elif ws.status == STATUS_PR_OPEN:
+                    status_str = "[magenta]PR open[/magenta]"
+                elif ws.status == STATUS_PR_APPROVED:
+                    status_str = "[green]PR ready[/green]"
+                elif ws.status == "complete":
+                    status_str = "[green]done[/green]"
+                elif ws.status == "blocked":
+                    status_str = "[red]blocked[/red]"
+                elif ws.status == "merging":
+                    status_str = "[cyan]merging[/cyan]"
+                elif is_running:
+                    status_str = "[cyan]running[/cyan]"
+                else:
+                    status_str = "[dim]idle[/dim]"
 
-        lines.append("\n[dim]Press 1-9 to view details, q to quit[/dim]")
+                lines.append(
+                    f"  \\[{i}] {ws.id:<20} {stage:<10} {progress:<6} {status_str}"
+                )
+
+        if not self.stories and not self.workstreams:
+            return "[dim]No active stories or workstreams[/dim]\n\nUse 'wf plan' to create stories."
+
+        lines.append("")
+        lines.append("[dim]a-i: stories | 1-9: workstreams | q: quit[/dim]")
         return "\n".join(lines)
+
+    def _format_story_status(self, story: Story) -> str:
+        """Format story status with colors."""
+        if story.status == "draft":
+            return "[yellow]draft[/yellow]"
+        elif story.status == "accepted":
+            return "[green]accepted[/green]"
+        elif story.status == "implementing":
+            return "[cyan]working[/cyan]"
+        else:
+            return f"[dim]{story.status}[/dim]"
 
 
 class DashboardScreen(Screen):
-    """Dashboard mode - shows all active workstreams."""
+    """Dashboard mode - shows all active workstreams and stories."""
 
     BINDINGS = [
-        Binding("1", "select_1", "Select 1", show=False),
-        Binding("2", "select_2", "Select 2", show=False),
-        Binding("3", "select_3", "Select 3", show=False),
-        Binding("4", "select_4", "Select 4", show=False),
-        Binding("5", "select_5", "Select 5", show=False),
-        Binding("6", "select_6", "Select 6", show=False),
-        Binding("7", "select_7", "Select 7", show=False),
-        Binding("8", "select_8", "Select 8", show=False),
-        Binding("9", "select_9", "Select 9", show=False),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -241,7 +279,9 @@ class DashboardScreen(Screen):
         super().__init__()
         self.ops_dir = ops_dir
         self.project_config = project_config
-        self.workstreams: list[tuple[Workstream, Path]] = []
+        self.project_dir = ops_dir / "projects" / project_config.name
+        self.workstreams: list[tuple[Workstream, Path, bool]] = []
+        self.stories: list[Story] = []
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -258,50 +298,43 @@ class DashboardScreen(Screen):
         self.set_interval(POLL_INTERVAL_SECONDS, self.refresh_data)
 
     def refresh_data(self) -> None:
-        """Reload workstream list."""
+        """Reload workstream and story lists."""
+        # Load workstreams
         workstreams = get_active_workstreams(self.ops_dir)
         self.workstreams = [
-            (ws, self.ops_dir / "workstreams" / ws.id)
+            (ws, self.ops_dir / "workstreams" / ws.id, is_workstream_locked(self.ops_dir, ws.id))
             for ws in workstreams
         ]
 
+        # Load stories (only active ones)
+        all_stories = list_stories(self.project_dir)
+        self.stories = [s for s in all_stories if s.status not in ("implemented", "abandoned")]
+
         dashboard = self.query_one("#dashboard", DashboardWidget)
         dashboard.workstreams = self.workstreams
+        dashboard.stories = self.stories
 
-    def _select_workstream(self, index: int) -> None:
-        """Switch to detail mode for selected workstream."""
-        if index < len(self.workstreams):
-            _, ws_dir = self.workstreams[index]
-            self.app.push_screen(
-                DetailScreen(ws_dir, self.ops_dir, self.project_config)
-            )
+    def on_key(self, event) -> None:
+        """Handle key presses for workstream (1-9) and story (a-i) selection."""
+        key = event.key
 
-    def action_select_1(self) -> None:
-        self._select_workstream(0)
+        # Workstream selection: 1-9
+        if key in "123456789":
+            index = int(key) - 1
+            if index < len(self.workstreams):
+                _, ws_dir, _ = self.workstreams[index]
+                self.app.push_screen(
+                    DetailScreen(ws_dir, self.ops_dir, self.project_config)
+                )
 
-    def action_select_2(self) -> None:
-        self._select_workstream(1)
-
-    def action_select_3(self) -> None:
-        self._select_workstream(2)
-
-    def action_select_4(self) -> None:
-        self._select_workstream(3)
-
-    def action_select_5(self) -> None:
-        self._select_workstream(4)
-
-    def action_select_6(self) -> None:
-        self._select_workstream(5)
-
-    def action_select_7(self) -> None:
-        self._select_workstream(6)
-
-    def action_select_8(self) -> None:
-        self._select_workstream(7)
-
-    def action_select_9(self) -> None:
-        self._select_workstream(8)
+        # Story selection: a-i
+        elif key in "abcdefghi":
+            index = ord(key) - ord('a')
+            if index < len(self.stories):
+                story = self.stories[index]
+                self.app.push_screen(
+                    StoryDetailScreen(story.id, self.ops_dir, self.project_config)
+                )
 
     def action_quit(self) -> None:
         self.app.exit()
@@ -316,6 +349,7 @@ class StatusWidget(Static):
     workstream: reactive[Optional[Workstream]] = reactive(None)
     last_run: reactive[Optional[dict]] = reactive(None)
     file_stats: reactive[str] = reactive("")
+    pr_status: reactive[Optional[dict]] = reactive(None)
 
     def render(self) -> str:
         if not self.workstream:
@@ -326,6 +360,14 @@ class StatusWidget(Static):
             f"[bold]{ws.id}[/bold]",
             f"Status: [cyan]{ws.status}[/cyan]",
         ]
+
+        # Show PR info if in PR workflow
+        if ws.status in (STATUS_PR_OPEN, STATUS_PR_APPROVED) and ws.pr_url:
+            lines.append(f"PR: [link={ws.pr_url}]{ws.pr_url}[/link]")
+            if self.pr_status:
+                review = self.pr_status.get("review_decision") or "pending"
+                checks = self.pr_status.get("checks_status") or "none"
+                lines.append(f"  Review: {review} | Checks: {checks}")
 
         if self.last_run:
             microcommit = self.last_run.get("microcommit", "none")
@@ -408,6 +450,7 @@ class DetailScreen(Screen):
         Binding("d", "show_diff", "Diff", show=False),
         Binding("l", "show_log", "Log", show=False),
         Binding("g", "go_run", "Run", show=False),
+        Binding("o", "open_pr", "Open PR", show=False),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -498,6 +541,16 @@ class DetailScreen(Screen):
         if self.workstream.worktree and self.workstream.worktree.exists():
             file_stats = self._get_file_stats(self.workstream.worktree)
 
+        # Get PR status if in PR workflow
+        pr_status = None
+        if self.workstream.status in (STATUS_PR_OPEN, STATUS_PR_APPROVED) and self.workstream.pr_number:
+            status = get_pr_status(self.project_config.repo_path, self.workstream.pr_number)
+            if not status.error:
+                pr_status = {
+                    "review_decision": status.review_decision,
+                    "checks_status": status.checks_status,
+                }
+
         # Get timeline events
         events = get_workstream_timeline(
             workstream_dir=self.workstream_dir,
@@ -512,6 +565,7 @@ class DetailScreen(Screen):
         status_widget.workstream = self.workstream
         status_widget.last_run = self.last_run
         status_widget.file_stats = file_stats
+        status_widget.pr_status = pr_status
 
         timeline_widget = self.query_one("#timeline", TimelineWidget)
         timeline_widget.events = events
@@ -552,6 +606,10 @@ class DetailScreen(Screen):
 
         if status == "awaiting_human_review":
             actions.extend(["[a]pprove", "[r]eject", "[R]eset", "[d]iff", "[l]og", "[q]uit"])
+        elif status == STATUS_PR_OPEN:
+            actions.extend(["[o]pen PR", "[a] merge", "[d]iff", "[l]og", "[q]uit"])
+        elif status == STATUS_PR_APPROVED:
+            actions.extend(["[a] merge", "[o]pen PR", "[d]iff", "[l]og", "[q]uit"])
         elif status == "complete":
             actions.extend(["[l]og", "[q]uit"])
         else:
@@ -566,13 +624,42 @@ class DetailScreen(Screen):
             self.app.pop_screen()
 
     def action_approve(self) -> None:
-        """Approve the workstream."""
-        if not self.workstream or self.workstream.status != "awaiting_human_review":
-            self.notify("Nothing to approve", severity="warning")
+        """Approve the workstream or merge PR."""
+        if not self.workstream:
+            self.notify("No workstream loaded", severity="warning")
             return
 
         ws_id = self.workstream.id
         ops_dir = self.ops_dir
+
+        # Handle PR workflow - trigger merge
+        if self.workstream.status in (STATUS_PR_OPEN, STATUS_PR_APPROVED):
+            self.notify("Checking PR status and merging...", severity="information")
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "orchestrator.cli", "merge", ws_id],
+                    capture_output=True,
+                    text=True,
+                    cwd=ops_dir,
+                    timeout=60,  # Longer timeout for merge
+                )
+
+                if result.returncode == 0:
+                    self.notify("PR merged successfully!", severity="information")
+                else:
+                    # Show truncated stderr
+                    stderr = result.stderr.strip()[:200] if result.stderr else result.stdout[:200]
+                    self.notify(f"Merge: {stderr}", severity="warning")
+            except subprocess.TimeoutExpired:
+                self.notify("Merge timed out", severity="error")
+
+            self.refresh_data()
+            return
+
+        # Normal approval for awaiting_human_review
+        if self.workstream.status != "awaiting_human_review":
+            self.notify("Nothing to approve", severity="warning")
+            return
 
         try:
             result = subprocess.run(
@@ -779,6 +866,348 @@ class DetailScreen(Screen):
             start_new_session=True,
         )
 
+    def action_open_pr(self) -> None:
+        """Open PR in browser."""
+        if not self.workstream:
+            self.notify("No workstream loaded", severity="warning")
+            return
+
+        if not self.workstream.pr_url:
+            self.notify("No PR URL available", severity="warning")
+            return
+
+        webbrowser.open(self.workstream.pr_url)
+        self.notify("Opened PR in browser", severity="information")
+
+    def action_quit(self) -> None:
+        """Quit the application."""
+        self.app.exit()
+
+
+# --- Story Detail Mode ---
+
+
+class StoryStatusWidget(Static):
+    """Displays story status and details."""
+
+    story: reactive[Optional[Story]] = reactive(None)
+
+    def render(self) -> str:
+        if not self.story:
+            return "Loading..."
+
+        s = self.story
+        lines = [
+            f"[bold]{s.id}: {s.title}[/bold]",
+            "",
+            f"Status: {self._format_status(s.status)}",
+            f"Created: [dim]{s.created[:10]}[/dim]",
+        ]
+
+        if s.workstream:
+            lines.append(f"Workstream: [cyan]{s.workstream}[/cyan]")
+
+        if s.source_refs:
+            lines.append(f"Source: [dim]{s.source_refs[:60]}[/dim]")
+
+        lines.append("")
+
+        if s.problem:
+            lines.append("[bold]Problem[/bold]")
+            # Truncate long problems for display
+            problem_text = s.problem[:200] + "..." if len(s.problem) > 200 else s.problem
+            lines.append(f"  {problem_text}")
+            lines.append("")
+
+        if s.acceptance_criteria:
+            lines.append("[bold]Acceptance Criteria[/bold]")
+            for i, ac in enumerate(s.acceptance_criteria[:5]):  # Show first 5
+                lines.append(f"  [ ] {ac[:60]}{'...' if len(ac) > 60 else ''}")
+            if len(s.acceptance_criteria) > 5:
+                lines.append(f"  ... and {len(s.acceptance_criteria) - 5} more")
+            lines.append("")
+
+        if s.open_questions:
+            lines.append(f"[yellow]Open Questions: {len(s.open_questions)}[/yellow]")
+
+        return "\n".join(lines)
+
+    def _format_status(self, status: str) -> str:
+        """Format status with color."""
+        if status == "draft":
+            return "[yellow]draft[/yellow]"
+        elif status == "accepted":
+            return "[green]accepted[/green]"
+        elif status == "implementing":
+            return "[cyan]implementing[/cyan]"
+        elif status == "implemented":
+            return "[dim]implemented[/dim]"
+        else:
+            return f"[dim]{status}[/dim]"
+
+
+class StoryDetailScreen(Screen):
+    """Story detail view with actions."""
+
+    CSS = """
+    #story-main-container {
+        layout: vertical;
+        padding: 1;
+    }
+
+    #story-status-box {
+        border: solid yellow;
+        padding: 1;
+        height: auto;
+    }
+
+    #story-action-bar {
+        dock: bottom;
+        height: 1;
+        background: $surface;
+        padding: 0 1;
+    }
+
+    StoryStatusWidget {
+        height: auto;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "back_to_dashboard", "Back", show=True),
+        Binding("a", "approve_story", "Approve", show=False),
+        Binding("e", "edit_story", "Edit", show=False),
+        Binding("r", "run_story", "Run", show=False),
+        Binding("c", "close_story", "Close", show=False),
+        Binding("v", "view_full", "View Full", show=False),
+        Binding("q", "quit", "Quit"),
+    ]
+
+    def __init__(
+        self,
+        story_id: str,
+        ops_dir: Path,
+        project_config: ProjectConfig,
+        is_root: bool = False,
+    ) -> None:
+        super().__init__()
+        self.story_id = story_id
+        self.ops_dir = ops_dir
+        self.project_config = project_config
+        self.project_dir = ops_dir / "projects" / project_config.name
+        self.is_root = is_root
+        self.story: Optional[Story] = None
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Container(
+            Container(StoryStatusWidget(id="story-status"), id="story-status-box"),
+            id="story-main-container",
+        )
+        yield Static(id="story-action-bar")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.refresh_data()
+        self.set_interval(POLL_INTERVAL_SECONDS, self.refresh_data)
+
+    def refresh_data(self) -> None:
+        """Reload story state."""
+        self.story = load_story(self.project_dir, self.story_id)
+
+        if not self.story:
+            self.notify(f"Story {self.story_id} not found", severity="error")
+            if self.is_root:
+                self.app.exit(message=f"Story '{self.story_id}' not found.")
+            else:
+                self.app.pop_screen()
+            return
+
+        # Update widget
+        status_widget = self.query_one("#story-status", StoryStatusWidget)
+        status_widget.story = self.story
+
+        # Update action bar
+        action_bar = self.query_one("#story-action-bar", Static)
+        action_bar.update(self._get_action_bar())
+
+        # Update title
+        self.title = f"wf watch: {self.story.id}"
+        self.sub_title = self.story.status
+
+    def _get_action_bar(self) -> str:
+        """Build action bar based on story status."""
+        if not self.story:
+            return ""
+
+        actions = []
+
+        if not self.is_root:
+            actions.append("[Esc] back")
+
+        status = self.story.status
+
+        if status == "draft":
+            actions.extend(["[a]pprove", "[e]dit", "[c]lose", "[v]iew", "[q]uit"])
+        elif status == "accepted":
+            actions.extend(["[r]un", "[e]dit", "[c]lose", "[v]iew", "[q]uit"])
+        elif status == "implementing":
+            actions.extend(["[v]iew", "[q]uit"])  # Limited actions when locked
+        else:
+            actions.extend(["[v]iew", "[q]uit"])
+
+        return " | ".join(actions)
+
+    def action_back_to_dashboard(self) -> None:
+        """Return to dashboard."""
+        if not self.is_root:
+            self.app.pop_screen()
+
+    def action_approve_story(self) -> None:
+        """Approve draft story."""
+        if not self.story:
+            self.notify("No story loaded", severity="warning")
+            return
+
+        if self.story.status != "draft":
+            self.notify("Only draft stories can be approved", severity="warning")
+            return
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "orchestrator.cli", "approve", self.story_id],
+                capture_output=True,
+                text=True,
+                cwd=self.ops_dir,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            )
+
+            if result.returncode == 0:
+                self.notify("Story approved!", severity="information")
+            else:
+                self.notify(f"Approve failed: {result.stderr[:100]}", severity="error")
+        except subprocess.TimeoutExpired:
+            self.notify("Approve timed out", severity="error")
+
+        self.refresh_data()
+
+    def action_edit_story(self) -> None:
+        """Edit story (launches plan edit)."""
+        if not self.story:
+            self.notify("No story loaded", severity="warning")
+            return
+
+        if is_story_locked(self.story):
+            self.notify("Story is locked (use wf plan clone)", severity="warning")
+            return
+
+        # Capture feedback for edit
+        ops_dir = self.ops_dir
+        story_id = self.story_id
+
+        def handle_feedback(feedback: str) -> None:
+            if not feedback:
+                return
+
+            try:
+                cmd = [sys.executable, "-m", "orchestrator.cli", "plan", "edit", story_id, "-f", feedback]
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    cwd=ops_dir,
+                    timeout=120,  # Longer timeout for AI edit
+                )
+
+                if result.returncode == 0:
+                    self.notify("Story updated!", severity="information")
+                else:
+                    self.notify(f"Edit failed: {result.stderr[:100]}", severity="error")
+            except subprocess.TimeoutExpired:
+                self.notify("Edit timed out", severity="error")
+
+            self.refresh_data()
+
+        self.push_screen(FeedbackModal("Edit guidance:"), handle_feedback)
+
+    def action_run_story(self) -> None:
+        """Run story (create workstream)."""
+        if not self.story:
+            self.notify("No story loaded", severity="warning")
+            return
+
+        if self.story.status != "accepted":
+            self.notify("Only accepted stories can be run", severity="warning")
+            return
+
+        self.notify("Starting workstream...", severity="information")
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "orchestrator.cli", "run", self.story_id],
+                capture_output=True,
+                text=True,
+                cwd=self.ops_dir,
+                timeout=60,
+            )
+
+            if result.returncode == 0:
+                self.notify("Workstream created!", severity="information")
+                # Return to dashboard to see the new workstream
+                if not self.is_root:
+                    self.app.pop_screen()
+            else:
+                self.notify(f"Run failed: {result.stderr[:100]}", severity="error")
+        except subprocess.TimeoutExpired:
+            self.notify("Run timed out", severity="error")
+
+        self.refresh_data()
+
+    def action_close_story(self) -> None:
+        """Close/abandon story."""
+        if not self.story:
+            self.notify("No story loaded", severity="warning")
+            return
+
+        if is_story_locked(self.story):
+            self.notify("Story is locked (close workstream first)", severity="warning")
+            return
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "orchestrator.cli", "close", self.story_id],
+                capture_output=True,
+                text=True,
+                cwd=self.ops_dir,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            )
+
+            if result.returncode == 0:
+                self.notify("Story closed", severity="information")
+                if not self.is_root:
+                    self.app.pop_screen()
+            else:
+                self.notify(f"Close failed: {result.stderr[:100]}", severity="error")
+        except subprocess.TimeoutExpired:
+            self.notify("Close timed out", severity="error")
+
+        self.refresh_data()
+
+    def action_view_full(self) -> None:
+        """View full story markdown."""
+        if not self.story:
+            self.notify("No story loaded", severity="warning")
+            return
+
+        stories_dir = self.project_dir / "pm" / "stories"
+        md_path = stories_dir / f"{self.story_id}.md"
+
+        if md_path.exists():
+            content = md_path.read_text()
+            self.push_screen(ContentScreen(content, title=f"{self.story_id}"))
+        else:
+            self.notify("Story file not found", severity="warning")
+
     def action_quit(self) -> None:
         """Quit the application."""
         self.app.exit()
@@ -814,36 +1243,50 @@ class WatchApp(App):
         self,
         ops_dir: Path,
         project_config: ProjectConfig,
-        workstream_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.ops_dir = ops_dir
         self.project_config = project_config
-        self.workstream_id = workstream_id
+        self.target_id = target_id
 
     def on_mount(self) -> None:
-        if self.workstream_id:
-            # Detail mode - direct to workstream
-            workstream_dir = self.ops_dir / "workstreams" / self.workstream_id
-            self.push_screen(
-                DetailScreen(workstream_dir, self.ops_dir, self.project_config, is_root=True)
-            )
+        if self.target_id:
+            if self.target_id.startswith("STORY-"):
+                # Story detail mode
+                self.push_screen(
+                    StoryDetailScreen(self.target_id, self.ops_dir, self.project_config, is_root=True)
+                )
+            else:
+                # Workstream detail mode
+                workstream_dir = self.ops_dir / "workstreams" / self.target_id
+                self.push_screen(
+                    DetailScreen(workstream_dir, self.ops_dir, self.project_config, is_root=True)
+                )
         else:
             # Dashboard mode
             self.push_screen(DashboardScreen(self.ops_dir, self.project_config))
 
 
 def cmd_watch(args, ops_dir: Path, project_config: ProjectConfig) -> int:
-    """Watch workstreams."""
-    ws_id = getattr(args, 'id', None)
+    """Watch workstreams and stories."""
+    target_id = getattr(args, 'id', None)
 
-    if ws_id:
-        # Validate workstream exists
-        workstream_dir = ops_dir / "workstreams" / ws_id
-        if not workstream_dir.exists():
-            print(f"ERROR: Workstream '{ws_id}' not found")
-            return 2
+    if target_id:
+        if target_id.startswith("STORY-"):
+            # Validate story exists
+            project_dir = ops_dir / "projects" / project_config.name
+            story = load_story(project_dir, target_id)
+            if not story:
+                print(f"ERROR: Story '{target_id}' not found")
+                return 2
+        else:
+            # Validate workstream exists
+            workstream_dir = ops_dir / "workstreams" / target_id
+            if not workstream_dir.exists():
+                print(f"ERROR: Workstream '{target_id}' not found")
+                return 2
 
-    app = WatchApp(ops_dir, project_config, workstream_id=ws_id)
+    app = WatchApp(ops_dir, project_config, target_id=target_id)
     app.run()
     return 0

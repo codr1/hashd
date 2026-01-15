@@ -224,13 +224,14 @@ Options:
 |         - Claude generates from story + commits + code diff  |
 |         - Committed to branch before merge                   |
 |                                                              |
-|  [Auto] REQS.md cleanup                                      |
-|         - WIP-marked sections deleted                        |
-|         - Committed to branch before merge                   |
-|                                                              |
 |  [Auto] Merge to main                                        |
 |         - Conflict resolution (up to 3 AI attempts)          |
 |         - If conflicts unresolvable -> HITL                  |
+|                                                              |
+|  [Auto] REQS.md cleanup (post-merge)                         |
+|         - WIP-marked sections deleted from main              |
+|         - Committed directly to main after merge             |
+|         - Cannot be lost during rebase conflicts             |
 |                                                              |
 |  [Auto] Archive workstream                                   |
 |         - Worktree removed                                   |
@@ -272,7 +273,7 @@ Options:
 | Command | Description |
 |---------|-------------|
 | `wf use [id] [--clear]` | Set/show/clear current workstream |
-| `wf watch [id]` | Interactive TUI (dashboard or single ws) |
+| `wf watch [id]` | Interactive TUI (dashboard, workstream, or STORY-xxxx) |
 | `wf review [id]` | Run final branch review |
 | `wf diff [id] [--stat\|--staged\|--branch]` | Show workstream diff |
 | `wf log [id] [-s since] [-n limit] [-v] [-r]` | Show workstream timeline |
@@ -425,7 +426,10 @@ REQS.md (shrinks) -> Stories -> SPEC.md (grows)
 ```
 
 - **Story creation**: WIP markers added to REQS.md
-- **Merge**: SPEC.md updated, WIP sections deleted from REQS.md
+- **Merge**: SPEC.md updated (in branch), WIP sections deleted from REQS.md (post-merge on main)
+
+Note: REQS cleanup happens after merge completes, not in the feature branch. This ensures
+cleanup cannot be lost during rebase conflicts.
 
 ---
 
@@ -436,6 +440,46 @@ REQS.md (shrinks) -> Stories -> SPEC.md (grows)
 | Implement/Test/Review loop | 3 | HITL |
 | Final Review fixes | 3 | HITL |
 | Merge conflict resolution | 3 | HITL |
+| PR auto-rebase | 3 | HITL |
+
+---
+
+## Merge Safety
+
+### Auto-Rebase for GitHub PRs
+
+When using `MERGE_MODE="github_pr"`, if a PR becomes conflicting (main moved ahead):
+
+1. `wf merge` automatically attempts rebase
+2. Uses `--force-with-lease` (safe force push)
+3. Retries status check after push
+4. Blocks for human if rebase has conflicts
+5. Max 3 rebase attempts before escalating
+
+### Review Requirements
+
+The merge command respects GitHub's review settings:
+
+| Review Status | Behavior |
+|---------------|----------|
+| **APPROVED** | Merge proceeds |
+| **PENDING/None** | Merge proceeds (no review required by repo) |
+| **CHANGES_REQUESTED** | Blocks, returns to active state |
+| **REVIEW_REQUIRED** | Blocks until required reviews are complete |
+
+### Check Requirements
+
+| Check Status | Behavior |
+|--------------|----------|
+| **success** | Merge proceeds |
+| **pending** | Merge proceeds (for slow bots like CodeRabbit) |
+| **failure** | Blocks until checks pass |
+
+### Force Push Safety
+
+- Only force-pushes to PR branches (never main)
+- Uses `--force-with-lease` to prevent overwriting others' work
+- Only applies to worktrees managed by the orchestrator
 
 ---
 

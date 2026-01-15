@@ -311,19 +311,55 @@ def _run_merge_gate(ctx: RunContext) -> tuple[str, int]:
         if failure_type == "test_failure":
             return _generate_fixes_for_test_failure(ctx, failure_output)
 
-        # Rebase and conflict issues require human intervention
+        # Try automatic rebase for simple cases
         if failure_type == "rebase":
-            ctx.log("Rebase required - blocking for human")
+            ctx.log("Rebase required - attempting automatic rebase")
+            print("\nBranch needs rebase, attempting automatic rebase...")
+
+            worktree = str(ctx.workstream.worktree)
+            default_branch = ctx.project.default_branch
+
+            # Fetch latest
+            fetch_result = subprocess.run(
+                ["git", "-C", worktree, "fetch", "origin", default_branch],
+                capture_output=True, text=True
+            )
+            if fetch_result.returncode != 0:
+                ctx.log(f"Fetch failed: {fetch_result.stderr}")
+                print(f"Fetch failed: {fetch_result.stderr}")
+                notify_blocked(ctx.workstream.id, "Git fetch failed")
+                return "blocked", 8
+
+            # Try rebase
+            rebase_result = subprocess.run(
+                ["git", "-C", worktree, "rebase", f"origin/{default_branch}"],
+                capture_output=True, text=True
+            )
+
+            if rebase_result.returncode == 0:
+                ctx.log("Automatic rebase succeeded")
+                print("Automatic rebase succeeded")
+                return "rebased", 0
+
+            # Rebase failed - abort and block for human
+            ctx.log(f"Rebase failed with conflicts: {rebase_result.stderr}")
+            subprocess.run(
+                ["git", "-C", worktree, "rebase", "--abort"],
+                capture_output=True, text=True
+            )
+
             print("\n" + "="*60)
-            print("ACTION REQUIRED: Branch needs rebase")
+            print("ACTION REQUIRED: Rebase has conflicts")
             print("="*60)
-            print(f"\nYour branch is behind origin/{ctx.project.default_branch}.")
-            print("The AI cannot rebase for you. Please run:")
+            print(f"\nAutomatic rebase failed due to conflicts.")
+            print("Please resolve manually:")
             print(f"\n  cd {ctx.workstream.worktree}")
-            print(f"  git fetch origin {ctx.project.default_branch}")
-            print(f"  git rebase origin/{ctx.project.default_branch}")
+            print(f"  git fetch origin {default_branch}")
+            print(f"  git rebase origin/{default_branch}")
+            print("  # resolve conflicts")
+            print("  git rebase --continue")
             print(f"\nThen continue with: wf run {ctx.workstream.id}")
-            notify_blocked(ctx.workstream.id, "Branch needs rebase")
+            notify_blocked(ctx.workstream.id, "Rebase has conflicts")
             return "blocked", 8
 
         if failure_type == "conflict":
@@ -415,6 +451,13 @@ def _handle_all_commits_complete(
             return "continue", 0
         else:
             print(f"\nRun again to implement fix commits: wf run {ws_id}")
+            return "return", 0
+    elif gate_status == "rebased":
+        if in_loop:
+            print("\nRetrying merge gate after rebase...")
+            return "continue", 0
+        else:
+            print(f"\nRun again after rebase: wf run {ws_id}")
             return "return", 0
     else:
         return "return", gate_code
@@ -724,22 +767,34 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     # Load workstream
     workstream = load_workstream(workstream_dir)
 
+    # Inject CLI feedback if provided (same mechanism as wf reject)
+    if getattr(args, 'feedback', None):
+        approval_file = workstream_dir / "human_approval.json"
+        approval_file.write_text(json.dumps({
+            "action": "reject",
+            "feedback": args.feedback,
+            "reset": False
+        }))
+        print("Injected feedback for this run")
+
     # Load project profile
     project_dir = ops_dir / "projects" / project_config.name
     try:
         profile = load_project_profile(project_dir)
     except FileNotFoundError:
-        # Use defaults (review_timeout=300 for contextual reviews)
+        # Use defaults
         from orchestrator.lib.config import ProjectProfile
+        from orchestrator.lib.github import get_default_merge_mode
         profile = ProjectProfile(
             makefile_path="Makefile",
             make_target_test="test",
             merge_gate_test_target="test",
             implement_timeout=1200,
-            review_timeout=300,
+            review_timeout=600,
             test_timeout=300,
             breakdown_timeout=180,
             supervised_mode=False,
+            merge_mode=get_default_merge_mode(),
         )
 
     # Override supervised_mode from CLI flags

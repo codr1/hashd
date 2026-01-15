@@ -30,6 +30,6 @@ Description:
 
 ## Instructions
 1. Make the necessary code changes using the preferred tech stack
-2. Do NOT create a git commit - the orchestrator handles commits after review
+2. If you create new files or directories, stage them with `git add <path>`. Do NOT commit - the orchestrator handles commits after review
 3. If you encounter ambiguity or need clarification, stop and explain what you need
 {review_context_section}{conversation_history_section}{human_guidance_section}

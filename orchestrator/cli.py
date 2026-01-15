@@ -31,6 +31,7 @@ from orchestrator.commands import watch as cmd_watch_module
 from orchestrator.commands import diff as cmd_diff_module
 from orchestrator.commands import project as cmd_project_module
 from orchestrator.commands import docs as cmd_docs_module
+from orchestrator.commands import skip as cmd_skip_module
 
 
 def get_ops_dir() -> Path:
@@ -309,6 +310,12 @@ def cmd_docs_diff(args):
     return cmd_docs_module.cmd_docs_diff(args, ops_dir, project_config)
 
 
+def cmd_skip(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_skip_module.cmd_skip(args, ops_dir, project_config)
+
+
 def main():
     # Handle --completion before parsing subcommands
     if len(sys.argv) == 2 and sys.argv[1] == '--completion':
@@ -333,9 +340,10 @@ def main():
     p_plan.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, resurrect=False, story_id=None)
     plan_sub = p_plan.add_subparsers(dest='plan_cmd')
 
-    # wf plan new "title"
+    # wf plan new "title" [-f "feedback"]
     p_plan_new = plan_sub.add_parser('new', help='Create ad-hoc story')
     p_plan_new.add_argument('title', nargs='?', help='Story title hint')
+    p_plan_new.add_argument('-f', '--feedback', help='Detailed requirements for the story')
     p_plan_new.set_defaults(func=cmd_plan, new=True, clone=False, edit=False, resurrect=False)
 
     # wf plan clone STORY-xxx
@@ -398,8 +406,8 @@ def main():
     p_review.set_defaults(func=cmd_review)
 
     # wf watch
-    p_watch = subparsers.add_parser('watch', help='Interactive TUI for monitoring workstream')
-    p_watch.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_watch = subparsers.add_parser('watch', help='Interactive TUI for monitoring workstreams and stories')
+    p_watch.add_argument('id', nargs='?', help='Workstream or Story ID (e.g., my_feature or STORY-0001)')
     p_watch.set_defaults(func=cmd_watch)
 
     # wf conflicts
@@ -418,6 +426,7 @@ def main():
     run_mode = p_run.add_mutually_exclusive_group()
     run_mode.add_argument('--gatekeeper', action='store_true', help='Auto-approve if tests and review pass')
     run_mode.add_argument('--supervised', action='store_true', help='Always pause for human review')
+    p_run.add_argument('--feedback', '-f', help='Provide feedback/guidance for this run')
     p_run.set_defaults(func=cmd_run)
 
     # wf close
@@ -472,6 +481,13 @@ def main():
     p_reject.add_argument('--reset', action='store_true', help='Discard changes and start fresh')
     p_reject.add_argument('--no-run', action='store_true', help='Do not auto-run after reject')
     p_reject.set_defaults(func=cmd_reject)
+
+    # wf skip
+    p_skip = subparsers.add_parser('skip', help='Mark commit as done without changes')
+    p_skip.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_skip.add_argument('commit', nargs='?', help='Specific commit ID (defaults to next pending)')
+    p_skip.add_argument('-m', '--message', help='Reason for skipping')
+    p_skip.set_defaults(func=cmd_skip)
 
     # wf clarify
     p_clarify = subparsers.add_parser('clarify', help='Manage clarification requests')

@@ -226,12 +226,21 @@ COMMITSIZE=<=200 LOC, <=10 files
 REVIEW_STRICTNESS=blocker on missing tests + doc/REQ mismatch
 BREAKDOWN_TIMEOUT=180
 SUPERVISED_MODE=false
+MERGE_MODE=local
+
+**Merge Mode:**
+- `MERGE_MODE=local` (default): Direct git merge to main
+- `MERGE_MODE=github_pr`: Create GitHub PR, merge via `gh pr merge`
 
 7.3 Interview requirements (wf interview)
 
 wf interview must:
 
-    ask the user a small set of questions (paths, Make targets, runner hints)
+    ask the user a small set of questions:
+        - paths (repo, requirements, docs)
+        - Make targets for testing
+        - runner hints
+        - GitHub usage and PR preference (sets MERGE_MODE)
 
     write/update:
 
@@ -385,6 +394,7 @@ wf watch [ws]
 **wf merge** - Complete workstream
 - `wf merge theme_crud` - Merge branch to main, archive workstream
 - Auto-runs SPEC.md update and REQS.md cleanup before merge
+- Behavior depends on `MERGE_MODE` setting (see 10.6.2)
 
 **wf docs** - Update SPEC.md from workstream
 - `wf docs theme_crud` - Generate and write SPEC update (usually auto-run by merge)
@@ -458,6 +468,50 @@ REQS.md (shrinks) -> Stories -> SPEC.md (grows)
 **Manual SPEC preview (`wf docs`):**
 - `wf docs show <ws>` - Preview without writing
 - `wf docs diff <ws>` - Show diff against current SPEC
+
+### 10.6.2 Merge Modes
+
+Projects can configure how merging works via `MERGE_MODE` in `project_profile.env`.
+
+**`MERGE_MODE=local`** (default):
+- Current behavior
+- `wf merge` does `git merge --no-ff` directly to main
+- No external review beyond Claude's final review
+
+**`MERGE_MODE=github_pr`**:
+- PR-based workflow for GitHub-hosted projects
+- Requires `gh` CLI to be configured
+
+**GitHub PR Flow:**
+```
+final_review passes → human approves → PR created → external review → wf merge
+                                            ↓
+                                     changes requested
+                                            ↓
+                                     (same as reject → back to active)
+```
+
+1. After final review approval, PR is created automatically
+2. Branch pushed to remote, `gh pr create` invoked
+3. New status: `pr_open` - waiting for external approval
+4. External reviewers (CodeRabbit, humans) review on GitHub
+5. CI checks run
+6. If changes requested: treated as rejection, workstream returns to active
+7. When PR approved + CI green: `wf merge` invokes `gh pr merge`
+
+**New workstream statuses:**
+- `pr_open`: PR created, awaiting external review
+- `pr_approved`: External review passed, ready for merge
+
+**`wf watch` integration:**
+- Detail view shows PR URL, status, CI check results
+- `a` key merges when PR is approved (reuses approve action)
+- `o` key opens PR in browser
+
+**Error handling:**
+- If `gh` CLI not configured: error with setup instructions
+- If PR creation fails: error with details, status unchanged (retry with `wf merge`)
+- If merge fails: error with conflict details
 
 ### 10.7 Shell Completion
 
@@ -1221,8 +1275,12 @@ wf status [id]              # Shows final review excerpt if exists
 ### 20.5 Workstream status
 
 After final review:
-- `ready_to_merge`: All micro-commits done, final review passed
-- `review_concerns`: Final review flagged issues
+- `awaiting_human_review`: All micro-commits done, final review passed, waiting for human approval
+- If review flagged issues: status remains `active`, work continues
+
+PR workflow statuses (when `MERGE_MODE=github_pr`):
+- `pr_open`: PR created, awaiting external review
+- `pr_approved`: External review passed, ready for merge
 
 ---
 

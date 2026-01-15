@@ -307,6 +307,12 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         capture_output=True, text=True
     )
     if not git_status.stdout.strip():
+        # If Codex had something to say but made no changes, surface it
+        if result.stdout and result.stdout.strip():
+            msg = result.stdout.strip()
+            if len(msg) > 500:
+                msg = msg[:500] + "..."
+            raise StageError("implement", f"Codex made no changes. Output:\n{msg}", 4)
         raise StageError("implement", "Codex made no changes", 4)
 
     ctx.log(f"Implementation complete, {len(git_status.stdout.strip().splitlines())} files changed")
@@ -517,6 +523,22 @@ def stage_update_state(ctx: RunContext):
     plan_path = ctx.workstream_dir / "plan.md"
     mark_done(str(plan_path), ctx.microcommit.id)
     ctx.log(f"Marked {ctx.microcommit.id} as done")
+
+    # Auto-push if PR is open (so CI re-runs on the fix)
+    if ctx.workstream.pr_number:
+        print(f"Pushing to update PR #{ctx.workstream.pr_number}...")
+        ctx.log(f"Pushing to update PR #{ctx.workstream.pr_number}...")
+        push_result = subprocess.run(
+            ["git", "-C", worktree, "push"],
+            capture_output=True, text=True, timeout=60
+        )
+        if push_result.returncode == 0:
+            print("  Pushed successfully")
+            ctx.log("Pushed successfully")
+        else:
+            # Non-fatal: commit is local, user can push manually
+            print(f"  Push warning: {push_result.stderr.strip()}")
+            ctx.log(f"Push warning: {push_result.stderr.strip()}")
 
     # Update meta.env with last run info
     meta_path = ctx.workstream_dir / "meta.env"

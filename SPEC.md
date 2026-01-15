@@ -1814,83 +1814,63 @@ test-results/{project}/{suite}/
 
 ---
 
-## 9) Project Registration and Interview
+## 9) Interview script
 
-### 9.1 `wf project add` behavior
+### 9.1 `wf interview` behavior
 
-Primary command for registering and configuring projects.
+**Interactive mode (default):**
+```
+$ wf interview
 
-**Usage:**
+=== AOS Project Interview ===
+
+This will configure your project for AOS. Press Ctrl+C to abort.
+
+1. Product repository path
+   [default: /home/user/dev/myproject]:
+
+2. Default branch name
+   [default: main]:
+
+3. Makefile location (relative to repo root)
+   [default: Makefile]:
+
+4. Test targets (leave blank to skip):
+   - Unit tests target [default: test-unit]:
+   - Integration tests target [default: test-integration]:
+   - Smoke tests target [default: test-smoke]:
+   - E2E tests target [default: test-e2e]:
+
+5. Documentation path (relative to repo root)
+   [default: docs]:
+
+6. HITL mode (strict/stage-only/exceptions/off)
+   [default: strict]:
+
+7. Raw requirements paths (space-separated)
+   [default: requirements/raw]:
+
+Writing project_profile.env... done
+Writing project_profile.md... done
+
+Project configured successfully!
+```
+
+**Non-interactive mode:**
 ```bash
-wf project add /path/to/repo              # Register + interactive setup
-wf project add /path/to/repo --no-interview  # Quick register, skip setup
+wf interview --non-interactive \
+  --repo-path /path/to/repo \
+  --default-branch main \
+  --make-target-unit test-unit \
+  --hitl-mode strict
 ```
 
-**Interactive flow:**
-```
-$ wf project add /path/to/myproject
+### 9.2 Validation
 
-=== HASHD Project Setup ===
-
-Project name [myproject]: _
-Default branch [main]: _
-
-Detected: Makefile with 'test' target
-
-Test command [make test]: _
-Build command (optional, press Enter to skip) []: _
-Merge gate test command [make test]: _
-
-Requirements file [REQS.md]: _
-Spec file [SPEC.md]: _
-
-Merge mode:
-  1. local - merge directly to main
-  2. github_pr - create PR, merge via GitHub
-Select [1]: _
-
-Supervised mode (pause for review after each commit)? [y/N]: _
-
-Writing projects/myproject/project.env... done
-Writing projects/myproject/project_profile.env... done
-
-Project 'myproject' registered successfully.
-Set as current project. Run: wf project show
-```
-
-### 9.2 Auto-detection
-
-Detects build system and suggests test commands:
-
-| File Found | Suggested TEST_CMD |
-|------------|-------------------|
-| Makefile with `test:` target | `make test` |
-| package.json with `test` script | `npm test` |
-| pyproject.toml | `pytest` |
-| Taskfile.yml with `test:` task | `task test` |
-| Cargo.toml | `cargo test` |
-| go.mod | `go test ./...` |
-| pom.xml | `mvn test` |
-| build.gradle | `./gradlew test` |
-
-Also detects:
-- Project name from git remote or directory name
-- Default branch from `git symbolic-ref refs/remotes/origin/HEAD`
-
-### 9.3 Other project commands
-
-```bash
-wf project list              # List registered projects
-wf project use <name>        # Set active project context
-wf project show              # Show current project configuration
-wf interview                 # Update existing project config interactively
-```
-
-### 9.4 Validation
-
-- Path must exist and be a directory
-- Project name must be unique (not already registered)
-- Commands are stored as-is (executed with cwd set to worktree)
+- `REPO_PATH`: Must exist and be a git repository
+- `MAKEFILE_PATH`: If provided, must exist
+- `HITL_MODE`: Must be one of: `strict`, `stage-only`, `exceptions`, `off`
+- Paths: Must not contain `..` or absolute paths outside repo
 
 ---
 

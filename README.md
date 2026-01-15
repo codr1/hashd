@@ -28,7 +28,7 @@ Human gates are **mandatory**, not advisory. The clarification queue blocks work
 
 - **Clarification Queue** - Agents raise questions; workstream blocks until you answer (`wf clarify`)
 - **Approve/Reject/Reset** - Accept changes, iterate with feedback, or discard entirely
-- **Interactive TUI** - `wf watch` for real-time monitoring with keyboard shortcuts
+- **Interactive TUI** - `wf watch` for real-time monitoring of workstreams and stories with keyboard shortcuts
 - **Desktop Notifications** - Get alerted when workstreams need attention
 - **Parallel Workstreams** - Run multiple features simultaneously in isolated worktrees
 - **Conflict Detection** - `wf conflicts` warns about overlapping file changes
@@ -176,7 +176,7 @@ wf show other_feature  # Operates on other_feature, context unchanged
 | `wf approve <id>` | Accept story or approve workstream gate |
 | `wf merge <ws>` | Merge completed workstream to main |
 | `wf close <id>` | Close story or workstream (abandon) |
-| `wf watch [ws]` | Interactive TUI (dashboard if no ws, detail if ws given) |
+| `wf watch [id]` | Interactive TUI (dashboard, or detail for workstream/STORY-xxxx) |
 
 ### Supporting Commands
 
@@ -310,6 +310,50 @@ Hashd currently supports two modes controlled by `SUPERVISED_MODE`:
 | **Supervised** | `true` | Also pauses after breakdown for human review of plan.md |
 
 Default is gatekeeper mode - the pipeline runs autonomously but requires human approval at gates.
+
+## Merge Behavior
+
+### Automatic Conflict Resolution
+
+When using GitHub PR mode (`MERGE_MODE="github_pr"`), PRs may become conflicting if main moves ahead. The merge command handles this automatically:
+
+1. Fetches latest main
+2. Attempts rebase of the PR branch
+3. Force-pushes rebased branch (using `--force-with-lease`)
+4. Re-checks PR status
+
+If rebase fails due to merge conflicts, blocks for human resolution with instructions.
+
+### Risks and Mitigations
+
+| Risk | Mitigation |
+|------|------------|
+| Force push loses work | `--force-with-lease` prevents overwriting if branch changed |
+| Infinite rebase loop | Max 3 attempts before blocking for human |
+| GitHub API timing | 2s delay after push; worst case run `wf merge` again |
+| Review bypass | Checks for `REVIEW_REQUIRED` status from GitHub |
+
+### Review Requirements
+
+The merge respects GitHub's configured review requirements:
+
+- **APPROVED** - Merge proceeds
+- **PENDING/None** - Merge proceeds (assumes no review required)
+- **CHANGES_REQUESTED** - Blocks, returns to active state
+- **REVIEW_REQUIRED** - Blocks until required reviews complete
+
+### Check Requirements
+
+- **success** - Merge proceeds
+- **pending** - Merge proceeds (for slow bots like CodeRabbit)
+- **failure** - Blocks until checks pass
+
+<!-- TODO: Reassess pending check behavior. Currently allows merge with pending checks
+     to avoid blocking on slow bots (CodeRabbit). Consider:
+     - Configurable list of ignorable checks
+     - Timeout-based promotion of pending to success
+     - Separate "required" vs "optional" check categories
+-->
 
 ## License
 
