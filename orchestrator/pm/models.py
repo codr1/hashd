@@ -23,5 +23,6 @@ class Story:
     non_goals: list[str] = field(default_factory=list)
     dependencies: list[str] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
+    suggested_ws_id: str = ""                  # AI-suggested workstream ID (<16 chars, slugified)
     workstream: Optional[str] = None           # Linked workstream when accepted
     implemented_at: Optional[str] = None       # ISO timestamp when implemented

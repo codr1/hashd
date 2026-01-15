@@ -182,6 +182,12 @@ Instructions:
                     prompt += f"Notes: {feedback['notes']}\n"
                 prompt += "\n"
 
+            # Test failure output
+            if entry.get("test_failure"):
+                prompt += "**Test failure:**\n"
+                prompt += f"```\n{entry['test_failure']}\n```\n"
+                prompt += "Fix the code to make tests pass.\n\n"
+
     # Add human feedback if provided (for first attempt, before it's in history)
     if human_feedback:
         prompt += f"\n\n## HUMAN GUIDANCE\n\n{human_feedback}\n"

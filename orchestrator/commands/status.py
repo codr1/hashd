@@ -92,4 +92,27 @@ def cmd_status(args, ops_dir: Path, project_config) -> int:
     else:
         print("UAT:            not started")
 
+    # Show final review if exists
+    final_review_path = workstream_dir / "final_review.md"
+    if final_review_path.exists():
+        print()
+        print("Final Review")
+        print("-" * 40)
+        content = final_review_path.read_text()
+        # Extract verdict if present
+        lines = content.split('\n')
+        verdict_line = None
+        for line in lines:
+            if 'verdict' in line.lower():
+                verdict_line = line.strip()
+                break
+        if verdict_line:
+            print(f"  {verdict_line}")
+        else:
+            # Show first few non-empty lines as preview
+            preview_lines = [l.strip() for l in lines if l.strip() and not l.startswith('#')][:3]
+            for line in preview_lines:
+                print(f"  {line[:70]}{'...' if len(line) > 70 else ''}")
+        print(f"  (full review: {final_review_path})")
+
     return 0

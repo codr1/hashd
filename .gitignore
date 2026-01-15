@@ -153,3 +153,4 @@ yarn-error.log*
 .scratch/
 tmp/
 temp/
+PRECIOUS.md

@@ -7,23 +7,64 @@ Creates:
 - Workstream directory in workstreams/ with meta.env, plan.md
 """
 
-import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
-ID_PATTERN = re.compile(r'^[a-z][a-z0-9_]*$')
+from orchestrator.lib.constants import MAX_WS_ID_LEN, WS_ID_PATTERN
+from orchestrator.pm.stories import load_story, update_story
 
 
 def cmd_new(args, ops_dir: Path, project_config) -> int:
     """Create a new workstream."""
     ws_id = args.id
     title = args.title
+    story_id = getattr(args, 'stories', None)
+    story = None
+
+    # Compute project_dir (needed for story operations)
+    project_dir = ops_dir / "projects" / project_config.name
+
+    # Load story if provided
+    if story_id:
+        story = load_story(project_dir, story_id)
+        if not story:
+            print(f"ERROR: Story '{story_id}' not found")
+            return 2
+
+        # Use story's suggested_ws_id if no ID provided
+        if not ws_id:
+            if story.suggested_ws_id:
+                ws_id = story.suggested_ws_id
+                print(f"Using suggested ID from {story_id}: {ws_id}")
+            else:
+                print(f"ERROR: No workstream ID provided and {story_id} has no suggested ID")
+                print(f"  Usage: wf new <id> --stories {story_id}")
+                return 2
+
+        # Use story's title if no title provided
+        if not title:
+            title = story.title
+            print(f"Using title from {story_id}: {title}")
+
+    # Check that we have required values
+    if not ws_id:
+        print("ERROR: No workstream ID provided")
+        print("  Usage: wf new <id> <title>")
+        print("  Or:    wf new --stories STORY-xxxx")
+        return 2
+
+    if not title:
+        print("ERROR: No title provided")
+        print("  Usage: wf new <id> <title>")
+        return 2
 
     # Validate ID
-    if not ID_PATTERN.match(ws_id):
+    if not WS_ID_PATTERN.match(ws_id) or len(ws_id) > MAX_WS_ID_LEN:
         print(f"ERROR: Invalid workstream ID '{ws_id}'")
-        print("  Must match: lowercase letter, then lowercase letters/numbers/underscores")
+        print(f"  Must be 1-{MAX_WS_ID_LEN} chars: lowercase letter, then letters/numbers/underscores")
+        if ' ' in ws_id:
+            print("  (Hint: Did you mean to provide both ID and title? e.g., wf new my_id \"My Title\")")
         return 2
 
     # Validate title
@@ -130,9 +171,26 @@ Created: {now}
     # Create touched_files.txt (empty initially)
     (workstream_dir / "touched_files.txt").write_text("")
 
+    # Link story to workstream if provided
+    story_linked = False
+    if story:
+        try:
+            updated = update_story(project_dir, story.id, {
+                "workstream": ws_id,
+                "status": "accepted",
+            })
+            story_linked = updated is not None
+        except Exception as e:
+            print(f"WARNING: Failed to link story: {e}")
+
     print(f"Workstream '{ws_id}' created successfully")
     print(f"  Branch: {branch_name}")
     print(f"  Worktree: {worktree_path}")
     print(f"  Config: {workstream_dir}")
+    if story:
+        if story_linked:
+            print(f"  Story: {story.id} (linked)")
+        else:
+            print(f"  Story: {story.id} (link failed - update manually)")
 
     return 0

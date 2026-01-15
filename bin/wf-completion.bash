@@ -1,161 +1,80 @@
+# Bash completion for wf
 _wf_completions() {
-    local cur prev words cword
-    _init_completion || return
-
-    local commands="plan list use show log review watch refresh conflicts run close merge archive open approve reject clarify"
-    local plan_cmds="new clone add edit"
-    local archive_cmds="work stories delete"
-    local clarify_cmds="list show answer ask"
-
-    # Get ops dir from environment or default
-    local ops_dir="${WF_OPS_DIR:-$(pwd)}"
-
-    # Flag completion - check if current word starts with -
-    if [[ "$cur" == -* ]]; then
-        local cmd="${words[1]}"
-        local flags=""
-        case "$cmd" in
-            run)      flags="--once --loop --verbose -v" ;;
-            reject)   flags="--feedback -f --reset" ;;
-            log)      flags="--since -s --limit -n --verbose -v --reverse -r --no-color" ;;
-            use)      flags="--clear" ;;
-            close)    flags="--force" ;;
-            merge)    flags="--push" ;;
-            open)     flags="--use --force" ;;
-            plan)
-                if [[ "${words[2]}" == "edit" ]]; then
-                    flags="--feedback -f"
-                elif [[ "${words[2]}" == "add" ]]; then
-                    flags="--feedback -f"
-                fi
-                ;;
-        esac
-        if [[ -n "$flags" ]]; then
-            COMPREPLY=($(compgen -W "$flags" -- "$cur"))
-            return
-        fi
-    fi
-
-    case $cword in
-        1)
+    local cur prev commands
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    
+    # Main commands
+    commands="new list use refresh status show log watch conflicts run close merge archive open approve reject reset clarify pm review"
+    
+    # Subcommands
+    case "$prev" in
+        wf)
             COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+            return 0
             ;;
-        2)
-            case ${words[1]} in
-                plan)
-                    # Subcommands or story IDs
-                    local stories=""
-                    if [[ -d "$ops_dir/projects" ]]; then
-                        for f in "$ops_dir/projects"/*/pm/stories/STORY-*.json; do
-                            [[ -f "$f" ]] && stories+=" $(basename "${f%.json}")"
-                        done
-                    fi
-                    COMPREPLY=($(compgen -W "$plan_cmds $stories" -- "$cur"))
+        use|run|status|show|log|watch|conflicts|close|merge|approve|reject|reset|refresh|review)
+            # Complete with workstream IDs
+            local ws_dir="${WF_OPS_DIR:-$(dirname $(dirname $(realpath "${COMP_WORDS[0]}")))}/workstreams"
+            if [[ -d "$ws_dir" ]]; then
+                local workstreams=$(ls -1 "$ws_dir" 2>/dev/null | tr '\n' ' ')
+                COMPREPLY=($(compgen -W "$workstreams" -- "$cur"))
+            fi
+            return 0
+            ;;
+        clarify)
+            COMPREPLY=($(compgen -W "list show answer ask" -- "$cur"))
+            return 0
+            ;;
+        pm)
+            COMPREPLY=($(compgen -W "plan refine spec status list show" -- "$cur"))
+            return 0
+            ;;
+        archive)
+            COMPREPLY=($(compgen -W "delete" -- "$cur"))
+            return 0
+            ;;
+        open)
+            # Complete with archived workstream IDs
+            local closed_dir="${WF_OPS_DIR:-$(dirname $(dirname $(realpath "${COMP_WORDS[0]}")))}/workstreams/_closed"
+            if [[ -d "$closed_dir" ]]; then
+                local workstreams=$(ls -1 "$closed_dir" 2>/dev/null | tr '\n' ' ')
+                COMPREPLY=($(compgen -W "$workstreams" -- "$cur"))
+            fi
+            return 0
+            ;;
+    esac
+    
+    # Flags
+    case "$cur" in
+        -*)
+            case "${COMP_WORDS[1]}" in
+                use)
+                    COMPREPLY=($(compgen -W "--clear" -- "$cur"))
                     ;;
-                run|show|use|close|approve)
-                    # Workstream IDs and story IDs
-                    local ws=""
-                    if [[ -d "$ops_dir/workstreams" ]]; then
-                        for d in "$ops_dir/workstreams"/*/; do
-                            [[ -d "$d" && ! "$(basename "$d")" =~ ^_ ]] && ws+=" $(basename "$d")"
-                        done
-                    fi
-                    local stories=""
-                    if [[ -d "$ops_dir/projects" ]]; then
-                        for f in "$ops_dir/projects"/*/pm/stories/STORY-*.json; do
-                            [[ -f "$f" ]] && stories+=" $(basename "${f%.json}")"
-                        done
-                    fi
-                    COMPREPLY=($(compgen -W "$ws $stories" -- "$cur"))
+                run)
+                    COMPREPLY=($(compgen -W "--once --loop --verbose -v" -- "$cur"))
                     ;;
-                merge|conflicts|refresh|log|review|watch|reject)
-                    # Workstream IDs only
-                    local ws=""
-                    if [[ -d "$ops_dir/workstreams" ]]; then
-                        for d in "$ops_dir/workstreams"/*/; do
-                            [[ -d "$d" && ! "$(basename "$d")" =~ ^_ ]] && ws+=" $(basename "$d")"
-                        done
-                    fi
-                    COMPREPLY=($(compgen -W "$ws" -- "$cur"))
+                reject|reset)
+                    COMPREPLY=($(compgen -W "--feedback -f" -- "$cur"))
                     ;;
-                archive)
-                    COMPREPLY=($(compgen -W "$archive_cmds" -- "$cur"))
+                show)
+                    COMPREPLY=($(compgen -W "--brief -b" -- "$cur"))
                     ;;
-                clarify)
-                    COMPREPLY=($(compgen -W "$clarify_cmds" -- "$cur"))
+                log)
+                    COMPREPLY=($(compgen -W "--since -s --limit -n --verbose -v --reverse -r --no-color" -- "$cur"))
+                    ;;
+                close)
+                    COMPREPLY=($(compgen -W "--force" -- "$cur"))
+                    ;;
+                merge)
+                    COMPREPLY=($(compgen -W "--push" -- "$cur"))
                     ;;
                 open)
-                    # Archived workstream IDs
-                    local archived=""
-                    if [[ -d "$ops_dir/workstreams/_closed" ]]; then
-                        for d in "$ops_dir/workstreams/_closed"/*/; do
-                            [[ -d "$d" ]] && archived+=" $(basename "$d")"
-                        done
-                    fi
-                    if [[ -d "$ops_dir/workstreams/_merged" ]]; then
-                        for d in "$ops_dir/workstreams/_merged"/*/; do
-                            [[ -d "$d" ]] && archived+=" $(basename "$d")"
-                        done
-                    fi
-                    COMPREPLY=($(compgen -W "$archived" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--use --force" -- "$cur"))
                     ;;
             esac
-            ;;
-        3)
-            case ${words[1]} in
-                plan)
-                    if [[ "${words[2]}" == "clone" || "${words[2]}" == "edit" ]]; then
-                        # Story IDs for clone/edit
-                        local stories=""
-                        if [[ -d "$ops_dir/projects" ]]; then
-                            for f in "$ops_dir/projects"/*/pm/stories/STORY-*.json; do
-                                [[ -f "$f" ]] && stories+=" $(basename "${f%.json}")"
-                            done
-                        fi
-                        COMPREPLY=($(compgen -W "$stories" -- "$cur"))
-                    elif [[ "${words[2]}" == "add" ]]; then
-                        # Workstream IDs for add
-                        local ws=""
-                        if [[ -d "$ops_dir/workstreams" ]]; then
-                            for d in "$ops_dir/workstreams"/*/; do
-                                [[ -d "$d" && ! "$(basename "$d")" =~ ^_ ]] && ws+=" $(basename "$d")"
-                            done
-                        fi
-                        COMPREPLY=($(compgen -W "$ws" -- "$cur"))
-                    fi
-                    ;;
-                archive)
-                    if [[ "${words[2]}" == "delete" ]]; then
-                        # Archived workstream IDs
-                        local archived=""
-                        if [[ -d "$ops_dir/workstreams/_closed" ]]; then
-                            for d in "$ops_dir/workstreams/_closed"/*/; do
-                                [[ -d "$d" ]] && archived+=" $(basename "$d")"
-                            done
-                        fi
-                        if [[ -d "$ops_dir/workstreams/_merged" ]]; then
-                            for d in "$ops_dir/workstreams/_merged"/*/; do
-                                [[ -d "$d" ]] && archived+=" $(basename "$d")"
-                            done
-                        fi
-                        COMPREPLY=($(compgen -W "$archived" -- "$cur"))
-                    fi
-                    ;;
-                clarify)
-                    case ${words[2]} in
-                        show|answer|ask)
-                            # Workstream IDs
-                            local ws=""
-                            if [[ -d "$ops_dir/workstreams" ]]; then
-                                for d in "$ops_dir/workstreams"/*/; do
-                                    [[ -d "$d" && ! "$(basename "$d")" =~ ^_ ]] && ws+=" $(basename "$d")"
-                                done
-                            fi
-                            COMPREPLY=($(compgen -W "$ws" -- "$cur"))
-                            ;;
-                    esac
-                    ;;
-            esac
+            return 0
             ;;
     esac
 }

@@ -9,7 +9,14 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
-from orchestrator.lib.config import ProjectConfig, ProjectProfile, load_workstream, load_project_profile
+from orchestrator.lib.config import (
+    ProjectConfig,
+    ProjectProfile,
+    load_workstream,
+    load_project_profile,
+    get_current_workstream,
+    clear_current_workstream,
+)
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit
 from orchestrator.agents.codex import CodexAgent
 
@@ -50,7 +57,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     # If already merged but not archived, just archive
     if ws.status == "merged":
         print(f"Workstream already merged, completing archive...")
-        return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config)
+        return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config, ops_dir)
 
     # If blocked on merge conflicts, check if resolved
     if ws.status == "merge_conflicts":
@@ -150,7 +157,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print(result.stderr)
 
     # 8. Archive
-    return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config)
+    return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config, ops_dir)
 
 
 def _attempt_merge_with_retry(repo_path: Path, ws, merge_msg: str,
@@ -322,7 +329,7 @@ def _resume_merge(args, ops_dir: Path, project_config: ProjectConfig,
             capture_output=True, text=True
         )
 
-    return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config)
+    return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config, ops_dir)
 
 
 def _update_status(workstream_dir: Path, status: str):
@@ -349,7 +356,7 @@ def _update_status(workstream_dir: Path, status: str):
 
 
 def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
-                        ws, project_config: ProjectConfig) -> int:
+                        ws, project_config: ProjectConfig, ops_dir: Path) -> int:
     """Archive workstream to _closed/."""
     print("Archiving workstream...")
     repo_path = project_config.repo_path
@@ -376,6 +383,10 @@ def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
         shutil.rmtree(str(dest))
 
     shutil.move(str(workstream_dir), str(dest))
+
+    # Clear context if this was the current workstream
+    if get_current_workstream(ops_dir) == ws.id:
+        clear_current_workstream(ops_dir)
 
     print(f"\nWorkstream '{ws.id}' merged and archived.")
     print(f"  Branch '{ws.branch}' preserved in git history")

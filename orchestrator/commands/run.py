@@ -9,12 +9,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from orchestrator.lib.config import ProjectConfig, load_project_profile, load_workstream
+from orchestrator.lib.planparse import parse_plan, get_next_microcommit
 from orchestrator.runner.locking import (
     workstream_lock, LockTimeout, count_running_workstreams,
     cleanup_stale_lock_files, CONCURRENCY_WARNING_THRESHOLD
 )
 from orchestrator.runner.context import RunContext
 from orchestrator.notifications import notify_awaiting_review, notify_complete, notify_failed, notify_blocked
+from orchestrator.commands.review import run_final_review
 from orchestrator.runner.stages import run_stage, StageError, StageBlocked, StageResult
 from orchestrator.runner.impl.stages import (
     stage_load,
@@ -30,7 +32,25 @@ from orchestrator.runner.impl.stages import (
 )
 
 
-MAX_REVIEW_ATTEMPTS = 5
+MAX_REVIEW_ATTEMPTS = 3
+
+
+def _run_final_review_and_exit(workstream_dir: Path, project_config: ProjectConfig, ws_id: str, verbose: bool = True) -> int:
+    """Run final branch review and return exit code."""
+    print("Result: all micro-commits complete")
+    print("\nRunning final branch review...")
+    print()
+    verdict = run_final_review(workstream_dir, project_config, verbose=verbose)
+    print()
+    if verdict == "approve":
+        print("Final review: APPROVE")
+        print(f"\nReady to merge: wf merge {ws_id}")
+        notify_complete(ws_id)
+    else:
+        print("Final review: CONCERNS")
+        print(f"\nReview the concerns above, then: wf merge {ws_id}")
+        notify_awaiting_review(ws_id)
+    return 0
 
 
 def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
@@ -160,10 +180,22 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
                 ctx.write_result("blocked", blocked_reason=reason)
                 return "blocked", 8, None
         except StageError as e:
-            # Test failure - don't retry, exit immediately
-            ctx.write_result("failed", e.stage)
-            ctx.log(f"Tests failed on attempt {attempt}, not retrying")
-            return "failed", e.exit_code, e.stage
+            if attempt < MAX_REVIEW_ATTEMPTS:
+                # Test failure - capture output and retry
+                ctx.log(f"Tests failed on attempt {attempt}, will retry")
+                test_output = _load_test_output(ctx.run_dir)
+                implement_summary = _load_implement_summary(ctx.run_dir)
+                ctx.review_history.append({
+                    "attempt": attempt,
+                    "test_failure": test_output,
+                    "implement_summary": implement_summary,
+                })
+                continue
+            else:
+                # Final attempt failed - fall through to HITL
+                ctx.log(f"Tests failed after {MAX_REVIEW_ATTEMPTS} attempts")
+                ctx.write_result("failed", e.stage)
+                break
 
         # REVIEW - pass full conversation history
         try:
@@ -273,6 +305,22 @@ def _load_implement_summary(run_dir: Path) -> str:
         return ""
 
 
+def _load_test_output(run_dir: Path) -> str:
+    """Load test output from test.log."""
+    log_path = run_dir / "stages" / "test.log"
+    if not log_path.exists():
+        return ""
+    try:
+        content = log_path.read_text()
+        # Truncate if too long (keep last 2000 chars for most relevant output)
+        if len(content) > 2000:
+            content = "... (truncated)\n" + content[-2000:]
+        return content.strip()
+    except IOError as e:
+        logger.warning(f"Failed to load test output from {log_path}: {e}")
+        return ""
+
+
 def _reset_worktree(worktree: Path):
     """Reset uncommitted changes in worktree for clean retry."""
     import subprocess
@@ -343,8 +391,20 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
                 status, exit_code, failed_stage = run_once(ctx)
 
+                # After successful commit, check if all commits are now done
+                if status == "passed":
+                    plan_path = workstream_dir / "plan.md"
+                    commits = parse_plan(str(plan_path))
+                    if get_next_microcommit(commits) is None:
+                        return _run_final_review_and_exit(workstream_dir, project_config, ws_id, args.verbose)
+
                 # Send notifications based on result
                 if status == "blocked":
+                    # Check if all commits are done (select stage returned all_complete)
+                    select_reason = ctx.stages.get("select", {}).get("notes", "")
+                    if select_reason == "all_complete":
+                        return _run_final_review_and_exit(workstream_dir, project_config, ws_id, args.verbose)
+
                     reason = ctx.stages.get("human_review", {}).get("notes", "")
                     if "human approval" in reason.lower():
                         notify_awaiting_review(ws_id)
@@ -354,14 +414,18 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                     notify_failed(ws_id, failed_stage or "unknown")
                 # No notification on single successful runs - only loop completion notifies
 
-                print(f"\nResult: {status}")
+                # Show result with clearer status for human review
+                hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
+                if status == "blocked" and "human approval" in hr_notes.lower():
+                    print(f"\nResult: waiting for human")
+                else:
+                    print(f"\nResult: {status}")
                 print(f"Run directory: {ctx.run_dir}")
 
                 # Show actionable next steps
                 if status == "blocked":
-                    hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
                     if "human approval" in hr_notes.lower():
-                        print(f"\nAwaiting human review:")
+                        print(f"\nNext steps:")
                         print(f"  wf approve {ws_id}")
                         print(f"  wf reject {ws_id} -f '...'")
                         print(f"  wf reset {ws_id}")
@@ -394,23 +458,22 @@ def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, 
         print(f"Run ID: {ctx.run_id}")
 
         status, exit_code, failed_stage = run_once(ctx)
-        print(f"Result: {status}")
 
         if status == "blocked":
             reason = ctx.stages.get("select", {}).get("notes", "")
             if reason == "all_complete":
-                print("\nAll micro-commits complete!")
-                notify_complete(ws_id)
-                return 0
+                return _run_final_review_and_exit(workstream_dir, project_config, ws_id, verbose)
             # Check if blocked on human review
             hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
             if "human approval" in hr_notes.lower():
-                print(f"\nAwaiting human review")
-                print(f"Use: wf approve {ws_id}")
-                print(f"  or: wf reject {ws_id} --feedback \"...\"")
-                print(f"  or: wf reset {ws_id}")
+                print("Result: waiting for human")
+                print(f"\nNext steps:")
+                print(f"  wf approve {ws_id}")
+                print(f"  wf reject {ws_id} -f '...'")
+                print(f"  wf reset {ws_id}")
                 notify_awaiting_review(ws_id)
             else:
+                print(f"Result: {status}")
                 print(f"\nBlocked: {reason or hr_notes}")
                 notify_blocked(ws_id, reason or hr_notes)
             return exit_code

@@ -3,12 +3,9 @@ wf review - Final AI review of entire branch before merge.
 """
 
 import subprocess
-from datetime import datetime
 from pathlib import Path
 
 from orchestrator.lib.config import ProjectConfig, load_workstream
-from orchestrator.lib.prompts import render_prompt
-from orchestrator.lib.stats import AgentStats, record_agent_stats
 from orchestrator.agents.claude import ClaudeAgent
 
 
@@ -58,45 +55,49 @@ def run_final_review(workstream_dir: Path, project_config: ProjectConfig, verbos
     commit_log = log_result.stdout if log_result.returncode == 0 else ""
 
     # Build review prompt
-    prompt = render_prompt(
-        "final_review",
-        feature_title=ws.title,
-        commit_log=commit_log,
-        diff_stats=diff_stats,
-        diff=diff
-    )
+    prompt = f"""You are reviewing a complete feature branch before merge.
+
+## Feature: {ws.title}
+
+## Commits:
+{commit_log}
+
+## Diff Stats:
+{diff_stats}
+
+## Full Diff:
+{diff}
+
+Provide a final review with:
+1. **Summary**: 2-3 sentences describing what this feature does
+2. **Changes Overview**: Key areas affected
+3. **Assessment**: Holistic review - does this hang together well? Any cross-cutting concerns?
+4. **Concerns**: Any issues spotted (or "None")
+5. **Verdict**: Either "APPROVE" or "CONCERNS"
+
+Be concise but thorough. This is a senior staff engineer's final check before merge.
+"""
 
     if verbose:
         print(f"Reviewing {ws.id}: {ws.title}")
         print("=" * 60)
 
     agent = ClaudeAgent(timeout=180)
-    result = agent.review_freeform(prompt, project_config.repo_path)
-
-    # Record stats
-    now = datetime.now()
-    record_agent_stats(workstream_dir, AgentStats(
-        timestamp=now.isoformat(),
-        run_id=f"final_review_{now.strftime('%Y%m%d-%H%M%S')}",
-        agent="claude",
-        elapsed_seconds=result.elapsed_seconds,
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
-    ))
+    review_text = agent.review_freeform(prompt, project_config.repo_path)
 
     if verbose:
-        print(result.text)
+        print(review_text)
         print("=" * 60)
 
     # Save to workstream directory
     review_file = workstream_dir / "final_review.md"
-    review_file.write_text(f"# Final Branch Review: {ws.id}\n\n{result.text}\n")
+    review_file.write_text(f"# Final Branch Review: {ws.id}\n\n{review_text}\n")
 
     if verbose:
         print(f"\nSaved to: {review_file}")
 
     # Determine verdict from review text
-    review_lower = result.text.lower()
+    review_lower = review_text.lower()
     if "verdict" in review_lower:
         # Look for verdict line
         if "approve" in review_lower.split("verdict")[-1][:50]:

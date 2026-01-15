@@ -76,6 +76,7 @@ def create_story(project_dir: Path, data: dict) -> Story:
         non_goals=data.get("non_goals", []),
         dependencies=data.get("dependencies", []),
         open_questions=data.get("open_questions", []),
+        suggested_ws_id=data.get("suggested_ws_id", ""),
     )
 
     stories_dir = get_stories_dir(project_dir)
@@ -174,6 +175,8 @@ def write_story_markdown(path: Path, story: Story):
         f"**Created:** {story.created}",
     ]
 
+    if story.suggested_ws_id:
+        lines.append(f"**Suggested Workstream ID:** {story.suggested_ws_id}")
     if story.workstream:
         lines.append(f"**Workstream:** {story.workstream}")
     if story.implemented_at:
