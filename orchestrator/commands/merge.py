@@ -20,6 +20,7 @@ from orchestrator.lib.config import (
     get_current_workstream,
     clear_current_workstream,
 )
+from orchestrator.runner.locking import global_lock
 from orchestrator.lib.github import (
     check_gh_cli,
     get_pr_status,
@@ -45,6 +46,77 @@ from orchestrator.commands.docs import run_docs_update
 
 
 MAX_CONFLICT_RESOLUTION_ATTEMPTS = 3
+
+
+def _run_git(args: list[str], cwd: Path, timeout: int = GIT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
+    """Run a git command with timeout handling.
+
+    Returns CompletedProcess on success or timeout.
+    On timeout, returns a CompletedProcess with returncode=-1.
+    """
+    try:
+        return subprocess.run(
+            args, cwd=str(cwd), capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        cmd_str = " ".join(args[:3]) + "..." if len(args) > 3 else " ".join(args)
+        print(f"  Warning: git command timed out: {cmd_str}")
+        return subprocess.CompletedProcess(args, -1, stdout="", stderr="Command timed out")
+
+
+def _safely_update_spec(
+    worktree: Optional[Path],
+    ws_id: str,
+    ops_dir: Path,
+    project_config: ProjectConfig,
+    story: Optional[Story]
+) -> None:
+    """Update SPEC.md and commit the changes.
+
+    This is best-effort - failures are logged as warnings but don't block the workflow.
+    If SPEC.md is corrupted by a partial write, it's restored to clean state.
+    """
+    if not worktree or not worktree.exists():
+        return
+
+    print("Updating SPEC.md...")
+
+    # Run the docs update (Claude edits SPEC.md in place)
+    spec_ok, spec_msg = run_docs_update(
+        ws_id, ops_dir, project_config,
+        timeout=300,
+        spec_source_dir=worktree,
+    )
+
+    if spec_ok:
+        # Stage and commit any changes Claude made
+        add_result = _run_git(["git", "add", "SPEC.md"], worktree)
+        if add_result.returncode == 0:
+            story_ref = f"Story: {story.id}" if story else f"Workstream: {ws_id}"
+            commit_result = _run_git(
+                ["git", "commit", "-m",
+                 f"Update SPEC.md with implemented functionality\n\n{story_ref}"],
+                worktree
+            )
+            if commit_result.returncode == 0:
+                print("  Committed SPEC update")
+            elif "nothing to commit" in commit_result.stdout:
+                print("  SPEC unchanged (already documented)")
+            else:
+                print(f"  Warning: git commit failed: {commit_result.stderr.strip()}")
+    else:
+        print(f"  Warning: SPEC update failed: {spec_msg}")
+
+        # Check if SPEC.md was modified despite failure (partial write)
+        status_result = _run_git(
+            ["git", "status", "--porcelain", "SPEC.md"], worktree
+        )
+        if status_result.stdout.strip():
+            # SPEC.md was modified - restore it to avoid pushing garbage
+            print("  Restoring SPEC.md to clean state...")
+            restore_result = _run_git(["git", "checkout", "SPEC.md"], worktree)
+            if restore_result.returncode != 0:
+                print(f"  Warning: Failed to restore SPEC.md: {restore_result.stderr.strip()}")
 
 
 def _update_pr_metadata(workstream_dir: Path, pr_url: str, pr_number: int) -> None:
@@ -142,25 +214,19 @@ def _sync_local_main(repo_path: Path, default_branch: str) -> None:
     """
     print(f"Syncing local {default_branch} with remote...")
 
-    checkout = subprocess.run(
-        ["git", "-C", str(repo_path), "checkout", default_branch],
-        capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-    )
+    checkout = _run_git(["git", "checkout", default_branch], repo_path)
     if checkout.returncode != 0:
         print(f"  Warning: checkout failed: {checkout.stderr.strip()}")
         return
 
-    fetch = subprocess.run(
-        ["git", "-C", str(repo_path), "fetch", "origin"],
-        capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-    )
+    fetch = _run_git(["git", "fetch", "origin"], repo_path)
     if fetch.returncode != 0:
         print(f"  Warning: fetch failed: {fetch.stderr.strip()}")
         return
 
-    reset = subprocess.run(
-        ["git", "-C", str(repo_path), "reset", "--hard", f"origin/{default_branch}"],
-        capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+    reset = _run_git(
+        ["git", "reset", "--hard", f"origin/{default_branch}"],
+        repo_path
     )
     if reset.returncode != 0:
         print(f"  Warning: reset failed: {reset.stderr.strip()}")
@@ -176,38 +242,28 @@ def _attempt_rebase_pr_branch(worktree_path: str, default_branch: str) -> bool:
     Returns True on success, False if conflicts or other failure.
     Uses --force-with-lease for safe force push.
     """
+    cwd = Path(worktree_path)
+
     # Fetch latest
-    fetch = subprocess.run(
-        ["git", "-C", worktree_path, "fetch", "origin", default_branch],
-        capture_output=True, timeout=GIT_TIMEOUT_SECONDS
-    )
+    fetch = _run_git(["git", "fetch", "origin", default_branch], cwd)
     if fetch.returncode != 0:
-        print(f"  Fetch failed: {fetch.stderr.decode()}")
+        print(f"  Fetch failed: {fetch.stderr.strip()}")
         return False
 
     # Attempt rebase
-    rebase = subprocess.run(
-        ["git", "-C", worktree_path, "rebase", f"origin/{default_branch}"],
-        capture_output=True, timeout=GIT_TIMEOUT_SECONDS
-    )
+    rebase = _run_git(["git", "rebase", f"origin/{default_branch}"], cwd)
 
     if rebase.returncode != 0:
         # Abort and report
-        subprocess.run(
-            ["git", "-C", worktree_path, "rebase", "--abort"],
-            capture_output=True, timeout=GIT_TIMEOUT_SECONDS
-        )
+        _run_git(["git", "rebase", "--abort"], cwd)
         print("  Rebase conflicts detected - requires human resolution")
         return False
 
     # Force push rebased branch
-    push = subprocess.run(
-        ["git", "-C", worktree_path, "push", "--force-with-lease"],
-        capture_output=True, timeout=GIT_TIMEOUT_SECONDS
-    )
+    push = _run_git(["git", "push", "--force-with-lease"], cwd)
 
     if push.returncode != 0:
-        print(f"  Push failed: {push.stderr.decode()}")
+        print(f"  Push failed: {push.stderr.strip()}")
         return False
 
     print("  Auto-rebase successful")
@@ -353,6 +409,157 @@ def _handle_pr_approved(
     )
 
 
+def cmd_pr(args, ops_dir: Path, project_config: ProjectConfig) -> int:
+    """Create GitHub PR for workstream.
+
+    Separate command from merge for clarity:
+    - wf pr: Create the PR
+    - wf merge: Merge the approved PR
+    """
+    ws_id = args.id
+    workstreams_dir = ops_dir / "workstreams"
+    workstream_dir = workstreams_dir / ws_id
+
+    if not workstream_dir.exists():
+        print(f"ERROR: Workstream '{ws_id}' not found")
+        return 2
+
+    ws = load_workstream(workstream_dir)
+
+    # Load project profile
+    project_dir = ops_dir / "projects" / project_config.name
+    try:
+        profile = load_project_profile(project_dir)
+    except FileNotFoundError:
+        profile = ProjectProfile.default()
+
+    # Require github_pr mode
+    if profile.merge_mode != MERGE_MODE_GITHUB_PR:
+        print("ERROR: wf pr only works with MERGE_MODE=github_pr")
+        print(f"  Current mode: {profile.merge_mode}")
+        print(f"  For local merge, use: wf merge {ws_id}")
+        return 1
+
+    # Check if PR already exists
+    if ws.pr_number:
+        print(f"PR already exists: #{ws.pr_number}")
+        if ws.pr_url:
+            print(f"  URL: {ws.pr_url}")
+        print(f"\nTo merge: wf merge {ws_id}")
+        return 0
+
+    # Check if already merged
+    if ws.status == STATUS_MERGED:
+        print("Workstream already merged")
+        return 0
+
+    # Verify all micro-commits are complete
+    plan_path = workstream_dir / "plan.md"
+    if plan_path.exists():
+        commits = parse_plan(str(plan_path))
+        next_commit = get_next_microcommit(commits)
+        if next_commit is not None:
+            print(f"ERROR: Not all micro-commits complete")
+            print(f"  Next: {next_commit.id} - {next_commit.title}")
+            print(f"  Use 'wf run {ws_id}' to complete remaining work")
+            return 2
+
+    # Check for uncommitted changes in worktree
+    if ws.worktree and ws.worktree.exists():
+        result = _run_git(["git", "status", "--porcelain"], ws.worktree)
+        if result.stdout.strip():
+            print("ERROR: Uncommitted changes in worktree")
+            print(result.stdout)
+            return 2
+
+    # Find story for PR body and SPEC update
+    story = find_story_by_workstream(project_dir, ws.id)
+
+    # Update SPEC.md before creating PR (so it's included in the PR)
+    _safely_update_spec(ws.worktree, ws.id, ops_dir, project_config, story)
+
+    # Verify branch is ahead of base
+    git_cwd = ws.worktree if (ws.worktree and ws.worktree.exists()) else project_config.repo_path
+    result = _run_git(
+        ["git", "rev-list", "--count", f"{ws.base_sha}..{ws.branch}"],
+        git_cwd
+    )
+    if result.returncode != 0 or result.stdout.strip() == "0":
+        print("ERROR: No commits to create PR (branch is not ahead of base)")
+        return 2
+
+    commit_count = result.stdout.strip()
+
+    # Push branch to remote before creating PR
+    print(f"Pushing {ws.branch} to remote...")
+    push_result = _run_git(["git", "push", "-u", "origin", ws.branch], git_cwd)
+    if push_result.returncode != 0:
+        print(f"ERROR: Push failed: {push_result.stderr.strip()}")
+        return 1
+
+    # Create PR
+    return _create_pr_and_wait(
+        args, ops_dir, project_config, ws, workstream_dir, workstreams_dir,
+        commit_count, story
+    )
+
+
+def cmd_pr_feedback(args, ops_dir: Path, project_config: ProjectConfig) -> int:
+    """Display PR feedback from GitHub.
+
+    Fetches and displays review comments from the PR.
+    Exit 0 if feedback found, exit 1 if none.
+    """
+    ws_id = args.id
+    workstream_dir = ops_dir / "workstreams" / ws_id
+
+    if not workstream_dir.exists():
+        print(f"ERROR: Workstream '{ws_id}' not found")
+        return 2
+
+    ws = load_workstream(workstream_dir)
+
+    if not ws.pr_number:
+        print("No PR exists for this workstream")
+        print(f"  Create one first: wf pr {ws_id}")
+        return 1
+
+    # Check gh availability
+    gh_ok, gh_msg = check_gh_available()
+    if not gh_ok:
+        print(f"ERROR: {gh_msg}")
+        return 1
+
+    print(f"Fetching feedback from PR #{ws.pr_number}...")
+    feedback = fetch_pr_feedback(project_config.repo_path, ws.pr_number)
+
+    if feedback.error:
+        print(f"ERROR: {feedback.error}")
+        return 1
+
+    if not feedback.items:
+        print(f"No review comments found on PR #{ws.pr_number}")
+        return 1
+
+    print(f"\n--- PR #{ws.pr_number} Review Comments ---\n")
+    for item in feedback.items:
+        author = item.author or "reviewer"
+        if item.path and item.line:
+            print(f"[{author}] {item.path}:{item.line}")
+        elif item.path:
+            print(f"[{author}] {item.path}")
+        else:
+            print(f"[{author}]")
+        # Indent body
+        for line in item.body.split('\n'):
+            print(f"  {line}")
+        print()
+
+    print("---")
+    print(f"\nTo create fix commit: wf reject {ws_id} -f 'description'")
+    return 0
+
+
 def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     """Merge workstream branch to main and auto-archive."""
     ws_id = args.id
@@ -375,25 +582,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     try:
         profile = load_project_profile(project_dir)
     except FileNotFoundError:
-        profile = ProjectProfile(
-            # New command-based fields
-            test_cmd="make test",
-            build_cmd="make build",
-            merge_gate_test_cmd="make test",
-            # Legacy fields (for backward compat)
-            build_runner="make",
-            makefile_path="Makefile",
-            build_target="build",
-            test_target="test",
-            merge_gate_test_target="test",
-            # Timeouts and modes
-            implement_timeout=1200,
-            review_timeout=900,
-            test_timeout=300,
-            breakdown_timeout=180,
-            supervised_mode=False,
-            merge_mode="local",
-        )
+        profile = ProjectProfile.default()
 
     # If already merged but not archived, just archive
     if ws.status == STATUS_MERGED:
@@ -446,14 +635,12 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     _update_status(workstream_dir, "merging")
 
     # 2. Verify no uncommitted changes in worktree
-    if ws.worktree.exists():
-        result = subprocess.run(
-            ["git", "-C", str(ws.worktree), "status", "--porcelain"],
-            capture_output=True, text=True
-        )
+    if ws.worktree and ws.worktree.exists():
+        result = _run_git(["git", "status", "--porcelain"], ws.worktree)
         if result.stdout.strip():
             print("ERROR: Uncommitted changes in worktree")
             print(result.stdout)
+            _update_status(workstream_dir, "complete")
             return 2
 
     # 2.4 Update SPEC.md (before merge, so it's in the commit)
@@ -461,136 +648,99 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     # Note: If SPEC update succeeds but later steps fail, the SPEC commit remains
     # in the branch. This is acceptable - the commit is valid, merge just didn't complete.
     story = find_story_by_workstream(project_dir, ws.id)
-    if ws.worktree.exists():
-        print(f"Updating SPEC.md...")
-        # Claude edits SPEC.md in place (targeted edits, not full regeneration)
-        spec_ok, spec_msg = run_docs_update(
-            ws.id, ops_dir, project_config,
-            timeout=300,
-            spec_source_dir=ws.worktree,
-        )
-        if spec_ok:
-            # Stage and commit any changes Claude made
-            add_result = subprocess.run(
-                ["git", "-C", str(ws.worktree), "add", "SPEC.md"],
-                capture_output=True, text=True
-            )
-            if add_result.returncode == 0:
-                story_ref = f"Story: {story.id}" if story else f"Workstream: {ws.id}"
-                commit_result = subprocess.run(
-                    ["git", "-C", str(ws.worktree), "commit", "-m",
-                     f"Update SPEC.md with implemented functionality\n\n{story_ref}"],
-                    capture_output=True, text=True
-                )
-                if commit_result.returncode == 0:
-                    print("  Committed SPEC update")
-                elif "nothing to commit" in commit_result.stdout:
-                    print("  SPEC unchanged (already documented)")
-                else:
-                    print(f"  Warning: git commit failed: {commit_result.stderr.strip()}")
-        else:
-            print(f"  Warning: SPEC update failed: {spec_msg}")
+    _safely_update_spec(ws.worktree, ws.id, ops_dir, project_config, story)
 
     # Note: REQS cleanup now happens post-merge in _archive_workstream()
     # This prevents cleanup from being lost during rebase conflicts
 
     # 3. Verify branch is ahead of base
-    git_dir = str(ws.worktree) if ws.worktree.exists() else str(project_config.repo_path)
-    result = subprocess.run(
-        ["git", "-C", git_dir, "rev-list", "--count", f"{ws.base_sha}..{ws.branch}"],
-        capture_output=True, text=True
+    git_cwd = ws.worktree if (ws.worktree and ws.worktree.exists()) else project_config.repo_path
+    result = _run_git(
+        ["git", "rev-list", "--count", f"{ws.base_sha}..{ws.branch}"],
+        git_cwd
     )
     if result.returncode != 0 or result.stdout.strip() == "0":
         print("ERROR: No commits to merge (branch is not ahead of base)")
+        _update_status(workstream_dir, "complete")
         return 2
 
     commit_count = result.stdout.strip()
 
     repo_path = project_config.repo_path
 
-    # GitHub PR workflow: create PR instead of merging locally
+    # GitHub PR workflow: require PR to exist (use wf pr to create)
     if profile.merge_mode == MERGE_MODE_GITHUB_PR:
-        # If PR already exists, push updates and check status
-        if ws.pr_number:
-            print(f"Pushing updates to PR #{ws.pr_number}...")
-            push_result = subprocess.run(
-                ["git", "-C", git_dir, "push"],
-                capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-            )
-            if push_result.returncode != 0:
-                print(f"ERROR: Push failed: {push_result.stderr.strip()}")
-                return 1
-            _update_status(workstream_dir, STATUS_PR_OPEN)
-            return _handle_pr_open(args, ops_dir, project_config, ws, workstream_dir, workstreams_dir)
+        if not ws.pr_number:
+            print("ERROR: No PR exists for this workstream")
+            print(f"  Create one first: wf pr {ws_id}")
+            _update_status(workstream_dir, "complete")
+            return 1
 
-        return _create_pr_and_wait(
-            args, ops_dir, project_config, ws, workstream_dir, workstreams_dir,
-            commit_count, story
+        # PR exists - push updates and check status
+        print(f"Pushing updates to PR #{ws.pr_number}...")
+        push_result = _run_git(["git", "push"], git_cwd)
+        if push_result.returncode != 0:
+            print(f"ERROR: Push failed: {push_result.stderr.strip()}")
+            _update_status(workstream_dir, "complete")
+            return 1
+        _update_status(workstream_dir, STATUS_PR_OPEN)
+        return _handle_pr_open(args, ops_dir, project_config, ws, workstream_dir, workstreams_dir)
+
+    # Local merge workflow - acquire global lock to serialize merges
+    # Lock covers only the merge operation, not archive (which doesn't touch main)
+    print(f"Acquiring merge lock...")
+    with global_lock(ops_dir):
+        print(f"Merging {commit_count} commit(s) from {ws.branch} to {project_config.default_branch}")
+
+        # 3.5 Check main repo for uncommitted changes BEFORE checkout
+        result = _run_git(["git", "status", "--porcelain"], repo_path)
+        if result.stdout.strip():
+            print("ERROR: Main repo has uncommitted changes - cannot merge")
+            print(result.stdout)
+            print()
+            print("Options:")
+            print(f"  cd {repo_path} && git stash     # Save changes for later")
+            print(f"  cd {repo_path} && git checkout . # Discard changes")
+            return 2
+
+        # 4. Checkout main branch
+        print(f"Checking out {project_config.default_branch}...")
+        result = _run_git(["git", "checkout", project_config.default_branch], repo_path)
+        if result.returncode != 0:
+            print(f"ERROR: Failed to checkout {project_config.default_branch}")
+            print(result.stderr)
+            return 1
+
+        # 5. Pull latest (optional, only if remote exists)
+        result = _run_git(["git", "remote"], repo_path)
+        if result.stdout.strip():
+            print("Pulling latest...")
+            pull_result = _run_git(["git", "pull", "--ff-only"], repo_path)
+            if pull_result.returncode != 0:
+                print(f"WARNING: Pull failed (continuing anyway): {pull_result.stderr.strip()}")
+
+        # 6. Attempt merge with conflict resolution loop
+        merge_msg = f"Merge {ws.branch}: {ws.title}"
+        merge_result = _attempt_merge_with_retry(
+            repo_path, ws, merge_msg, profile
         )
 
-    # Local merge workflow
-    print(f"Merging {commit_count} commit(s) from {ws.branch} to {project_config.default_branch}")
+        if merge_result == "blocked":
+            _update_status(workstream_dir, "merge_conflicts")
+            print(f"\nBlocked: merge conflicts require human resolution")
+            print(f"  Resolve conflicts in {repo_path}")
+            print(f"  Then run: wf merge {ws_id}")
+            return 8  # Blocked exit code
 
-    # 3.5 Check main repo for uncommitted changes BEFORE checkout
-    result = subprocess.run(
-        ["git", "-C", str(repo_path), "status", "--porcelain"],
-        capture_output=True, text=True
-    )
-    if result.stdout.strip():
-        print("ERROR: Main repo has uncommitted changes - cannot merge")
-        print(result.stdout)
-        print()
-        print("Options:")
-        print(f"  cd {repo_path} && git stash     # Save changes for later")
-        print(f"  cd {repo_path} && git checkout . # Discard changes")
-        return 2
+        if merge_result == "failed":
+            _update_status(workstream_dir, "complete")
+            return 1
 
-    # 4. Checkout main branch
-    print(f"Checking out {project_config.default_branch}...")
-    result = subprocess.run(
-        ["git", "-C", str(repo_path), "checkout", project_config.default_branch],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        print(f"ERROR: Failed to checkout {project_config.default_branch}")
-        print(result.stderr)
-        return 1
+        # Merge succeeded - update status IMMEDIATELY
+        print(f"Merged: {merge_msg}")
+        _update_status(workstream_dir, STATUS_MERGED)
 
-    # 5. Pull latest (optional, only if remote exists)
-    result = subprocess.run(
-        ["git", "-C", str(repo_path), "remote"],
-        capture_output=True, text=True
-    )
-    if result.stdout.strip():
-        print("Pulling latest...")
-        pull_result = subprocess.run(
-            ["git", "-C", str(repo_path), "pull", "--ff-only"],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-        )
-        if pull_result.returncode != 0:
-            print(f"WARNING: Pull failed (continuing anyway): {pull_result.stderr.strip()}")
-
-    # 6. Attempt merge with conflict resolution loop
-    merge_msg = f"Merge {ws.branch}: {ws.title}"
-    merge_result = _attempt_merge_with_retry(
-        repo_path, ws, merge_msg, profile
-    )
-
-    if merge_result == "blocked":
-        _update_status(workstream_dir, "merge_conflicts")
-        print(f"\nBlocked: merge conflicts require human resolution")
-        print(f"  Resolve conflicts in {repo_path}")
-        print(f"  Then run: wf merge {ws_id}")
-        return 8  # Blocked exit code
-
-    if merge_result == "failed":
-        return 1
-
-    # Merge succeeded - update status IMMEDIATELY
-    print(f"Merged: {merge_msg}")
-    _update_status(workstream_dir, STATUS_MERGED)
-
-    # 7. Archive (push happens inside, after REQS cleanup)
+    # 7. Archive (outside lock - doesn't touch main branch)
     return _archive_workstream(
         workstream_dir, workstreams_dir, ws, project_config, ops_dir, story,
         push=getattr(args, 'push', False)
@@ -607,9 +757,9 @@ def _attempt_merge_with_retry(repo_path: Path, ws, merge_msg: str,
     for attempt in range(1, MAX_CONFLICT_RESOLUTION_ATTEMPTS + 1):
         print(f"Merge attempt {attempt}/{MAX_CONFLICT_RESOLUTION_ATTEMPTS}...")
 
-        result = subprocess.run(
-            ["git", "-C", str(repo_path), "merge", "--no-ff", ws.branch, "-m", merge_msg],
-            capture_output=True, text=True
+        result = _run_git(
+            ["git", "merge", "--no-ff", ws.branch, "-m", merge_msg],
+            repo_path
         )
 
         if result.returncode == 0:
@@ -625,19 +775,16 @@ def _attempt_merge_with_retry(repo_path: Path, ws, merge_msg: str,
         print(f"Merge conflicts detected on attempt {attempt}")
 
         # Get list of conflicted files
-        status_result = subprocess.run(
-            ["git", "-C", str(repo_path), "diff", "--name-only", "--diff-filter=U"],
-            capture_output=True, text=True
+        status_result = _run_git(
+            ["git", "diff", "--name-only", "--diff-filter=U"],
+            repo_path
         )
         conflicted_files = [f.strip() for f in status_result.stdout.splitlines() if f.strip()]
         print(f"  Conflicted files: {', '.join(conflicted_files)}")
 
         if attempt >= MAX_CONFLICT_RESOLUTION_ATTEMPTS:
             # Abort merge, escalate to HITL
-            subprocess.run(
-                ["git", "-C", str(repo_path), "merge", "--abort"],
-                capture_output=True, text=True
-            )
+            _run_git(["git", "merge", "--abort"], repo_path)
             return "blocked"
 
         # Try to resolve conflicts with Codex
@@ -648,26 +795,20 @@ def _attempt_merge_with_retry(repo_path: Path, ws, merge_msg: str,
 
         if not resolved:
             # Abort this attempt, try again
-            subprocess.run(
-                ["git", "-C", str(repo_path), "merge", "--abort"],
-                capture_output=True, text=True
-            )
+            _run_git(["git", "merge", "--abort"], repo_path)
             continue
 
         # Conflicts resolved, complete the merge
-        result = subprocess.run(
-            ["git", "-C", str(repo_path), "commit", "-m", merge_msg],
-            capture_output=True, text=True
+        result = _run_git(
+            ["git", "commit", "-m", merge_msg],
+            repo_path
         )
 
         if result.returncode == 0:
             return "success"
 
         # Commit failed, abort and retry
-        subprocess.run(
-            ["git", "-C", str(repo_path), "merge", "--abort"],
-            capture_output=True, text=True
-        )
+        _run_git(["git", "merge", "--abort"], repo_path)
 
     return "blocked"
 
@@ -714,9 +855,9 @@ Do NOT create a commit - just resolve conflicts and stage.
         return False
 
     # Check if conflicts are actually resolved
-    status_result = subprocess.run(
-        ["git", "-C", str(repo_path), "diff", "--name-only", "--diff-filter=U"],
-        capture_output=True, text=True
+    status_result = _run_git(
+        ["git", "diff", "--name-only", "--diff-filter=U"],
+        repo_path
     )
 
     if status_result.stdout.strip():
@@ -744,9 +885,9 @@ def _resume_merge(args, ops_dir: Path, project_config: ProjectConfig,
 
     # Check if conflicts are resolved (merge completed)
     # Verify branch is now merged into main
-    result = subprocess.run(
-        ["git", "-C", str(repo_path), "branch", "--contains", ws.branch, project_config.default_branch],
-        capture_output=True, text=True
+    result = _run_git(
+        ["git", "branch", "--contains", ws.branch, project_config.default_branch],
+        repo_path
     )
 
     if project_config.default_branch not in result.stdout:
@@ -761,10 +902,7 @@ def _resume_merge(args, ops_dir: Path, project_config: ProjectConfig,
 
     if getattr(args, 'push', False):
         print("Pushing to remote...")
-        subprocess.run(
-            ["git", "-C", str(repo_path), "push"],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-        )
+        _run_git(["git", "push"], repo_path)
 
     return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config, ops_dir)
 
@@ -800,15 +938,15 @@ def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
     repo_path = project_config.repo_path
 
     # Remove worktree if exists
-    if ws.worktree.exists():
-        result = subprocess.run(
-            ["git", "-C", str(repo_path), "worktree", "remove", str(ws.worktree)],
-            capture_output=True, text=True
+    if ws.worktree and ws.worktree.exists():
+        result = _run_git(
+            ["git", "worktree", "remove", str(ws.worktree)],
+            repo_path
         )
         if result.returncode != 0:
-            subprocess.run(
-                ["git", "-C", str(repo_path), "worktree", "remove", "--force", str(ws.worktree)],
-                capture_output=True, text=True
+            _run_git(
+                ["git", "worktree", "remove", "--force", str(ws.worktree)],
+                repo_path
             )
 
     # Move to _closed/
@@ -840,15 +978,12 @@ def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
         elif extracted:
             print(f"Cleaning REQS.md: {msg}")
             reqs_file = project_config.reqs_path
-            add_result = subprocess.run(
-                ["git", "-C", str(repo_path), "add", reqs_file],
-                capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-            )
+            add_result = _run_git(["git", "add", reqs_file], repo_path)
             if add_result.returncode == 0:
-                commit_result = subprocess.run(
-                    ["git", "-C", str(repo_path), "commit", "-m",
+                commit_result = _run_git(
+                    ["git", "commit", "-m",
                      f"Remove implemented requirements from REQS.md\n\nStory: {story.id}"],
-                    capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+                    repo_path
                 )
                 if commit_result.returncode == 0:
                     print("  Committed REQS cleanup to main")
@@ -858,10 +993,7 @@ def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
     # Push if requested (after REQS cleanup so it's included)
     if push:
         print("Pushing to remote...")
-        result = subprocess.run(
-            ["git", "-C", str(repo_path), "push"],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
-        )
+        result = _run_git(["git", "push"], repo_path)
         if result.returncode != 0:
             print(f"  Warning: Push failed: {result.stderr.strip()}")
 

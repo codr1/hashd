@@ -26,3 +26,4 @@ class Story:
     suggested_ws_id: str = ""                  # AI-suggested workstream ID (<16 chars, slugified)
     workstream: Optional[str] = None           # Linked workstream when accepted
     implemented_at: Optional[str] = None       # ISO timestamp when implemented
+    type: str = "feature"                      # feature or bug

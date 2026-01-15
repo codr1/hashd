@@ -6,6 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from orchestrator.clarifications import get_pending_clarifications
 from orchestrator.lib.config import ProjectConfig, load_workstream
 from orchestrator.lib.planparse import parse_plan
 from orchestrator.lib.review import load_review
@@ -22,11 +23,18 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
 
     workstream = load_workstream(workstream_dir)
 
+    # Check for blocking CLQs early (for status display)
+    clqs = get_pending_clarifications(workstream_dir)
+    blocking_clqs = [c for c in clqs if c.urgency == "blocking"]
+
     # Header
     print(f"Workstream: {workstream.id}")
     print("=" * 60)
     print(f"Title:      {workstream.title}")
-    print(f"Status:     {workstream.status}")
+    status_display = workstream.status
+    if blocking_clqs:
+        status_display = f"{workstream.status} (clarification needed)"
+    print(f"Status:     {status_display}")
     print(f"Branch:     {workstream.branch}")
     print()
 
@@ -99,6 +107,31 @@ def cmd_show(args, ops_dir: Path, project_config: ProjectConfig):
             print()
         else:
             print("  No uncommitted changes")
+            print()
+
+    # Show pending clarifications (clqs and blocking_clqs loaded earlier for status display)
+    if clqs:
+        non_blocking_clqs = [c for c in clqs if c.urgency != "blocking"]
+
+        if blocking_clqs:
+            print("Blocking Clarifications")
+            print("-" * 40)
+            for clq in blocking_clqs:
+                print(f"  {clq.id} [BLOCKING] {clq.question}")
+                if clq.options:
+                    opts = "  ".join(f"[{i}] {o.get('label', f'Option {i}')}" for i, o in enumerate(clq.options, 1))
+                    print(f"    Options: {opts}")
+                print(f"    Answer: wf clarify answer {args.id} {clq.id} -a \"<answer>\"")
+            print()
+
+        if non_blocking_clqs:
+            print("Pending Clarifications (non-blocking)")
+            print("-" * 40)
+            for clq in non_blocking_clqs:
+                print(f"  {clq.id} {clq.question}")
+                if clq.options:
+                    opts = "  ".join(f"[{i}] {o.get('label', f'Option {i}')}" for i, o in enumerate(clq.options, 1))
+                    print(f"    Options: {opts}")
             print()
 
     # Show review feedback if exists
@@ -240,8 +273,11 @@ def cmd_show_story(args, ops_dir: Path, project_config: ProjectConfig, story_id:
     if story.open_questions:
         print("Open Questions")
         print("-" * 40)
-        for q in story.open_questions:
-            print(f"  ? {q}")
+        for i, q in enumerate(story.open_questions, 1):
+            print(f"  [Q{i}] {q}")
+        print()
+        print("  Tip: Answer with:")
+        print(f"    wf plan edit {story_id} -f \"Q1: <answer>, Q2: <answer>, ...\"")
         print()
 
     # Show available actions

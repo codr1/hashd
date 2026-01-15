@@ -1,7 +1,7 @@
 """
 Agent command configuration.
 
-Loads agents.json to determine which CLI commands to use for each stage.
+Loads agents.yaml to determine which CLI commands to use for each stage.
 If no config file exists, returns defaults matching current hardcoded behavior.
 
 STAGE COMMAND TEMPLATES
@@ -30,13 +30,15 @@ will fail. The caller (stage_implement in stages.py) must ensure session_id is
 provided, or fall back to a fresh session if unavailable.
 """
 
-import json
 import logging
 import re
 import shlex
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ logger = logging.getLogger(__name__)
 # Both Codex and Claude support session persistence. When a review rejects an implementation,
 # we use *_resume variants to continue the existing session instead of starting fresh.
 # Benefits: (1) Agent remembers what it tried, (2) shorter prompts, (3) faster iterations.
-# Users can override these in agents.json to use different models or strategies for retries.
+# Users can override these in agents.yaml to use different models or strategies for retries.
 #
 DEFAULT_STAGE_COMMANDS = {
     # ─────────────────────────────────────────────────────────────────────────
@@ -127,30 +129,30 @@ STAGE_REQUIRED_VARIABLES = {
 
 @dataclass
 class AgentsConfig:
-    """Agent configuration from agents.json."""
+    """Agent configuration from agents.yaml."""
     stages: dict[str, str] = field(default_factory=lambda: DEFAULT_STAGE_COMMANDS.copy())
 
 
 def load_agents_config(project_dir: Optional[Path]) -> AgentsConfig:
-    """Load agents.json and return AgentsConfig.
+    """Load agents.yaml and return AgentsConfig.
 
     If project_dir is None or file doesn't exist, returns defaults.
     """
     if project_dir is None:
         return AgentsConfig()
 
-    config_path = project_dir / "agents.json"
+    config_path = project_dir / "agents.yaml"
     if not config_path.exists():
         return AgentsConfig()
 
     try:
-        data = json.loads(config_path.read_text())
+        data = yaml.safe_load(config_path.read_text())
         stages = DEFAULT_STAGE_COMMANDS.copy()
-        if "stages" in data:
+        if data and "stages" in data:
             stages.update(data["stages"])
         return AgentsConfig(stages=stages)
-    except (json.JSONDecodeError, KeyError) as e:
-        # Log warning and use defaults
+    except (yaml.YAMLError, KeyError) as e:
+        logger.warning(f"Failed to parse {config_path}: {e}")
         return AgentsConfig()
 
 
@@ -273,3 +275,66 @@ def get_stage_binary(config: AgentsConfig, stage: str) -> str:
     cmd_template = config.stages[stage]
     parts = shlex.split(cmd_template)
     return parts[0] if parts else ""
+
+
+def check_binary_available(binary: str) -> bool:
+    """Check if a binary is available in PATH."""
+    return shutil.which(binary) is not None
+
+
+@dataclass
+class BinaryCheckResult:
+    """Result of checking stage binaries."""
+    ok: bool
+    missing_binary: str | None = None
+    stages_affected: list[str] = field(default_factory=list)
+    error_message: str | None = None
+
+
+def validate_stage_binaries(config: AgentsConfig, stages: list[str]) -> BinaryCheckResult:
+    """Validate that binaries for the given stages are available.
+
+    Args:
+        config: AgentsConfig instance
+        stages: List of stage names to check (e.g., ["implement", "review"])
+
+    Returns:
+        BinaryCheckResult with ok=True if all binaries available,
+        or ok=False with details about what's missing and how to fix it.
+    """
+    # Group stages by binary
+    binary_to_stages: dict[str, list[str]] = {}
+    for stage in stages:
+        if stage not in config.stages:
+            continue
+        binary = get_stage_binary(config, stage)
+        if binary not in binary_to_stages:
+            binary_to_stages[binary] = []
+        binary_to_stages[binary].append(stage)
+
+    # Check each binary
+    for binary, affected_stages in binary_to_stages.items():
+        if not check_binary_available(binary):
+            error_lines = [
+                f"Required tool '{binary}' is not installed.",
+                "",
+                f"Stages that need it: {', '.join(affected_stages)}",
+                "",
+                "To fix this, either:",
+                f"  1. Install {binary}: https://github.com/openai/codex" if binary == "codex"
+                   else f"  1. Install {binary}",
+                "  2. Create agents.yaml in your project directory to use a different tool:",
+                "",
+                "     stages:",
+            ]
+            for stage in affected_stages:
+                error_lines.append(f"       {stage}: claude --dangerously-skip-permissions -p {{prompt}}")
+
+            return BinaryCheckResult(
+                ok=False,
+                missing_binary=binary,
+                stages_affected=affected_stages,
+                error_message="\n".join(error_lines),
+            )
+
+    return BinaryCheckResult(ok=True)

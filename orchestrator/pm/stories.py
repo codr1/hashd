@@ -79,6 +79,7 @@ def create_story(project_dir: Path, data: dict) -> Story:
         dependencies=data.get("dependencies", []),
         open_questions=data.get("open_questions", []),
         suggested_ws_id=data.get("suggested_ws_id", ""),
+        type=data.get("type", "feature"),
     )
 
     stories_dir = get_stories_dir(project_dir)
@@ -408,6 +409,7 @@ def write_story_markdown(path: Path, story: Story):
     lines = [
         f"# {story.id}: {story.title}",
         "",
+        f"**Type:** {story.type}",
         f"**Status:** {status_display}",
         f"**Created:** {story.created}",
     ]

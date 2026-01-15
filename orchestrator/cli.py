@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """AOS CLI entrypoint."""
 
+import os
 import sys
 import argparse
 from pathlib import Path
@@ -38,7 +39,13 @@ from orchestrator.commands import directives as cmd_directives_module
 
 
 def get_ops_dir() -> Path:
-    """Get the ops directory (where this CLI lives)."""
+    """Get the ops directory (where this CLI lives).
+
+    When running from a project-specific ops dir that symlinks orchestrator/
+    to hashd, the HASHD_OPS_ROOT env var points to the actual ops dir.
+    """
+    if 'HASHD_OPS_ROOT' in os.environ:
+        return Path(os.environ['HASHD_OPS_ROOT'])
     return Path(__file__).parent.parent
 
 
@@ -208,6 +215,18 @@ def cmd_merge(args):
     project_config, ops_dir = get_project_config(args)
     args.id = resolve_workstream_id(args, ops_dir)
     return cmd_merge_module.cmd_merge(args, ops_dir, project_config)
+
+
+def cmd_pr(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_merge_module.cmd_pr(args, ops_dir, project_config)
+
+
+def cmd_pr_feedback(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_merge_module.cmd_pr_feedback(args, ops_dir, project_config)
 
 
 def cmd_archive(args):
@@ -386,37 +405,54 @@ def main():
 
     # wf plan
     p_plan = subparsers.add_parser('plan', help='Plan stories from REQS.md or ad-hoc')
-    p_plan.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, resurrect=False, story_id=None)
+    p_plan.add_argument('-y', '--yes', action='store_true', help='Skip confirmation prompts')
+    p_plan.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, resurrect=False, list=False, story=False, bug=False, story_id=None)
     plan_sub = p_plan.add_subparsers(dest='plan_cmd')
 
-    # wf plan new "title" [-f "feedback"]
-    p_plan_new = plan_sub.add_parser('new', help='Create ad-hoc story')
-    p_plan_new.add_argument('title', nargs='?', help='Story title hint')
-    p_plan_new.add_argument('-f', '--feedback', help='Detailed requirements for the story')
-    p_plan_new.set_defaults(func=cmd_plan, new=True, clone=False, edit=False, resurrect=False)
+    # wf plan list
+    p_plan_list = plan_sub.add_parser('list', help='List current suggestions')
+    p_plan_list.set_defaults(func=cmd_plan, list=True, new=False, clone=False, edit=False, resurrect=False, story=False, bug=False)
+
+    # wf plan new [<id_or_name>] [-f "feedback"]
+    p_plan_new = plan_sub.add_parser('new', help='Create story from suggestion or ad-hoc')
+    p_plan_new.add_argument('title', nargs='?', help='Suggestion ID (1, 2...) or name match, or story title')
+    p_plan_new.add_argument('-f', '--feedback', help='Additional requirements for the story')
+    p_plan_new.set_defaults(func=cmd_plan, new=True, clone=False, edit=False, resurrect=False, list=False, story=False, bug=False)
 
     # wf plan clone STORY-xxx
     p_plan_clone = plan_sub.add_parser('clone', help='Clone a locked story')
     p_plan_clone.add_argument('clone_id', help='Story ID to clone (e.g., STORY-0001)')
-    p_plan_clone.set_defaults(func=cmd_plan, new=False, clone=True, edit=False, resurrect=False)
+    p_plan_clone.set_defaults(func=cmd_plan, new=False, clone=True, edit=False, resurrect=False, list=False, story=False, bug=False)
 
     # wf plan edit STORY-xxx [-f "feedback"]
     p_plan_edit = plan_sub.add_parser('edit', help='Edit an existing story')
     p_plan_edit.add_argument('story_id', help='Story ID to edit (e.g., STORY-0001)')
     p_plan_edit.add_argument('-f', '--feedback', help='Feedback to refine the story')
-    p_plan_edit.set_defaults(func=cmd_plan, new=False, clone=False, edit=True, resurrect=False)
+    p_plan_edit.set_defaults(func=cmd_plan, new=False, clone=False, edit=True, resurrect=False, list=False, story=False, bug=False)
 
     # wf plan add <ws_id> [title] [-f "feedback"]
     p_plan_add = plan_sub.add_parser('add', help='Add micro-commit to existing workstream')
     p_plan_add.add_argument('ws_id', help='Workstream ID')
     p_plan_add.add_argument('title', nargs='?', help='Commit title (optional if -f provided)')
     p_plan_add.add_argument('-f', '--feedback', help='Feedback/description for the commit', default='')
-    p_plan_add.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, add=True, resurrect=False)
+    p_plan_add.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, add=True, resurrect=False, list=False, story=False, bug=False)
 
     # wf plan resurrect STORY-xxx
     p_plan_resurrect = plan_sub.add_parser('resurrect', help='Resurrect abandoned story')
     p_plan_resurrect.add_argument('resurrect_id', help='Story ID to resurrect')
-    p_plan_resurrect.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, add=False, resurrect=True)
+    p_plan_resurrect.set_defaults(func=cmd_plan, new=False, clone=False, edit=False, add=False, resurrect=True, list=False, story=False, bug=False)
+
+    # wf plan story "title" [-f <context>]
+    p_plan_story = plan_sub.add_parser('story', help='Quick feature story (skips REQS discovery)')
+    p_plan_story.add_argument('title', help='Story title')
+    p_plan_story.add_argument('-f', '--feedback', help='Context: file path or inline text')
+    p_plan_story.set_defaults(func=cmd_plan, story=True, bug=False, new=False, clone=False, edit=False, add=False, resurrect=False, list=False)
+
+    # wf plan bug "title" [-f <context>]
+    p_plan_bug = plan_sub.add_parser('bug', help='Quick bug fix (skips REQS discovery, conditional SPEC update)')
+    p_plan_bug.add_argument('title', help='Bug description')
+    p_plan_bug.add_argument('-f', '--feedback', help='Context: file path or inline text')
+    p_plan_bug.set_defaults(func=cmd_plan, bug=True, story=False, new=False, clone=False, edit=False, add=False, resurrect=False, list=False)
 
     # wf list
     p_list = subparsers.add_parser('list', help='List stories and workstreams')
@@ -490,8 +526,9 @@ def main():
     p_run.add_argument('--verbose', '-v', action='store_true', help='Show implement/review exchange')
     p_run.add_argument('--yes', '-y', action='store_true', help='Skip confirmation prompts')
     run_mode = p_run.add_mutually_exclusive_group()
-    run_mode.add_argument('--gatekeeper', action='store_true', help='Auto-approve if tests and review pass')
+    run_mode.add_argument('--gatekeeper', action='store_true', help='Auto-continue if AI confidence >= 70%')
     run_mode.add_argument('--supervised', action='store_true', help='Always pause for human review')
+    run_mode.add_argument('--autonomous', action='store_true', help='Auto-continue commits + auto-merge')
     p_run.add_argument('--feedback', '-f', help='Provide feedback/guidance for this run')
     p_run.set_defaults(func=cmd_run)
 
@@ -517,6 +554,17 @@ def main():
     p_merge.add_argument('--push', action='store_true', help='Push to remote after merge')
     p_merge.add_argument('--confirm', action='store_true', help='Confirm merge in supervised mode')
     p_merge.set_defaults(func=cmd_merge)
+
+    # wf pr
+    p_pr = subparsers.add_parser('pr', help='GitHub PR commands')
+    p_pr.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_pr.set_defaults(func=cmd_pr)
+    pr_sub = p_pr.add_subparsers(dest='pr_cmd')
+
+    # wf pr feedback
+    p_pr_feedback = pr_sub.add_parser('feedback', help='View PR feedback from GitHub')
+    p_pr_feedback.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_pr_feedback.set_defaults(func=cmd_pr_feedback)
 
     # wf archive
     p_archive = subparsers.add_parser('archive', help='View archived work and stories')

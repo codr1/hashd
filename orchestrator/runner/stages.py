@@ -49,7 +49,7 @@ STAGE_ORDER = [
     "test",
     "review",
     "qa_gate",
-    "update_state",
+    "commit",
 ]
 
 

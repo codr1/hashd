@@ -145,7 +145,8 @@ class ClaudeAgent:
                                        tech_preferred: str, tech_acceptable: str, tech_avoid: str,
                                        story_context: str,
                                        commit_title: str, commit_description: str,
-                                       review_history: list = None) -> str:
+                                       review_history: list = None,
+                                       branch_commits: str = None) -> str:
         """Build review prompt for contextual review (Claude explores codebase)."""
         review_history_section = ""
         if review_history:
@@ -154,6 +155,10 @@ class ClaudeAgent:
                 "review_history",
                 history_entries=history_entries
             )
+
+        branch_commits_section = ""
+        if branch_commits:
+            branch_commits_section = f"\n## Recent commits in this branch\n{branch_commits}\n"
 
         return render_prompt(
             "review_contextual",
@@ -164,7 +169,8 @@ class ClaudeAgent:
             story_context=story_context,
             commit_title=commit_title,
             commit_description=commit_description,
-            review_history_section=review_history_section
+            review_history_section=review_history_section,
+            branch_commits_section=branch_commits_section
         )
 
     def contextual_review(

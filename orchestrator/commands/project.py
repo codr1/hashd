@@ -4,7 +4,7 @@ wf project - Project management commands.
 
 from pathlib import Path
 
-from orchestrator.lib.config import ProjectConfig, load_project_profile
+from orchestrator.lib.config import ProjectConfig, load_project_profile, load_escalation_config
 
 
 def get_projects_dir(ops_dir: Path) -> Path:
@@ -203,8 +203,8 @@ def cmd_project_show(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         print(f"    Test:          {profile.test_timeout}s")
         print(f"    Breakdown:     {profile.breakdown_timeout}s")
         print()
-        mode = "supervised" if profile.supervised_mode else "gatekeeper"
-        print(f"  Autonomy mode:   {mode}")
+        escalation = load_escalation_config(project_dir)
+        print(f"  Autonomy mode:   {escalation.autonomy}")
     except FileNotFoundError:
         print()
         print("Profile (project_profile.env)")

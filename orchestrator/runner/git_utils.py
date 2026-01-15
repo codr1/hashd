@@ -1,13 +1,9 @@
-"""Git utility functions for the runner."""
+"""Git utility functions for the runner.
 
-import subprocess
-from pathlib import Path
+This module re-exports from orchestrator.git for backward compatibility.
+New code should import directly from orchestrator.git.
+"""
 
+from orchestrator.git.status import has_uncommitted_changes
 
-def has_uncommitted_changes(worktree: Path) -> bool:
-    """Check if worktree has uncommitted changes (staged or unstaged)."""
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "status", "--porcelain"],
-        capture_output=True, text=True
-    )
-    return bool(result.stdout.strip())
+__all__ = ["has_uncommitted_changes"]

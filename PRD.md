@@ -513,7 +513,7 @@ final_review passes → human approves → PR created → external review → wf
 3. New status: `pr_open` - waiting for external approval
 4. External reviewers (CodeRabbit, humans) review on GitHub
 5. CI checks run
-6. If changes requested: treated as rejection, workstream returns to active
+6. If changes requested: use `wf pr feedback` to view, then `wf reject -f "..."` to fix
 7. When PR approved + CI green: `wf merge` invokes `gh pr merge`
 
 **New workstream statuses:**
@@ -522,6 +522,7 @@ final_review passes → human approves → PR created → external review → wf
 
 **`wf watch` integration:**
 - Detail view shows PR URL, status, CI check results
+- `r` key rejects: opens modal pre-filled with PR feedback for editing
 - `a` key merges when PR is approved (reuses approve action)
 - `o` key opens PR in browser
 

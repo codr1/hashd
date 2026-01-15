@@ -59,8 +59,8 @@ class ProjectProfile:
     review_timeout: int
     test_timeout: int
     breakdown_timeout: int
-    supervised_mode: bool
     merge_mode: str  # "local" or "github_pr"
+    # Note: autonomy mode (supervised/gatekeeper/autonomous) is in escalation.json, not here
 
     def get_test_command(self) -> list[str]:
         """Get the command to run tests.
@@ -137,6 +137,25 @@ class ProjectProfile:
         if shutil.which(binary) is None:
             return False, f"Build runner '{binary}' not found in PATH"
         return True, ""
+
+    @classmethod
+    def default(cls) -> "ProjectProfile":
+        """Return a default ProjectProfile for when project_profile.env is missing."""
+        return cls(
+            test_cmd="make test",
+            build_cmd="make build",
+            merge_gate_test_cmd="make test",
+            build_runner="make",
+            makefile_path="Makefile",
+            build_target="build",
+            test_target="test",
+            merge_gate_test_target="test",
+            implement_timeout=1200,
+            review_timeout=900,
+            test_timeout=300,
+            breakdown_timeout=180,
+            merge_mode="local",
+        )
 
 
 @dataclass
@@ -244,8 +263,8 @@ def load_project_profile(project_dir: Path) -> ProjectProfile:
         review_timeout=int(env.get("REVIEW_TIMEOUT", "900")),  # Increased from 600 - large changes need more time
         test_timeout=int(env.get("TEST_TIMEOUT", "300")),
         breakdown_timeout=int(env.get("BREAKDOWN_TIMEOUT", "180")),
-        supervised_mode=env.get("SUPERVISED_MODE", "false").lower() == "true",
         merge_mode=merge_mode,
+        # Note: SUPERVISED_MODE is deprecated - autonomy is now in escalation.json
     )
 
 

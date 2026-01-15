@@ -70,7 +70,7 @@ def run_claude(
         timeout: Timeout in seconds (default 300)
         accept_edits: If True, auto-accept file edits (requires cwd) - ignored if stage provided
         stage: Stage name for config lookup (e.g., "pm_discovery", "pm_refine")
-        project_dir: Project directory for loading agents.json config
+        project_dir: Project directory for loading agents.yaml config
 
     Returns:
         Tuple of (success, response_text)
@@ -80,7 +80,7 @@ def run_claude(
         if accept_edits:
             logger.warning(
                 f"accept_edits=True ignored when stage='{stage}' is provided; "
-                "edit permissions are controlled by the stage command in agents.json"
+                "edit permissions are controlled by the stage command in agents.yaml"
             )
         config = load_agents_config(project_dir)
         stage_cmd = get_stage_command(config, stage, {"prompt": prompt})

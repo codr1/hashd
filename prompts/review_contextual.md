@@ -31,7 +31,7 @@ You have full access to the codebase. Examine the changes, read files for contex
 ## Commit
 Title: {commit_title}
 Description: {commit_description}
-
+{branch_commits_section}
 {review_history_section}
 
 ## Review Criteria

@@ -13,6 +13,7 @@ from orchestrator.lib.config import ProjectConfig, ProjectProfile, Workstream
 from orchestrator.lib.planparse import MicroCommit
 from orchestrator.lib.validate import validate_before_write
 from orchestrator.lib.agents_config import AgentsConfig, load_agents_config
+from orchestrator.stages.transcript import Transcript
 
 
 @dataclass
@@ -41,8 +42,15 @@ class RunContext:
     codex_session_active: bool = False
     claude_session_active: bool = False
 
+    # CLI autonomy override (e.g., --supervised or --gatekeeper)
+    # If set, overrides the project's escalation.json autonomy setting for this run
+    autonomy_override: Optional[str] = None
+
     # Cached agents config (loaded lazily)
     _agents_config: Optional[AgentsConfig] = field(default=None, repr=False)
+
+    # Transcript for observability (created lazily)
+    _transcript: Optional[Transcript] = field(default=None, repr=False)
 
     @property
     def project_dir(self) -> Path:
@@ -56,10 +64,23 @@ class RunContext:
             self._agents_config = load_agents_config(self.project_dir)
         return self._agents_config
 
+    @property
+    def transcript(self) -> Transcript:
+        """Transcript for run observability (created once, cached)."""
+        if self._transcript is None:
+            self._transcript = Transcript(self.run_dir)
+        return self._transcript
+
     @classmethod
     def create(cls, ops_dir: Path, project: ProjectConfig, profile: ProjectProfile,
-               workstream: Workstream, workstream_dir: Path, verbose: bool = False) -> 'RunContext':
-        """Create a new run context with fresh run directory."""
+               workstream: Workstream, workstream_dir: Path, verbose: bool = False,
+               autonomy_override: Optional[str] = None) -> 'RunContext':
+        """Create a new run context with fresh run directory.
+
+        Args:
+            autonomy_override: CLI override for autonomy mode ("supervised", "gatekeeper", or "autonomous").
+                              If set, overrides the project's escalation.json setting.
+        """
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         run_id = f"{timestamp}_{project.name}_{workstream.id}"
 
@@ -77,6 +98,7 @@ class RunContext:
             workstream=workstream,
             workstream_dir=workstream_dir,
             verbose=verbose,
+            autonomy_override=autonomy_override,
         )
 
     def log(self, message: str):
@@ -117,14 +139,20 @@ class RunContext:
             lines.append(f"git: {result.stdout.strip()}")
 
         # Codex version
-        result = subprocess.run(["codex", "--version"], capture_output=True, text=True)
-        if result.returncode == 0:
-            lines.append(f"codex: {result.stdout.strip()}")
+        try:
+            result = subprocess.run(["codex", "--version"], capture_output=True, text=True)
+            if result.returncode == 0:
+                lines.append(f"codex: {result.stdout.strip()}")
+        except FileNotFoundError:
+            pass  # codex not installed
 
         # Claude version
-        result = subprocess.run(["claude", "--version"], capture_output=True, text=True)
-        if result.returncode == 0:
-            lines.append(f"claude: {result.stdout.strip()}")
+        try:
+            result = subprocess.run(["claude", "--version"], capture_output=True, text=True)
+            if result.returncode == 0:
+                lines.append(f"claude: {result.stdout.strip()}")
+        except FileNotFoundError:
+            pass  # claude not installed
 
         snapshot_path.write_text("\n".join(lines) + "\n")
 
@@ -154,12 +182,10 @@ class RunContext:
 
         # Get git info if available
         if self.workstream.worktree.exists():
-            git_result = subprocess.run(
-                ["git", "-C", str(self.workstream.worktree), "rev-parse", "HEAD"],
-                capture_output=True, text=True
-            )
-            if git_result.returncode == 0:
-                result["commit_sha"] = git_result.stdout.strip()
+            from orchestrator.git import get_commit_sha
+            commit_sha = get_commit_sha(self.workstream.worktree)
+            if commit_sha:
+                result["commit_sha"] = commit_sha
 
         result["base_sha"] = self.workstream.base_sha
 
@@ -167,3 +193,7 @@ class RunContext:
         validate_before_write(result, "result", self.run_dir / "result.json")
 
         (self.run_dir / "result.json").write_text(json.dumps(result, indent=2))
+
+        # Save transcript if any entries were recorded
+        if self._transcript and self._transcript.entries:
+            self._transcript.save()

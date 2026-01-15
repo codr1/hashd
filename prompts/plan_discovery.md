@@ -35,13 +35,31 @@ Your job is to:
 
 ## Your Response
 
-Analyze the requirements and propose the next chunks to build.
-For each chunk:
-- Give it a short name (e.g., 'cognito-auth', 'theme-management')
-- Describe what it covers from the requirements
-- Note which requirement sections it addresses
-- Flag any missing or unclear requirements
-- List likely files/directories it will touch
-- Warn about potential conflicts with active workstreams
+Analyze the requirements and propose 2-4 logical next chunks to build.
 
-Be thorough but succinct. The human will pick one chunk to refine into a story.
+First, explore the codebase and share your findings. Then output a JSON block with your suggestions.
+
+For each suggestion:
+- Give it a short, descriptive title
+- Summarize what it covers (1-2 sentences)
+- Explain the rationale (why this chunk, why now)
+- List the requirement references it addresses
+
+**Output format:**
+
+After your analysis, output a JSON block like this:
+
+```json
+{{
+  "suggestions": [
+    {{
+      "title": "User Authentication",
+      "summary": "Implement login/logout with session management",
+      "rationale": "Foundation for all user-facing features. No dependencies, high value.",
+      "reqs_refs": ["Section 2.1", "Section 2.3"]
+    }}
+  ]
+}}
+```
+
+Be thorough in your analysis but succinct in the JSON. The human will pick one chunk to refine into a story.

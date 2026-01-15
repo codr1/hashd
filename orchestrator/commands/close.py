@@ -252,7 +252,8 @@ def cmd_close_no_changes(args, ops_dir: Path, project_config: ProjectConfig) -> 
             lines[i] = 'STATUS="closed_no_changes"'
             break
     lines.append(f'CLOSED_AT="{datetime.now().isoformat()}"')
-    lines.append(f'CLOSE_REASON="{reason.replace('"', '\\"')}"')
+    escaped_reason = reason.replace('"', '\\"')
+    lines.append(f'CLOSE_REASON="{escaped_reason}"')
     meta_path.write_text("\n".join(lines) + "\n")
 
     # 7. Move workstream to _closed/

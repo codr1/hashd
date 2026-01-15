@@ -83,7 +83,6 @@ After editing, respond with a brief summary of what you annotated.
         prompt,
         cwd=project_config.repo_path,
         timeout=timeout,
-        accept_edits=True,
         stage="pm_annotate",
         project_dir=project_dir,
     )

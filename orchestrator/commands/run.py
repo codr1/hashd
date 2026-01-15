@@ -4,79 +4,51 @@ wf run - Execute the run loop with retry and human gate.
 
 import json
 import logging
-import os
-import re
 import subprocess
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
-
 from orchestrator.lib.config import ProjectConfig, load_project_profile, load_workstream
 from orchestrator.lib.constants import MAX_WS_ID_LEN, WS_ID_PATTERN
-from orchestrator.lib.review import load_review
-from orchestrator.pm.stories import load_story, lock_story, is_story_locked
-from orchestrator.pm.planner import slugify_for_ws_id
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit
+from orchestrator.lib.agents_config import load_agents_config, validate_stage_binaries
+from orchestrator.pm.stories import load_story, lock_story
+from orchestrator.pm.planner import slugify_for_ws_id
 from orchestrator.runner.locking import (
     workstream_lock, LockTimeout, count_running_workstreams,
     cleanup_stale_lock_files, CONCURRENCY_WARNING_THRESHOLD
 )
 from orchestrator.runner.context import RunContext
-from orchestrator.notifications import notify_awaiting_review, notify_complete, notify_failed, notify_blocked
-from orchestrator.commands.review import run_final_review
-from orchestrator.runner.stages import run_stage, StageError, StageBlocked, StageResult
-from orchestrator.runner.impl.stages import (
-    stage_load,
-    stage_breakdown,
-    stage_select,
-    stage_clarification_check,
-    stage_implement,
-    stage_test,
-    stage_review,
-    stage_qa_gate,
-    stage_update_state,
-    stage_human_review,
-    stage_merge_gate,
-    get_human_feedback,
-)
-from orchestrator.runner.impl.fix_generation import generate_fix_commits
-from orchestrator.runner.impl.breakdown import append_commits_to_plan
 from orchestrator.runner.git_utils import has_uncommitted_changes
-from orchestrator.lib.test_parser import parse_test_output, format_parsed_output
+from orchestrator.notifications import notify_awaiting_review, notify_blocked, notify_failed
+from orchestrator.workflow.engine import run_once, run_loop, handle_all_commits_complete
 
-
-MAX_REVIEW_ATTEMPTS = 5
+logger = logging.getLogger(__name__)
 
 
 def create_workstream_from_story(
     args, ops_dir: Path, project_config: ProjectConfig,
     story_id: str, ws_name: Optional[str] = None
 ) -> Optional[str]:
-    """
-    Create a workstream from a story.
+    """Create a workstream from a story.
 
     Returns workstream ID on success, None on error.
     If workstream already exists (story is implementing), returns existing ID.
     """
     project_dir = ops_dir / "projects" / project_config.name
 
-    # Load story
     story = load_story(project_dir, story_id)
     if not story:
         print(f"ERROR: Story '{story_id}' not found")
         return None
 
-    # If story already has a workstream (implementing), use it
     if story.status == "implementing" and story.workstream:
         ws_dir = ops_dir / "workstreams" / story.workstream
         if ws_dir.exists():
             print(f"Story already implementing via '{story.workstream}'")
             return story.workstream
 
-    # Check if story is ready for implementation
     if story.status == "draft":
         print(f"ERROR: Story is in 'draft' status")
         print(f"  Accept the story first: wf approve {story_id}")
@@ -91,17 +63,14 @@ def create_workstream_from_story(
         print(f"ERROR: Story is abandoned")
         return None
 
-    # Determine workstream ID
     if ws_name:
         ws_id = ws_name
     elif story.suggested_ws_id:
         ws_id = story.suggested_ws_id
     else:
-        # Generate from title
         ws_id = slugify_for_ws_id(story.title)
         print(f"Generated workstream ID from title: {ws_id}")
 
-    # Validate workstream ID
     if not WS_ID_PATTERN.match(ws_id) or len(ws_id) > MAX_WS_ID_LEN:
         print(f"ERROR: Invalid workstream ID '{ws_id}'")
         print(f"  Must be 1-{MAX_WS_ID_LEN} chars: lowercase letter, then letters/numbers/underscores")
@@ -109,13 +78,11 @@ def create_workstream_from_story(
 
     workstream_dir = ops_dir / "workstreams" / ws_id
 
-    # Check if workstream already exists
     if workstream_dir.exists():
         print(f"ERROR: Workstream '{ws_id}' already exists")
         print(f"  Run directly: wf run {ws_id}")
         return None
 
-    # Confirm creation
     print(f"Creating workstream '{ws_id}' from {story_id}:")
     print(f"  Title: {story.title}")
     print()
@@ -125,18 +92,25 @@ def create_workstream_from_story(
             print("Cancelled")
             return None
 
-    # Create workstream
     repo_path = project_config.repo_path
     default_branch = project_config.default_branch
     branch_name = f"feat/{ws_id}"
     worktree_path = ops_dir / "worktrees" / ws_id
 
-    # Check worktree path doesn't exist
+    # Check if repo is a git repository
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "rev-parse", "--git-dir"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"ERROR: '{repo_path}' is not a git repository")
+        print(f"  Initialize with: cd {repo_path} && git init && git add . && git commit -m 'Initial commit'")
+        return None
+
     if worktree_path.exists():
         print(f"ERROR: Worktree path already exists: {worktree_path}")
         return None
 
-    # Check branch doesn't exist
     result = subprocess.run(
         ["git", "-C", str(repo_path), "show-ref", "--verify", f"refs/heads/{branch_name}"],
         capture_output=True
@@ -145,17 +119,16 @@ def create_workstream_from_story(
         print(f"ERROR: Branch '{branch_name}' already exists")
         return None
 
-    # Get BASE_SHA from default branch
     result = subprocess.run(
         ["git", "-C", str(repo_path), "rev-parse", default_branch],
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        print(f"ERROR: Could not find branch '{default_branch}'")
+        print(f"ERROR: Could not find branch '{default_branch}' in {repo_path}")
+        print(f"  Check DEFAULT_BRANCH in project.env or create the branch")
         return None
     base_sha = result.stdout.strip()
 
-    # Create branch + worktree
     print(f"Creating worktree at {worktree_path}...")
     result = subprocess.run(
         ["git", "-C", str(repo_path), "worktree", "add", str(worktree_path), "-b", branch_name, base_sha],
@@ -165,7 +138,6 @@ def create_workstream_from_story(
         print(f"ERROR: Failed to create worktree: {result.stderr}")
         return None
 
-    # Create workstream directory structure
     print(f"Creating workstream directory at {workstream_dir}...")
     workstream_dir.mkdir(parents=True)
     (workstream_dir / "clarifications" / "pending").mkdir(parents=True)
@@ -173,7 +145,6 @@ def create_workstream_from_story(
     (workstream_dir / "uat" / "pending").mkdir(parents=True)
     (workstream_dir / "uat" / "passed").mkdir(parents=True)
 
-    # Write meta.env
     now = datetime.now().isoformat()
     meta_content = f'''ID="{ws_id}"
 TITLE="{story.title}"
@@ -187,11 +158,9 @@ LAST_REFRESHED="{now}"
 '''
     (workstream_dir / "meta.env").write_text(meta_content)
 
-    # Generate plan.md from story
     plan_content = _generate_plan_from_story(story)
     (workstream_dir / "plan.md").write_text(plan_content)
 
-    # Write notes.md
     notes_content = f'''# Notes: {story.title}
 
 Created: {now}
@@ -201,11 +170,8 @@ Story: {story_id}
 
 '''
     (workstream_dir / "notes.md").write_text(notes_content)
-
-    # Create touched_files.txt (empty initially)
     (workstream_dir / "touched_files.txt").write_text("")
 
-    # Lock the story
     locked = lock_story(project_dir, story_id, ws_id)
     if not locked:
         print(f"WARNING: Failed to lock story {story_id}")
@@ -253,784 +219,6 @@ def _generate_plan_from_story(story) -> str:
     return "\n".join(lines)
 
 
-def _run_final_review_and_exit(workstream_dir: Path, project_config: ProjectConfig, ws_id: str, verbose: bool = True) -> int:
-    """Run final branch review and return exit code."""
-    print("Result: all micro-commits complete")
-    print("\nRunning final branch review...")
-    print()
-    verdict = run_final_review(workstream_dir, project_config, verbose=verbose)
-    print()
-    if verdict == "approve":
-        print("Final review: APPROVE")
-        print(f"\nReady to merge: wf merge {ws_id}")
-        notify_complete(ws_id)
-    else:
-        print("Final review: CONCERNS")
-        print(f"\nReview the concerns above, then: wf merge {ws_id}")
-        notify_awaiting_review(ws_id)
-    return 0
-
-
-def _run_merge_gate(ctx: RunContext) -> tuple[str, int]:
-    """
-    Run the merge gate after all micro-commits complete.
-
-    On success: returns ("merge_ready", 0)
-    On failure:
-        - test_failure: generates fix commits, returns ("fixed", 0) or ("blocked", 8)
-        - rebase/conflict: blocks immediately for human intervention
-    """
-    ctx.log("All micro-commits complete - running merge gate")
-    print("\n" + "="*60)
-    print("=== MERGE GATE ===")
-    print("="*60)
-
-    try:
-        stage_merge_gate(ctx)
-        ctx.log("Merge gate passed")
-        print("Merge gate: PASSED")
-        return "merge_ready", 0
-
-    except subprocess.TimeoutExpired:
-        ctx.log("Merge gate timed out running tests")
-        print("Merge gate: FAILED - test suite timed out")
-        print("\nThe test suite took too long to run.")
-        print(f"  Current timeout: {ctx.profile.test_timeout}s")
-        print(f"  Increase TEST_TIMEOUT in project_profile.env if needed")
-        print(f"  Then run: wf run {ctx.workstream.id}")
-        notify_blocked(ctx.workstream.id, "Merge gate timed out")
-        return "blocked", 8
-
-    except StageError as e:
-        ctx.log(f"Merge gate failed: {e.message}")
-        print(f"Merge gate: FAILED - {e.message}")
-
-        # Get failure details
-        failure_type = "unknown"
-        failure_output = ""
-        if e.details:
-            failure_type = e.details.get("type", "unknown")
-            failure_output = e.details.get("output", "")
-
-        # Only try to generate fixes for things AI can actually fix
-        if failure_type == "test_failure":
-            return _generate_fixes_for_test_failure(ctx, failure_output)
-
-        # Try automatic rebase for simple cases
-        if failure_type == "rebase":
-            ctx.log("Rebase required - attempting automatic rebase")
-            print("\nBranch needs rebase, attempting automatic rebase...")
-
-            worktree = ctx.workstream.worktree
-            default_branch = ctx.project.default_branch
-
-            # Fetch latest
-            fetch_result = subprocess.run(
-                ["git", "-C", str(worktree), "fetch", "origin", default_branch],
-                capture_output=True, text=True
-            )
-            if fetch_result.returncode != 0:
-                ctx.log(f"Fetch failed: {fetch_result.stderr}")
-                print(f"Fetch failed: {fetch_result.stderr}")
-                notify_blocked(ctx.workstream.id, "Git fetch failed")
-                return "blocked", 8
-
-            # Try rebase
-            rebase_result = subprocess.run(
-                ["git", "-C", str(worktree), "rebase", f"origin/{default_branch}"],
-                capture_output=True, text=True
-            )
-
-            if rebase_result.returncode == 0:
-                ctx.log("Automatic rebase succeeded, verifying build...")
-                # Verify build still works after rebase
-                build_result = subprocess.run(
-                    ["task", "-d", str(worktree), "build"],
-                    capture_output=True, text=True, timeout=120
-                )
-                if build_result.returncode != 0:
-                    # Go build errors often go to stdout, not stderr
-                    build_error = build_result.stderr or build_result.stdout
-                    ctx.log(f"Build failed after rebase: {build_error[:500]}")
-                    print("\n" + "="*60)
-                    print("WARNING: Build failed after rebase")
-                    print("="*60)
-                    print("\nThe rebase succeeded but the build now fails.")
-                    print("This may indicate semantic conflicts that need manual review.")
-                    print(f"\nBuild error:\n{build_error[:1000]}")
-                    print(f"\nFix the issue, then run: wf run {ctx.workstream.id}")
-                    notify_blocked(ctx.workstream.id, "Build failed after rebase")
-                    return "blocked", 8
-                ctx.log("Build verified after rebase")
-                print("Automatic rebase succeeded")
-                return "rebased", 0
-
-            # Rebase failed - try to auto-resolve trivial conflicts
-            # NOTE: We only attempt resolution for the first conflicting commit.
-            # If subsequent commits also have conflicts, rebase --continue will fail
-            # and we'll abort. This is conservative but safe.
-            conflicted = _get_conflicted_files(worktree)
-            if conflicted and _try_auto_resolve_conflicts(worktree, conflicted):
-                # Try to continue rebase after auto-resolution
-                continue_result = subprocess.run(
-                    ["git", "-C", str(worktree), "rebase", "--continue"],
-                    capture_output=True, text=True,
-                    env={**os.environ, "GIT_EDITOR": "true"}  # Skip commit message editor
-                )
-                if continue_result.returncode == 0:
-                    ctx.log("Auto-resolved trivial conflicts and completed rebase")
-                    # Verify build after auto-resolution too
-                    build_result = subprocess.run(
-                        ["task", "-d", str(worktree), "build"],
-                        capture_output=True, text=True, timeout=120
-                    )
-                    if build_result.returncode != 0:
-                        build_error = build_result.stderr or build_result.stdout
-                        ctx.log(f"Build failed after auto-resolved rebase: {build_error[:500]}")
-                        print("\n" + "="*60)
-                        print("WARNING: Build failed after rebase")
-                        print("="*60)
-                        print("\nAuto-resolved conflicts but the build now fails.")
-                        print(f"\nBuild error:\n{build_error[:1000]}")
-                        print(f"\nFix the issue, then run: wf run {ctx.workstream.id}")
-                        notify_blocked(ctx.workstream.id, "Build failed after rebase")
-                        return "blocked", 8
-                    print("Auto-resolved trivial conflicts, rebase succeeded")
-                    return "rebased", 0
-
-            # Still failed - abort and block for human
-            ctx.log(f"Rebase failed with conflicts: {rebase_result.stderr}")
-            subprocess.run(
-                ["git", "-C", str(worktree), "rebase", "--abort"],
-                capture_output=True, text=True
-            )
-
-            print("\n" + "="*60)
-            print("ACTION REQUIRED: Rebase has conflicts")
-            print("="*60)
-            print(f"\nAutomatic rebase failed due to conflicts.")
-            print("Please resolve manually:")
-            print(f"\n  cd {ctx.workstream.worktree}")
-            print(f"  git fetch origin {default_branch}")
-            print(f"  git rebase origin/{default_branch}")
-            print("  # resolve conflicts")
-            print("  git rebase --continue")
-            print(f"\nThen continue with: wf run {ctx.workstream.id}")
-            notify_blocked(ctx.workstream.id, "Rebase has conflicts")
-            return "blocked", 8
-
-        if failure_type == "conflict":
-            ctx.log("Conflict markers found - blocking for human")
-            print("\n" + "="*60)
-            print("ACTION REQUIRED: Conflict markers in code")
-            print("="*60)
-            print("\nThere are unresolved conflict markers in your code:")
-            print(failure_output[:1000] if len(failure_output) > 1000 else failure_output)
-            print(f"\nResolve the conflicts manually, then run: wf run {ctx.workstream.id}")
-            notify_blocked(ctx.workstream.id, "Conflict markers in code")
-            return "blocked", 8
-
-        # Unknown failure type - block
-        ctx.log(f"Unknown failure type '{failure_type}' - blocking for human")
-        print(f"\nUnknown failure. Manual intervention required.")
-        print(f"  Fix manually and run: wf run {ctx.workstream.id}")
-        notify_blocked(ctx.workstream.id, f"Merge gate failed: {failure_type}")
-        return "blocked", 8
-
-
-def _generate_fixes_for_test_failure(ctx: RunContext, failure_output: str) -> tuple[str, int]:
-    """Generate fix commits for test failures."""
-    print("\nTest failures detected. Generating fix commits...")
-
-    plan_path = ctx.workstream_dir / "plan.md"
-    plan_content = plan_path.read_text()
-    commits = parse_plan(str(plan_path))
-    existing_count = len(commits)
-
-    log_file = ctx.run_dir / "stages" / "fix_generation.log"
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-
-    fix_commits = generate_fix_commits(
-        ws_id=ctx.workstream.id,
-        worktree=ctx.workstream.worktree,
-        plan_content=plan_content,
-        failure_output=failure_output,
-        failure_type="test_failure",
-        existing_commit_count=existing_count,
-        timeout=ctx.profile.breakdown_timeout,
-        log_file=log_file,
-        agents_config=ctx.agents_config,
-    )
-
-    if fix_commits:
-        append_commits_to_plan(plan_path, fix_commits)
-        ctx.log(f"Generated {len(fix_commits)} fix commits:")
-        print(f"\nGenerated {len(fix_commits)} fix commit(s):")
-        for c in fix_commits:
-            ctx.log(f"  - {c['id']}: {c['title']}")
-            print(f"  - {c['id']}: {c['title']}")
-        return "fixed", 0
-    else:
-        ctx.log("Fix generation failed - blocking for human intervention")
-        print("\n" + "="*60)
-        print("ACTION REQUIRED: Fix generation failed")
-        print("="*60)
-        print("\nThe AI could not generate fixes for the test failures.")
-        print(f"  Test output: {ctx.run_dir}/stages/merge_gate_test.log")
-        print(f"  Fix log: {log_file}")
-        print(f"\nFix the tests manually, then run: wf run {ctx.workstream.id}")
-        notify_blocked(ctx.workstream.id, "Test failures, fix generation failed")
-        return "blocked", 8
-
-
-def _handle_all_commits_complete(
-    ctx: RunContext,
-    workstream_dir: Path,
-    project_config: ProjectConfig,
-    ws_id: str,
-    verbose: bool,
-    in_loop: bool,
-) -> tuple[str, int]:
-    """
-    Handle the case where all micro-commits are complete.
-
-    Runs merge gate and returns action to take:
-    - ("continue", 0): Continue loop (fix commits generated, in_loop only)
-    - ("return", code): Exit with code (after final review or on block)
-    """
-    gate_status, gate_code = _run_merge_gate(ctx)
-
-    if gate_status == "merge_ready":
-        exit_code = _run_final_review_and_exit(workstream_dir, project_config, ws_id, verbose)
-        return "return", exit_code
-    elif gate_status == "fixed":
-        if in_loop:
-            print("\nContinuing to implement fix commits...")
-            return "continue", 0
-        else:
-            print(f"\nRun again to implement fix commits: wf run {ws_id}")
-            return "return", 0
-    elif gate_status == "rebased":
-        if in_loop:
-            print("\nRetrying merge gate after rebase...")
-            return "continue", 0
-        else:
-            print(f"\nRun again after rebase: wf run {ws_id}")
-            return "return", 0
-    else:
-        return "return", gate_code
-
-
-def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
-    """
-    Run a single micro-commit cycle with retry loop and human gate.
-
-    Flow:
-    1. LOAD, BREAKDOWN, SELECT, CLARIFICATION_CHECK
-    2. Inner loop (up to 3 attempts): IMPLEMENT -> TEST -> REVIEW
-    3. HUMAN_REVIEW (blocks until human action)
-    4. QA_GATE, UPDATE_STATE (commit)
-
-    Returns: (status, exit_code, failed_stage)
-    """
-    ctx.write_env_snapshot()
-    ctx.log(f"Starting run: {ctx.run_id}")
-    ctx.log(f"Workstream: {ctx.workstream.id}")
-
-    # === Phase 1: Load, Breakdown, and Select ===
-    try:
-        result = run_stage(ctx, "load", stage_load)
-        if result == StageResult.BLOCKED:
-            ctx.write_result("blocked", blocked_reason="load blocked")
-            return "blocked", 8, None
-    except StageError as e:
-        ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code, e.stage
-
-    try:
-        result = run_stage(ctx, "breakdown", stage_breakdown)
-        if result == StageResult.BLOCKED:
-            ctx.write_result("blocked", blocked_reason="breakdown blocked")
-            return "blocked", 8, None
-    except StageError as e:
-        ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code, e.stage
-
-    try:
-        result = run_stage(ctx, "select", stage_select)
-        if result == StageResult.BLOCKED:
-            reason = ctx.stages.get("select", {}).get("notes", "unknown")
-            ctx.write_result("blocked", blocked_reason=reason)
-            return "blocked", 8, None
-    except StageError as e:
-        ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code, e.stage
-
-    try:
-        result = run_stage(ctx, "clarification_check", stage_clarification_check)
-        if result == StageResult.BLOCKED:
-            reason = ctx.stages.get("clarification_check", {}).get("notes", "unknown")
-            ctx.write_result("blocked", blocked_reason=reason)
-            return "blocked", 8, None
-    except StageError as e:
-        ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code, e.stage
-
-    # === Check for pending human approval (skip to commit) ===
-    approval_file = ctx.workstream_dir / "human_approval.json"
-    if approval_file.exists():
-        try:
-            approval = json.loads(approval_file.read_text())
-            if approval.get("action") == "approve":
-                # Check if there are actually pending changes to commit
-                # If no changes, the previous commit was already made and we need to implement the next one
-                diff_result = subprocess.run(
-                    ["git", "-C", str(ctx.workstream.worktree), "diff", "--quiet", "HEAD"],
-                    capture_output=True
-                )
-                has_pending_changes = diff_result.returncode != 0
-
-                if not has_pending_changes:
-                    ctx.log("Human approved but no pending changes - previous commit already made")
-                    approval_file.unlink()
-                    # Fall through to normal implement flow
-                else:
-                    ctx.log("Human already approved - skipping to commit")
-                    approval_file.unlink()
-                    # Skip straight to Phase 4
-                    try:
-                        result = run_stage(ctx, "qa_gate", stage_qa_gate)
-                        if result == StageResult.BLOCKED:
-                            reason = ctx.stages.get("qa_gate", {}).get("notes", "unknown")
-                            ctx.write_result("blocked", blocked_reason=reason)
-                            return "blocked", 8, None
-                    except StageError as e:
-                        ctx.write_result("failed", e.stage)
-                        return "failed", e.exit_code, e.stage
-
-                    try:
-                        result = run_stage(ctx, "update_state", stage_update_state)
-                        if result == StageResult.BLOCKED:
-                            reason = ctx.stages.get("update_state", {}).get("notes", "unknown")
-                            ctx.write_result("blocked", blocked_reason=reason)
-                            return "blocked", 8, None
-                    except StageError as e:
-                        ctx.write_result("failed", e.stage)
-                        return "failed", e.exit_code, e.stage
-
-                    ctx.write_result("passed")
-                    ctx.log("Run complete: passed (fast path - human pre-approved)")
-                    return "passed", 0, None
-        except (json.JSONDecodeError, IOError):
-            pass  # Fall through to normal flow
-
-    # === Check for uncommitted changes from previous run ===
-    # Uncommitted changes are handled by:
-    # 1. _get_uncommitted_changes_context() in stage_implement - tells Codex what's already there
-    # 2. Session resume - continues previous Codex session with full context
-    # 3. Human can use `wf reset {ws_id}` to discard changes and start fresh
-    if has_uncommitted_changes(ctx.workstream.worktree):
-        ctx.log("Uncommitted changes detected - session resume and context injection will handle")
-
-    # === Phase 2: Inner Loop (Implement -> Test -> Review) ===
-    human_feedback, should_reset = get_human_feedback(ctx.workstream_dir)  # From previous human rejection
-
-    # Reset worktree if human requested it (wf reject --reset)
-    if should_reset:
-        ctx.log("Human requested reset - discarding uncommitted changes")
-        if not _reset_worktree(ctx.workstream.worktree):
-            ctx.log("WARNING: Failed to fully reset worktree, proceeding anyway")
-
-    # Add human feedback to history so both models see it
-    if human_feedback:
-        ctx.review_history.append({
-            "attempt": 0,
-            "human_feedback": human_feedback,
-            "review_feedback": None,
-            "implement_summary": None,
-        })
-
-    for attempt in range(1, MAX_REVIEW_ATTEMPTS + 1):
-        ctx.log(f"=== Review attempt {attempt}/{MAX_REVIEW_ATTEMPTS} ===")
-
-        # IMPLEMENT - pass full conversation history
-        try:
-            result = run_stage(
-                ctx, "implement",
-                lambda c: stage_implement(c, human_feedback)
-            )
-            if result == StageResult.BLOCKED:
-                reason = ctx.stages.get("implement", {}).get("notes", "unknown")
-                # Handle auto-skip: commit was already done, continue to next
-                if reason.startswith("auto_skip:"):
-                    commit_id = reason.split(":", 1)[1]
-                    ctx.log(f"Auto-skipped {commit_id}, continuing to next commit")
-                    ctx.write_result("passed")
-                    return "passed", 0, None
-                ctx.write_result("blocked", blocked_reason=reason)
-                return "blocked", 8, None
-        except StageError as e:
-            ctx.write_result("failed", e.stage)
-            return "failed", e.exit_code, e.stage
-
-        # Clear human feedback after first use
-        human_feedback = None
-
-        # TEST
-        try:
-            result = run_stage(ctx, "test", stage_test)
-            if result == StageResult.BLOCKED:
-                reason = ctx.stages.get("test", {}).get("notes", "unknown")
-                ctx.write_result("blocked", blocked_reason=reason)
-                return "blocked", 8, None
-        except StageError as e:
-            if attempt < MAX_REVIEW_ATTEMPTS:
-                # Detect build vs test failure
-                is_build_failure = "Build failed" in e.message
-
-                if is_build_failure:
-                    ctx.log(f"Build failed on attempt {attempt}, will retry")
-                    failure_output = _load_build_output(ctx.run_dir)
-                    failure_type = "build_failure"
-                else:
-                    ctx.log(f"Tests failed on attempt {attempt}, will retry")
-                    failure_output = _load_test_output(ctx.run_dir)
-                    failure_type = "test_failure"
-
-                implement_summary = _load_implement_summary(ctx.run_dir)
-                ctx.review_history.append({
-                    "attempt": attempt,
-                    failure_type: failure_output,
-                    "implement_summary": implement_summary,
-                })
-                continue
-            else:
-                # Final attempt failed - fall through to HITL
-                failure_desc = "Build" if "Build failed" in e.message else "Tests"
-                ctx.log(f"{failure_desc} failed after {MAX_REVIEW_ATTEMPTS} attempts")
-                ctx.write_result("failed", e.stage)
-                break
-
-        # REVIEW - pass full conversation history
-        try:
-            result = run_stage(ctx, "review", stage_review)
-            if result == StageResult.BLOCKED:
-                reason = ctx.stages.get("review", {}).get("notes", "unknown")
-                ctx.write_result("blocked", blocked_reason=reason)
-                return "blocked", 8, None
-            # Review passed!
-            ctx.log(f"Review approved on attempt {attempt}")
-            break
-        except StageError as e:
-            # Only retry on review rejection, not process failures (timeouts, crashes)
-            if e.stage == "review" and attempt < MAX_REVIEW_ATTEMPTS and "Review rejected" in e.message:
-                # Review rejected - capture feedback, add to history, and retry
-                ctx.log(f"Review rejected on attempt {attempt}, will retry")
-                review_feedback = load_review(ctx.run_dir)
-                implement_summary = _load_implement_summary(ctx.run_dir)
-                ctx.review_history.append({
-                    "attempt": attempt,
-                    "review_feedback": review_feedback,
-                    "implement_summary": implement_summary,
-                })
-                continue
-            else:
-                # Process failure (timeout, crash) or final attempt - don't retry
-                if "Review failed" in e.message:
-                    ctx.log(f"Review process failed (not retrying): {e.message}")
-                elif attempt >= MAX_REVIEW_ATTEMPTS:
-                    ctx.log(f"Review failed after {MAX_REVIEW_ATTEMPTS} attempts")
-                ctx.write_result("failed", e.stage)
-                # Don't return - fall through to human review
-                break
-
-    # === Phase 3: Human Gate ===
-    ctx.log("Proceeding to human review gate")
-    try:
-        result = run_stage(ctx, "human_review", stage_human_review)
-        if result == StageResult.BLOCKED:
-            reason = ctx.stages.get("human_review", {}).get("notes", "unknown")
-            ctx.write_result("blocked", blocked_reason=reason)
-            return "blocked", 8, None
-    except StageError as e:
-        # Human rejected/reset or other error - exit, next run will handle it
-        ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code, e.stage
-
-    # === Phase 4: Final gates and commit ===
-    try:
-        result = run_stage(ctx, "qa_gate", stage_qa_gate)
-        if result == StageResult.BLOCKED:
-            reason = ctx.stages.get("qa_gate", {}).get("notes", "unknown")
-            ctx.write_result("blocked", blocked_reason=reason)
-            return "blocked", 8, None
-    except StageError as e:
-        ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code, e.stage
-
-    try:
-        result = run_stage(ctx, "update_state", stage_update_state)
-        if result == StageResult.BLOCKED:
-            reason = ctx.stages.get("update_state", {}).get("notes", "unknown")
-            ctx.write_result("blocked", blocked_reason=reason)
-            return "blocked", 8, None
-    except StageError as e:
-        ctx.write_result("failed", e.stage)
-        return "failed", e.exit_code, e.stage
-
-    # Success!
-    ctx.write_result("passed")
-    ctx.log("Run complete: passed")
-    return "passed", 0, None
-
-
-def _load_implement_summary(run_dir: Path) -> str:
-    """Load implement summary from implement.log (Codex stdout)."""
-    log_path = run_dir / "stages" / "implement.log"
-    if not log_path.exists():
-        return ""
-    try:
-        content = log_path.read_text()
-        # Extract STDOUT section
-        if "=== STDOUT ===" in content:
-            stdout_start = content.index("=== STDOUT ===") + len("=== STDOUT ===")
-            stdout_end = content.find("=== STDERR ===", stdout_start)
-            if stdout_end == -1:
-                stdout_end = len(content)
-            return content[stdout_start:stdout_end].strip()
-        return ""
-    except IOError as e:
-        logger.warning(f"Failed to load implement summary from {log_path}: {e}")
-        return ""
-
-
-def _load_test_output(run_dir: Path) -> str:
-    """Load and parse test output from test.log.
-
-    Returns formatted structured output for LLM consumption.
-    Falls back to raw output if parsing fails.
-    """
-    log_path = run_dir / "stages" / "test.log"
-    if not log_path.exists():
-        return ""
-    try:
-        content = log_path.read_text()
-
-        # Split into stdout/stderr sections
-        stdout = ""
-        stderr = ""
-        if "=== STDOUT ===" in content:
-            parts = content.split("=== STDERR ===")
-            stdout = parts[0].replace("=== STDOUT ===", "").strip()
-            if len(parts) > 1:
-                stderr = parts[1].strip()
-        else:
-            stdout = content
-
-        # Parse and format
-        parsed = parse_test_output(stdout, stderr)
-        return format_parsed_output(parsed)
-    except IOError as e:
-        logger.warning(f"Failed to load test output from {log_path}: {e}")
-        return ""
-
-
-def _load_build_output(run_dir: Path) -> str:
-    """Load build error output from build.log.
-
-    Returns formatted output for LLM consumption.
-    """
-    log_path = run_dir / "stages" / "build.log"
-    if not log_path.exists():
-        return ""
-    try:
-        content = log_path.read_text()
-        # Extract stderr which typically contains the compiler error
-        if "=== STDERR ===" in content:
-            parts = content.split("=== STDERR ===")
-            if len(parts) > 1:
-                stderr = parts[1].strip()
-                if stderr:
-                    return f"Build error:\n{stderr}"
-        # Fallback to full content
-        return f"Build output:\n{content}"
-    except IOError as e:
-        logger.warning(f"Failed to load build output from {log_path}: {e}")
-        return ""
-
-
-def _get_conflicted_files(worktree: Path) -> list[str]:
-    """Get list of files with conflicts during rebase."""
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "diff", "--name-only", "--diff-filter=U"],
-        capture_output=True, text=True
-    )
-    return [f.strip() for f in result.stdout.splitlines() if f.strip()]
-
-
-def _get_conflict_type(worktree: Path, filepath: str) -> str:
-    """Get the conflict type for a file (UU, AA, etc.) from git status."""
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "status", "--porcelain", filepath],
-        capture_output=True, text=True
-    )
-    # Format is "XY filename" where XY is the two-letter status
-    if result.stdout and len(result.stdout) >= 2:
-        return result.stdout[:2]
-    return ""
-
-
-def _git_show_index(worktree: Path, stage: int, filepath: str) -> Optional[str]:
-    """Get file content from git index at given stage.
-
-    During merge/rebase conflicts:
-      stage 1 = base (common ancestor)
-      stage 2 = ours (HEAD)
-      stage 3 = theirs (incoming)
-
-    Returns None if:
-      - File doesn't exist at that stage
-      - File is binary (contains null bytes)
-      - File can't be decoded as UTF-8
-    """
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "show", f":{stage}:{filepath}"],
-        capture_output=True  # returns bytes
-    )
-    if result.returncode != 0:
-        return None
-
-    # Check for binary content (null bytes)
-    if b'\x00' in result.stdout:
-        logger.info(f"File {filepath} stage {stage} is binary, skipping auto-resolution")
-        return None
-
-    # Try to decode as UTF-8
-    try:
-        return result.stdout.decode('utf-8')
-    except UnicodeDecodeError:
-        logger.info(f"File {filepath} stage {stage} is not valid UTF-8, skipping auto-resolution")
-        return None
-
-
-def _try_auto_resolve_conflicts(worktree: Path, files: list[str]) -> bool:
-    """Try to auto-resolve conflicts using git merge-file --union.
-
-    Only attempts resolution for 'both modified' (UU) conflicts where:
-    - The file existed in the common ancestor
-    - Both sides modified it
-
-    Does NOT attempt:
-    - 'both added' (AA) - usually completely different files
-    - Any delete conflicts (UD, DU, DD)
-    - Added by one side (AU, UA)
-
-    Returns True if all conflicts were successfully resolved.
-
-    WARNING: Union merge can produce syntactically valid but semantically
-    incorrect code (e.g., wrong execution order). Build verification catches
-    syntax errors but cannot detect semantic issues. Human review of
-    auto-resolved merges is recommended.
-    """
-    for filepath in files:
-        conflict_type = _get_conflict_type(worktree, filepath)
-
-        # Only auto-resolve UU (both modified) conflicts
-        if conflict_type != "UU":
-            logger.info(f"Conflict {filepath}: type {conflict_type!r} not auto-resolvable")
-            # Return False - caller will abort rebase which handles cleanup
-            return False
-
-        # Get the three versions from git index
-        base = _git_show_index(worktree, 1, filepath)
-        ours = _git_show_index(worktree, 2, filepath)
-        theirs = _git_show_index(worktree, 3, filepath)
-
-        if base is None or ours is None or theirs is None:
-            logger.warning(f"Conflict {filepath}: missing index stage (base={base is not None}, "
-                          f"ours={ours is not None}, theirs={theirs is not None})")
-            return False
-
-        # Use git merge-file --union to resolve
-        resolved_content = _merge_union(base, ours, theirs)
-        if resolved_content is None:
-            logger.warning(f"Conflict {filepath}: git merge-file failed")
-            return False
-
-        # Write resolved content and stage
-        file_path = worktree / filepath
-        try:
-            file_path.write_text(resolved_content)
-        except IOError as e:
-            logger.warning(f"Conflict {filepath}: failed to write resolved content: {e}")
-            return False
-
-        stage_result = subprocess.run(
-            ["git", "-C", str(worktree), "add", filepath],
-            capture_output=True, text=True
-        )
-        if stage_result.returncode != 0:
-            logger.warning(f"Conflict {filepath}: failed to stage: {stage_result.stderr}")
-            return False
-
-        logger.info(f"Auto-resolved conflict in {filepath} using union merge")
-
-    return True
-
-
-def _merge_union(base: str, ours: str, theirs: str) -> Optional[str]:
-    """Run git merge-file --union and return resolved content.
-
-    Returns None on error (not conflict - union resolves conflicts).
-    """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        base_path = Path(tmpdir) / "base"
-        ours_path = Path(tmpdir) / "ours"
-        theirs_path = Path(tmpdir) / "theirs"
-
-        base_path.write_text(base)
-        ours_path.write_text(ours)
-        theirs_path.write_text(theirs)
-
-        # git merge-file --union modifies ours_path in place
-        # Exit codes: negative=error, 0=clean merge, positive=conflicts (but --union resolves them)
-        result = subprocess.run(
-            ["git", "merge-file", "--union",
-             str(ours_path), str(base_path), str(theirs_path)],
-            capture_output=True, text=True
-        )
-
-        if result.returncode < 0:
-            logger.error(f"git merge-file error: {result.stderr}")
-            return None
-
-        return ours_path.read_text()
-
-
-def _reset_worktree(worktree: Path) -> bool:
-    """Reset uncommitted changes in worktree for clean retry.
-
-    Returns True on success, False if reset failed.
-    """
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "checkout", "."],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        logger.warning(f"git checkout failed in {worktree}: {result.stderr}")
-        return False
-
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "clean", "-fd"],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        logger.warning(f"git clean failed in {worktree}: {result.stderr}")
-        return False
-
-    return True
-
-
 def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     """Execute the run loop."""
     ws_id = args.id
@@ -1040,10 +228,8 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         print(f"ERROR: Workstream '{ws_id}' not found")
         return 2
 
-    # Load workstream
     workstream = load_workstream(workstream_dir)
 
-    # Inject CLI feedback if provided (same mechanism as wf reject)
     if getattr(args, 'feedback', None):
         approval_file = workstream_dir / "human_approval.json"
         approval_file.write_text(json.dumps({
@@ -1053,41 +239,36 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         }))
         print("Injected feedback for this run")
 
-    # Load project profile
     project_dir = ops_dir / "projects" / project_config.name
     try:
         profile = load_project_profile(project_dir)
     except FileNotFoundError:
-        # Use defaults
         from orchestrator.lib.config import ProjectProfile
         from orchestrator.lib.github import get_default_merge_mode
         profile = ProjectProfile(
-            # New command-based fields
             test_cmd="make test",
             build_cmd="make build",
             merge_gate_test_cmd="make test",
-            # Legacy fields (for backward compat)
             build_runner="make",
             makefile_path="Makefile",
             build_target="build",
             test_target="test",
             merge_gate_test_target="test",
-            # Timeouts and modes
             implement_timeout=1200,
             review_timeout=900,
             test_timeout=300,
             breakdown_timeout=180,
-            supervised_mode=False,
             merge_mode=get_default_merge_mode(),
         )
 
-    # Override supervised_mode from CLI flags
+    autonomy_override = None
     if getattr(args, 'gatekeeper', False):
-        profile.supervised_mode = False
+        autonomy_override = "gatekeeper"
     elif getattr(args, 'supervised', False):
-        profile.supervised_mode = True
+        autonomy_override = "supervised"
+    elif getattr(args, 'autonomous', False):
+        autonomy_override = "autonomous"
 
-    # Warn if main repo has uncommitted changes (will block merges)
     result = subprocess.run(
         ["git", "-C", str(project_config.repo_path), "status", "--porcelain"],
         capture_output=True, text=True
@@ -1099,48 +280,53 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         print(f"\nThis may block merges. Clean up: cd {project_config.repo_path} && git status")
         print()
 
-    # Clean up any stale lock files from crashed processes
     cleanup_stale_lock_files(ops_dir)
 
-    # Check concurrency before acquiring lock
+    # Check that required tool binaries are available
+    agents_config = load_agents_config(project_dir)
+    # Check stages used in the run loop
+    check_result = validate_stage_binaries(
+        agents_config,
+        ["breakdown", "implement", "implement_resume", "review", "review_resume"]
+    )
+    if not check_result.ok:
+        print(f"ERROR: {check_result.error_message}")
+        print()
+        print(f"Config file location: {project_dir / 'agents.yaml'}")
+        return 4
+
     running_count = count_running_workstreams(ops_dir)
     if running_count >= CONCURRENCY_WARNING_THRESHOLD:
         print(f"WARNING: {running_count} workstreams already running (threshold: {CONCURRENCY_WARNING_THRESHOLD})")
         print("Consider waiting for some to complete to avoid API rate limits")
 
-    # Acquire per-workstream lock
     print(f"Acquiring lock for {ws_id}...")
     try:
         with workstream_lock(ops_dir, ws_id):
             print(f"Lock acquired")
 
             if args.loop:
-                # Loop mode - run until blocked or complete
-                return run_loop(ops_dir, project_config, profile, workstream, workstream_dir, ws_id, args.verbose)
+                return run_loop(ops_dir, project_config, profile, workstream, workstream_dir, ws_id, args.verbose, autonomy_override)
             else:
-                # Single run
-                ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir, args.verbose)
+                ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir, args.verbose, autonomy_override)
                 print(f"Run ID: {ctx.run_id}")
 
                 status, exit_code, failed_stage = run_once(ctx)
 
-                # After successful commit, check if all commits are now done
                 if status == "passed":
                     plan_path = workstream_dir / "plan.md"
                     commits = parse_plan(str(plan_path))
                     if get_next_microcommit(commits) is None:
-                        action, code = _handle_all_commits_complete(
+                        action, code = handle_all_commits_complete(
                             ctx, workstream_dir, project_config, ws_id, args.verbose, in_loop=False
                         )
                         if action == "return":
                             return code
 
-                # Send notifications based on result
                 if status == "blocked":
-                    # Check if all commits are done (select stage returned all_complete)
                     select_reason = ctx.stages.get("select", {}).get("notes", "")
                     if select_reason == "all_complete":
-                        action, code = _handle_all_commits_complete(
+                        action, code = handle_all_commits_complete(
                             ctx, workstream_dir, project_config, ws_id, args.verbose, in_loop=False
                         )
                         if action == "return":
@@ -1153,9 +339,7 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                         notify_blocked(ws_id, reason)
                 elif status == "failed":
                     notify_failed(ws_id, failed_stage or "unknown")
-                # No notification on single successful runs - only loop completion notifies
 
-                # Show result with clearer status for human review
                 hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
                 if status == "blocked" and "human approval" in hr_notes.lower():
                     print(f"\nResult: waiting for human")
@@ -1163,7 +347,6 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                     print(f"\nResult: {status}")
                 print(f"Run directory: {ctx.run_dir}")
 
-                # Show actionable next steps
                 if status == "blocked":
                     if "human approval" in hr_notes.lower():
                         print(f"\nNext steps:")
@@ -1174,13 +357,11 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
                         print(f"  wf reject {ws_id} --reset")
                 elif status == "failed":
                     print(f"\nFailed at stage: {failed_stage or 'unknown'}")
-                    # Show error details inline from result.json
                     stage_notes = ctx.stages.get(failed_stage, {}).get("notes", "")
                     if stage_notes:
                         print(f"  Error: {stage_notes}")
                     print(f"  Log: {ctx.run_dir}/stages/{failed_stage}.log")
 
-                # Show reset hint if there are uncommitted changes
                 if status in ("failed", "blocked") and has_uncommitted_changes(ctx.workstream.worktree):
                     if not (status == "blocked" and "human approval" in hr_notes.lower()):
                         print(f"\nUncommitted changes remain in worktree.")
@@ -1193,81 +374,3 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         print(f"ERROR: Could not acquire lock for {ws_id} (timeout)")
         print("Another run may be active for this workstream")
         return 3
-
-
-def run_loop(ops_dir: Path, project_config: ProjectConfig, profile, workstream, workstream_dir: Path, ws_id: str, verbose: bool = False) -> int:
-    """Run until blocked or all micro-commits complete."""
-    iteration = 0
-
-    while True:
-        iteration += 1
-        print(f"\n{'='*60}")
-        print(f"=== Iteration {iteration} ===")
-        print(f"{'='*60}")
-
-        # Reload workstream in case state changed
-        workstream = load_workstream(workstream_dir)
-
-        ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir, verbose)
-        print(f"Run ID: {ctx.run_id}")
-
-        status, exit_code, failed_stage = run_once(ctx)
-
-        if status == "blocked":
-            reason = ctx.stages.get("select", {}).get("notes", "")
-            if reason == "all_complete":
-                action, code = _handle_all_commits_complete(
-                    ctx, workstream_dir, project_config, ws_id, verbose, in_loop=True
-                )
-                if action == "return":
-                    return code
-                elif action == "continue":
-                    continue
-
-            # Check if blocked on human review
-            hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
-            if "human approval" in hr_notes.lower():
-                print("Result: waiting for human")
-                print(f"\nNext steps:")
-                print(f"  wf show {ws_id}              # Review changes")
-                print(f"  wf diff {ws_id}              # See the diff")
-                print(f"  wf approve {ws_id}")
-                print(f"  wf reject {ws_id} -f '...'")
-                print(f"  wf reject {ws_id} --reset")
-                notify_awaiting_review(ws_id)
-            else:
-                print(f"Result: {status}")
-                print(f"\nBlocked: {reason or hr_notes}")
-                # Show reset hint if there are uncommitted changes
-                if has_uncommitted_changes(ctx.workstream.worktree):
-                    print(f"\nUncommitted changes remain in worktree.")
-                    print(f"  To retry with changes: wf run {ws_id}")
-                    print(f"  To start fresh:        wf reset {ws_id}")
-                notify_blocked(ws_id, reason or hr_notes)
-            return exit_code
-
-        if status == "failed":
-            print(f"\nFailed at stage: {failed_stage or 'unknown'}")
-            # Show reset hint if there are uncommitted changes
-            if has_uncommitted_changes(ctx.workstream.worktree):
-                print(f"\nUncommitted changes remain in worktree.")
-                print(f"  To retry with changes: wf run {ws_id}")
-                print(f"  To start fresh:        wf reset {ws_id}")
-            notify_failed(ws_id, failed_stage or "unknown")
-            return exit_code
-
-        # After successful commit, check if all commits are now done
-        if status == "passed":
-            plan_path = workstream_dir / "plan.md"
-            commits = parse_plan(str(plan_path))
-            if get_next_microcommit(commits) is None:
-                action, code = _handle_all_commits_complete(
-                    ctx, workstream_dir, project_config, ws_id, verbose, in_loop=True
-                )
-                if action == "return":
-                    return code
-                elif action == "continue":
-                    continue
-
-        # Continue to next iteration
-        print("Continuing to next micro-commit...")

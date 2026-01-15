@@ -9,10 +9,13 @@ import pytest
 
 from orchestrator.lib.github import (
     PRStatus,
+    PRFeedback,
     check_gh_cli,
+    check_gh_available,
     get_pr_status,
     create_github_pr,
     merge_github_pr,
+    fetch_pr_feedback,
     GH_TIMEOUT_SECONDS,
     GIT_TIMEOUT_SECONDS,
     STATUS_PR_OPEN,
@@ -23,6 +26,7 @@ from orchestrator.lib.github import (
     MERGE_MODE_GITHUB_PR,
     VALID_MERGE_MODES,
 )
+from orchestrator.lib.types import FeedbackItem
 
 
 class TestConstants:
@@ -293,3 +297,181 @@ class TestMergeGithubPr:
         success, error = merge_github_pr(Path("/repo"), 42)
         assert success is False
         assert "timed out" in error
+
+
+class TestCheckGhAvailable:
+    """Test check_gh_available function."""
+
+    @patch("orchestrator.lib.github.subprocess.run")
+    def test_returns_ok_when_authenticated(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # gh --version
+            MagicMock(returncode=0),  # gh auth status
+        ]
+        ok, msg = check_gh_available()
+        assert ok is True
+        assert msg == ""
+
+    @patch("orchestrator.lib.github.subprocess.run")
+    def test_returns_error_when_not_installed(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1)
+        ok, msg = check_gh_available()
+        assert ok is False
+        assert "not installed" in msg
+
+    @patch("orchestrator.lib.github.subprocess.run")
+    def test_returns_error_when_not_authenticated(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # gh --version
+            MagicMock(returncode=1),  # gh auth status
+        ]
+        ok, msg = check_gh_available()
+        assert ok is False
+        assert "not authenticated" in msg
+
+    @patch("orchestrator.lib.github.subprocess.run")
+    def test_returns_error_on_file_not_found(self, mock_run):
+        mock_run.side_effect = FileNotFoundError("gh")
+        ok, msg = check_gh_available()
+        assert ok is False
+        assert "not found" in msg
+
+    @patch("orchestrator.lib.github.subprocess.run")
+    def test_returns_error_on_timeout(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=5)
+        ok, msg = check_gh_available()
+        assert ok is False
+        assert "timed out" in msg
+
+
+class TestPRFeedbackDataclasses:
+    """Test PRFeedback and FeedbackItem dataclasses."""
+
+    def test_pr_feedback_item_creates(self):
+        item = FeedbackItem(
+            type="line_comment",
+            body="Fix this",
+            author="reviewer",
+            path="main.py",
+            line=42,
+        )
+        assert item.type == "line_comment"
+        assert item.body == "Fix this"
+        assert item.author == "reviewer"
+        assert item.path == "main.py"
+        assert item.line == 42
+
+    def test_pr_feedback_item_optional_fields(self):
+        item = FeedbackItem(
+            type="review",
+            body="Changes requested",
+            author="reviewer",
+        )
+        assert item.path is None
+        assert item.line is None
+
+    def test_pr_feedback_creates_with_items(self):
+        items = [FeedbackItem(type="review", body="Fix it", author="bob")]
+        feedback = PRFeedback(pr_number=123, items=items)
+        assert feedback.pr_number == 123
+        assert len(feedback.items) == 1
+        assert feedback.error is None
+
+    def test_pr_feedback_with_error(self):
+        feedback = PRFeedback(pr_number=123, items=[], error="API timeout")
+        assert feedback.error == "API timeout"
+
+
+class TestFetchPrFeedback:
+    """Test fetch_pr_feedback function."""
+
+    @patch("orchestrator.lib.github.subprocess.run")
+    def test_fetches_review_comments(self, mock_run):
+        mock_run.side_effect = [
+            # gh pr view --json reviews
+            MagicMock(
+                returncode=0,
+                stdout=json.dumps({
+                    "reviews": [
+                        {
+                            "state": "CHANGES_REQUESTED",
+                            "body": "Please fix the bug",
+                            "author": {"login": "reviewer1"},
+                        }
+                    ]
+                }),
+            ),
+            # gh api for line comments
+            MagicMock(returncode=0, stdout=""),
+        ]
+
+        result = fetch_pr_feedback(Path("/repo"), 123)
+
+        assert result.pr_number == 123
+        assert result.error is None
+        assert len(result.items) == 1
+        assert result.items[0].type == "review"
+        assert result.items[0].body == "Please fix the bug"
+        assert result.items[0].author == "reviewer1"
+
+    @patch("orchestrator.lib.github.subprocess.run")
+    def test_fetches_line_comments(self, mock_run):
+        mock_run.side_effect = [
+            # gh pr view --json reviews
+            MagicMock(returncode=0, stdout='{"reviews": []}'),
+            # gh api for line comments
+            MagicMock(
+                returncode=0,
+                stdout='{"path": "main.py", "line": 42, "body": "Fix this line", "user": "reviewer2"}\n',
+            ),
+        ]
+
+        result = fetch_pr_feedback(Path("/repo"), 123)
+
+        assert len(result.items) == 1
+        assert result.items[0].type == "line_comment"
+        assert result.items[0].path == "main.py"
+        assert result.items[0].line == 42
+        assert result.items[0].body == "Fix this line"
+
+    @patch("orchestrator.lib.github.subprocess.run")
+    def test_returns_error_on_failure(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stderr="PR not found",
+        )
+
+        result = fetch_pr_feedback(Path("/repo"), 999)
+
+        assert result.error == "PR not found"
+        assert result.items == []
+
+    @patch("orchestrator.lib.github.subprocess.run")
+    def test_returns_error_on_timeout(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=30)
+
+        result = fetch_pr_feedback(Path("/repo"), 123)
+
+        assert result.error == "GitHub API timeout"
+        assert result.items == []
+
+    @patch("orchestrator.lib.github.subprocess.run")
+    def test_skips_approved_reviews(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(
+                returncode=0,
+                stdout=json.dumps({
+                    "reviews": [
+                        {"state": "APPROVED", "body": "LGTM", "author": {"login": "r1"}},
+                        {"state": "CHANGES_REQUESTED", "body": "Fix bug", "author": {"login": "r2"}},
+                    ]
+                }),
+            ),
+            MagicMock(returncode=0, stdout=""),
+        ]
+
+        result = fetch_pr_feedback(Path("/repo"), 123)
+
+        # Only the CHANGES_REQUESTED review should be included
+        assert len(result.items) == 1
+        assert result.items[0].body == "Fix bug"

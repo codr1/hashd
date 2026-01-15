@@ -1,10 +1,71 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Resolve symlinks to get the real script location
-REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
-SCRIPT_DIR="$(dirname "$REAL_SCRIPT")"
-WORKFLOW_ROOT="$(dirname "$SCRIPT_DIR")"
+# Find the ops root by following symlinks until we find orchestrator/
+# This handles: ~/bin/wf -> ops/bin/wf -> hashd/bin/wf
+#           or: ops/wf -> bin/wf -> hashd/bin/wf
 
-cd "$WORKFLOW_ROOT"
+find_ops_root() {
+    local script="$1"
+    local dir
+    local depth=0
+    local max_depth=20
+
+    # Follow symlinks one at a time, checking each level for orchestrator/
+    while true; do
+        ((depth++))
+        if [[ $depth -gt $max_depth ]]; then
+            echo "ERROR: Too many symlink levels while finding ops root" >&2
+            exit 1
+        fi
+        # Get absolute path without resolving symlinks
+        if [[ "$script" == /* ]]; then
+            dir="$(dirname "$script")"
+        else
+            dir="$(cd "$(dirname "$script")" && pwd)"
+        fi
+
+        # Check parent for orchestrator/ (ops_root/bin/wf pattern)
+        local parent="$(dirname "$dir")"
+        if [[ -d "$parent/orchestrator" ]]; then
+            echo "$parent"
+            return
+        fi
+
+        # Check current dir for orchestrator/ (ops_root/wf pattern)
+        if [[ -d "$dir/orchestrator" ]]; then
+            echo "$dir"
+            return
+        fi
+
+        # Follow symlink if it is one
+        if [[ -L "$script" ]]; then
+            local target="$(readlink "$script")"
+            if [[ "$target" == /* ]]; then
+                script="$target"
+            else
+                script="$dir/$target"
+            fi
+        else
+            # Not a symlink and no orchestrator found - use parent
+            echo "$parent"
+            return
+        fi
+    done
+}
+
+OPS_ROOT="$(find_ops_root "${BASH_SOURCE[0]}")"
+
+# Find hashd by following orchestrator symlink (if it exists)
+ORCHESTRATOR_PATH="$OPS_ROOT/orchestrator"
+if [[ -L "$ORCHESTRATOR_PATH" ]]; then
+    # orchestrator is symlinked - run from hashd to use its deps
+    HASHD_ROOT="$(dirname "$(readlink -f "$ORCHESTRATOR_PATH")")"
+    cd "$HASHD_ROOT"
+    export HASHD_OPS_ROOT="$OPS_ROOT"
+else
+    # Running directly from hashd
+    cd "$OPS_ROOT"
+fi
+
 exec uv run python -m orchestrator.cli "$@"
