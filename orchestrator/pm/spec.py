@@ -201,7 +201,12 @@ def run_spec_update(
 
     # Build prompt and run Claude
     prompt = build_spec_prompt(current_spec, ws_context)
-    success, response = run_claude(prompt, timeout)
+    success, response = run_claude(
+        prompt,
+        timeout=timeout,
+        stage="pm_spec",
+        project_dir=project_dir,
+    )
 
     if not success:
         return False, response

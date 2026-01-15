@@ -4,6 +4,8 @@ Configuration loaders for AOS.
 Loads project and workstream configuration from .env files.
 """
 
+import fnmatch
+import json
 import logging
 import shlex
 import shutil
@@ -150,6 +152,7 @@ class Workstream:
     dir: Path
     pr_url: str | None = None  # GitHub PR URL if in PR workflow
     pr_number: int | None = None  # GitHub PR number if in PR workflow
+    codex_session_id: str | None = None  # Codex session UUID for resume
 
 
 def load_project_config(project_dir: Path) -> ProjectConfig:
@@ -259,7 +262,7 @@ def load_workstream(workstream_dir: Path) -> Workstream:
         try:
             pr_number = int(env["PR_NUMBER"])
         except ValueError:
-            pass
+            logger.debug(f"Invalid PR_NUMBER '{env['PR_NUMBER']}' in {workstream_dir}")
 
     return Workstream(
         id=env["ID"],
@@ -272,7 +275,65 @@ def load_workstream(workstream_dir: Path) -> Workstream:
         dir=workstream_dir,
         pr_url=env.get("PR_URL"),
         pr_number=pr_number,
+        codex_session_id=env.get("CODEX_SESSION_ID") or None,
     )
+
+
+def _escape_env_value(value: str) -> str:
+    """Escape a value for safe inclusion in a shell-style env file.
+
+    Escapes backslashes, double quotes, and newlines.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def update_workstream_meta(workstream_dir: Path, updates: dict[str, str | None]) -> None:
+    """Update fields in meta.env.
+
+    Args:
+        workstream_dir: Path to workstream directory
+        updates: Dict of field_name -> value. If value is None, the field is removed.
+
+    Example:
+        update_workstream_meta(ws_dir, {"CODEX_SESSION_ID": "abc-123"})
+        update_workstream_meta(ws_dir, {"CODEX_SESSION_ID": None})  # removes field
+    """
+    meta_path = workstream_dir / "meta.env"
+    if not meta_path.exists():
+        logger.warning(f"meta.env not found at {meta_path}")
+        return
+
+    content = meta_path.read_text()
+    lines = content.splitlines()
+
+    # Track which updates we've applied (to append new fields)
+    applied = set()
+
+    # Update existing fields
+    new_lines = []
+    for line in lines:
+        field_name = None
+        for key in updates:
+            if line.startswith(f"{key}="):
+                field_name = key
+                break
+
+        if field_name:
+            value = updates[field_name]
+            applied.add(field_name)
+            if value is not None:
+                # Update the field with escaped value
+                new_lines.append(f'{field_name}="{_escape_env_value(value)}"')
+            # If value is None, don't add the line (removes the field)
+        else:
+            new_lines.append(line)
+
+    # Append new fields that weren't in the file
+    for key, value in updates.items():
+        if key not in applied and value is not None:
+            new_lines.append(f'{key}="{_escape_env_value(value)}"')
+
+    meta_path.write_text("\n".join(new_lines) + "\n")
 
 
 def get_active_workstreams(project_dir: Path) -> list[Workstream]:
@@ -323,3 +384,105 @@ def clear_current_workstream(ops_dir: Path) -> None:
     context_file = ops_dir / "config" / "current_workstream"
     if context_file.exists():
         context_file.unlink()
+
+
+# Autonomy modes
+AUTONOMY_MODES = {"supervised", "gatekeeper", "autonomous"}
+
+
+@dataclass
+class SensitivePathsConfig:
+    """Configuration for sensitive path detection."""
+    patterns: list[str]  # Glob patterns like "**/auth/**", "**/*.env*"
+    threshold_boost: float  # How much to increase threshold for sensitive paths
+
+
+@dataclass
+class EscalationConfig:
+    """Escalation configuration from escalation.json.
+
+    Controls autonomy level and confidence thresholds for auto-continue decisions.
+    """
+    autonomy: str  # "supervised", "gatekeeper", or "autonomous"
+    commit_confidence_threshold: float  # Threshold for auto-continuing commits (e.g., 0.7)
+    merge_confidence_threshold: float  # Threshold for auto-merging (e.g., 0.8)
+    sensitive_paths: SensitivePathsConfig | None  # Optional path-based threshold boost
+
+
+def load_escalation_config(project_dir: Path) -> EscalationConfig:
+    """Load escalation.json and return EscalationConfig.
+
+    If file doesn't exist, returns sensible defaults.
+    """
+    config_path = project_dir / "escalation.json"
+
+    # Defaults
+    defaults = EscalationConfig(
+        autonomy="gatekeeper",
+        commit_confidence_threshold=0.7,
+        merge_confidence_threshold=0.8,
+        sensitive_paths=SensitivePathsConfig(
+            patterns=["**/auth/**", "**/*.env*", "**/security/**", "**/migrations/**"],
+            threshold_boost=0.15,
+        ),
+    )
+
+    if not config_path.exists():
+        return defaults
+
+    try:
+        data = json.loads(config_path.read_text())
+
+        autonomy = data.get("autonomy", "gatekeeper")
+        if autonomy not in AUTONOMY_MODES:
+            logger.warning(f"Unknown autonomy mode '{autonomy}', defaulting to 'gatekeeper'")
+            autonomy = "gatekeeper"
+
+        sensitive_paths = None
+        if "sensitive_paths" in data:
+            sp = data["sensitive_paths"]
+            sensitive_paths = SensitivePathsConfig(
+                patterns=sp.get("patterns", []),
+                threshold_boost=sp.get("threshold_boost", 0.15),
+            )
+
+        return EscalationConfig(
+            autonomy=autonomy,
+            commit_confidence_threshold=data.get("commit_confidence_threshold", 0.7),
+            merge_confidence_threshold=data.get("merge_confidence_threshold", 0.8),
+            sensitive_paths=sensitive_paths,
+        )
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.warning(f"Failed to parse escalation.json: {e}, using defaults")
+        return defaults
+
+
+def get_confidence_threshold(
+    changed_files: list[str],
+    config: EscalationConfig,
+    for_merge: bool = False,
+) -> float:
+    """Calculate effective confidence threshold based on changed files.
+
+    Args:
+        changed_files: List of file paths that were changed
+        config: Escalation config with thresholds and sensitive patterns
+        for_merge: If True, use merge threshold; otherwise use commit threshold
+
+    Returns:
+        Effective threshold (base + boost if sensitive paths touched)
+    """
+    base_threshold = config.merge_confidence_threshold if for_merge else config.commit_confidence_threshold
+
+    if not config.sensitive_paths or not config.sensitive_paths.patterns:
+        return base_threshold
+
+    # Check if any changed file matches sensitive patterns
+    for file_path in changed_files:
+        for pattern in config.sensitive_paths.patterns:
+            if fnmatch.fnmatch(file_path, pattern):
+                boosted = base_threshold + config.sensitive_paths.threshold_boost
+                # Cap at 1.0
+                return min(boosted, 1.0)
+
+    return base_threshold

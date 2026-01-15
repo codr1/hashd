@@ -17,6 +17,7 @@ from orchestrator.commands import list as cmd_list_module
 from orchestrator.commands import refresh as cmd_refresh_module
 from orchestrator.commands import conflicts as cmd_conflicts_module
 from orchestrator.commands import close as cmd_close_module
+from orchestrator.commands import reset as cmd_reset_module
 from orchestrator.commands import merge as cmd_merge_module
 from orchestrator.commands import archive as cmd_archive_module
 from orchestrator.commands import run as cmd_run_module
@@ -186,8 +187,8 @@ def cmd_close(args):
     if getattr(args, 'no_changes', False):
         reason = getattr(args, 'reason', None)
         if not reason:
-            print("ERROR: --no-changes requires a reason")
-            print("  Usage: wf close [ws_id] --no-changes \"reason\"")
+            print("ERROR: --no-changes requires --reason")
+            print("  Usage: wf close [ws_id] --no-changes --reason \"explanation\"")
             return 2
         args.id = resolve_workstream_id(args, ops_dir)
         return cmd_close_module.cmd_close_no_changes(args, ops_dir, project_config)
@@ -195,6 +196,12 @@ def cmd_close(args):
     # Otherwise close workstream (abandon)
     args.id = resolve_workstream_id(args, ops_dir)
     return cmd_close_module.cmd_close(args, ops_dir, project_config)
+
+
+def cmd_reset(args):
+    project_config, ops_dir = get_project_config(args)
+    args.id = resolve_workstream_id(args, ops_dir)
+    return cmd_reset_module.cmd_reset(args, ops_dir, project_config)
 
 
 def cmd_merge(args):
@@ -494,13 +501,21 @@ def main():
     p_close.add_argument('--force', action='store_true', help='Close even with uncommitted changes')
     p_close.add_argument('--keep-branch', action='store_true', help='Keep git branch for potential resurrection')
     p_close.add_argument('--no-changes', action='store_true', help='Close as complete (no code changes needed)')
-    p_close.add_argument('reason', nargs='?', help='Reason why no changes needed (required with --no-changes)')
+    p_close.add_argument('--reason', '-r', help='Reason why no changes needed (required with --no-changes)')
     p_close.set_defaults(func=cmd_close)
+
+    # wf reset
+    p_reset = subparsers.add_parser('reset', help='Reset workstream to start fresh')
+    p_reset.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
+    p_reset.add_argument('--force', action='store_true', help='Reset even with uncommitted changes')
+    p_reset.add_argument('--hard', action='store_true', help='Also delete plan.md to regenerate from story')
+    p_reset.set_defaults(func=cmd_reset)
 
     # wf merge
     p_merge = subparsers.add_parser('merge', help='Merge workstream to main and archive')
     p_merge.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_merge.add_argument('--push', action='store_true', help='Push to remote after merge')
+    p_merge.add_argument('--confirm', action='store_true', help='Confirm merge in supervised mode')
     p_merge.set_defaults(func=cmd_merge)
 
     # wf archive

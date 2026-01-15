@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from orchestrator.lib.config import ProjectConfig, load_workstream
+from orchestrator.lib.agents_config import load_agents_config, get_stage_command
 from orchestrator.lib.planparse import parse_plan
 from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.review import load_review
@@ -105,7 +106,7 @@ def cmd_plan_new(args, ops_dir: Path, project_config: ProjectConfig):
 
     # Annotate REQS.md with WIP markers
     print("Annotating REQS.md...")
-    success, msg = annotate_reqs_for_story(story, project_config)
+    success, msg = annotate_reqs_for_story(story, project_config, project_dir=project_dir)
     if success:
         # Truncate at word boundary if too long
         if len(msg) > 80:
@@ -183,7 +184,7 @@ def cmd_plan_resurrect(args, ops_dir: Path, project_config: ProjectConfig):
 
     # Re-annotate REQS
     print("Re-annotating REQS.md...")
-    success, msg = annotate_reqs_for_story(story, project_config)
+    success, msg = annotate_reqs_for_story(story, project_config, project_dir=project_dir)
     if success:
         if len(msg) > 80:
             truncated = msg[:80].rsplit(' ', 1)[0]
@@ -361,8 +362,14 @@ def cmd_plan_add(args, ops_dir: Path, project_config: ProjectConfig):
 
     print(f"Generating commit spec for: {instruction}")
 
-    # Call Claude
-    cmd = ["claude", "-p", "--output-format", "json"]
+    # Load agent config
+    project_dir = ops_dir / "projects" / project_config.name
+    agents_config = load_agents_config(project_dir)
+    stage_cmd = get_stage_command(agents_config, "plan_add", {"prompt": prompt})
+    cmd = stage_cmd.cmd
+
+    stdin_input = stage_cmd.get_stdin_input(prompt)
+
     env = os.environ.copy()
     env.pop("ANTHROPIC_API_KEY", None)
 
@@ -370,7 +377,7 @@ def cmd_plan_add(args, ops_dir: Path, project_config: ProjectConfig):
         result = subprocess.run(
             cmd,
             cwd=str(ws.worktree),
-            input=prompt,
+            input=stdin_input,
             capture_output=True,
             text=True,
             timeout=120,

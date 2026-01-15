@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from orchestrator.lib.prompts import render_prompt
+from orchestrator.lib.agents_config import AgentsConfig, get_stage_command
 from orchestrator.pm.claude_utils import extract_json_with_preamble
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ def generate_breakdown(
     plan_content: str,
     timeout: int = 180,
     log_file: Optional[Path] = None,
+    agents_config: Optional[AgentsConfig] = None,
 ) -> list[dict]:
     """
     Generate micro-commits breakdown from plan content.
@@ -40,6 +42,7 @@ def generate_breakdown(
         plan_content: Current plan.md content
         timeout: Claude timeout in seconds
         log_file: Optional log file path
+        agents_config: Agent configuration (uses defaults if not provided)
 
     Returns:
         List of dicts with 'id', 'title', 'description'. Empty list on failure.
@@ -52,9 +55,12 @@ def generate_breakdown(
         ws_prefix=ws_prefix
     )
 
-    # Use -p (print mode) for non-interactive + file access (Read, Grep, Glob)
-    # --output-format json wraps response for parsing
-    cmd = ["claude", "-p", "--output-format", "json"]
+    # Get command from config
+    config = agents_config or AgentsConfig()
+    stage_cmd = get_stage_command(config, "breakdown", {"prompt": prompt})
+    cmd = stage_cmd.cmd
+
+    stdin_input = stage_cmd.get_stdin_input(prompt)
 
     # Remove ANTHROPIC_API_KEY so Claude uses OAuth credentials
     env = os.environ.copy()
@@ -64,7 +70,7 @@ def generate_breakdown(
         result = subprocess.run(
             cmd,
             cwd=str(worktree),
-            input=prompt,
+            input=stdin_input,
             capture_output=True,
             text=True,
             timeout=timeout,

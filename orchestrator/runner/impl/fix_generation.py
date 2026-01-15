@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from orchestrator.lib.agents_config import AgentsConfig, get_stage_command
 from .breakdown import append_commits_to_plan, COMMIT_ID_PATTERN
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ def generate_fix_commits(
     existing_commit_count: int,
     timeout: int = 180,
     log_file: Optional[Path] = None,
+    agents_config: Optional[AgentsConfig] = None,
 ) -> list[dict]:
     """
     Generate fix micro-commits based on merge gate failure.
@@ -100,8 +102,12 @@ Rules:
 - Descriptions should explain the fix and why it resolves the failure
 '''
 
-    # Use -p (print mode) for non-interactive + file access (Read, Grep, Glob)
-    cmd = ["claude", "-p", "--output-format", "json"]
+    # Get command from config
+    config = agents_config or AgentsConfig()
+    stage_cmd = get_stage_command(config, "fix_generation", {"prompt": prompt})
+    cmd = stage_cmd.cmd
+
+    stdin_input = stage_cmd.get_stdin_input(prompt)
 
     # Remove ANTHROPIC_API_KEY so Claude uses OAuth credentials
     env = os.environ.copy()
@@ -111,7 +117,7 @@ Rules:
         result = subprocess.run(
             cmd,
             cwd=str(worktree),
-            input=prompt,
+            input=stdin_input,
             capture_output=True,
             text=True,
             timeout=timeout,

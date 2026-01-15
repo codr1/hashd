@@ -59,6 +59,35 @@ def format_review(review: dict) -> str:
     return "\n".join(lines)
 
 
+def format_review_for_retry(review: dict) -> str:
+    """Format review feedback for retry prompts.
+
+    Returns a compact format suitable for session resume prompts where
+    the agent already has context. Focuses on actionable items only.
+    """
+    parts = []
+
+    blockers = review.get('blockers', [])
+    if blockers:
+        parts.append("Blockers:")
+        for b in blockers:
+            if isinstance(b, dict):
+                parts.append(f"  - {b.get('file', '?')}:{b.get('line', '?')} [{b.get('severity', '?')}] {b.get('issue', '?')}")
+            else:
+                parts.append(f"  - {b}")
+
+    required = review.get('required_changes', [])
+    if required:
+        parts.append("Required changes:")
+        for c in required:
+            parts.append(f"  - {c}")
+
+    if not parts:
+        return "Review rejected (no specific feedback provided)"
+
+    return "\n".join(parts)
+
+
 def print_review(review: dict) -> None:
     """Print formatted review result."""
     print(f"Decision: {review.get('decision', 'unknown')}")
