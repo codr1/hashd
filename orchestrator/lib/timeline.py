@@ -9,6 +9,7 @@ Designed for reuse in: wf log, wf watch, wf dashboard
 """
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,6 +18,8 @@ from typing import Optional
 
 from orchestrator.lib import envparse
 from orchestrator.lib.config import Workstream, load_workstream
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -81,6 +84,24 @@ STAGE_START_RE = re.compile(r'^Starting stage:\s+(\w+)$')
 STAGE_PASSED_RE = re.compile(r'^Stage\s+(\w+)\s+passed')
 STAGE_FAILED_RE = re.compile(r'^Stage\s+(\w+)\s+failed:\s+(.+)$')
 RUN_START_RE = re.compile(r'^Starting run:\s+(.+)$')
+SELECTED_COMMIT_RE = re.compile(r'^Selected micro-commit:\s+(\S+)')
+SHORT_COMMIT_RE = re.compile(r'^COMMIT-[A-Z0-9_]+-(\d+)$')
+
+
+def _short_commit_name(full_name: str) -> str:
+    """
+    Extract short display name from commit ID.
+
+    COMMIT-COGNITO_AUTH-001 -> 001
+    COMMIT-FOO-BAR-002 -> 002
+    anything-else -> anything-else (unchanged)
+    """
+    if not full_name:
+        return full_name
+    match = SHORT_COMMIT_RE.match(full_name)
+    if match:
+        return match.group(1)
+    return full_name
 
 
 def get_workstream_timeline(
@@ -149,7 +170,7 @@ def _extract_meta_events(workstream_dir: Path, ws: Workstream) -> list[TimelineE
                 source_file=meta_path,
             ))
         except ValueError:
-            pass
+            logger.debug(f"Invalid CREATED_AT timestamp in {meta_path}: {env['CREATED_AT']}")
 
     # Merged event
     if "MERGED_AT" in env:
@@ -163,7 +184,7 @@ def _extract_meta_events(workstream_dir: Path, ws: Workstream) -> list[TimelineE
                 source_file=meta_path,
             ))
         except ValueError:
-            pass
+            logger.debug(f"Invalid MERGED_AT timestamp in {meta_path}: {env['MERGED_AT']}")
 
     # Closed event
     if "CLOSED_AT" in env:
@@ -177,7 +198,7 @@ def _extract_meta_events(workstream_dir: Path, ws: Workstream) -> list[TimelineE
                 source_file=meta_path,
             ))
         except ValueError:
-            pass
+            logger.debug(f"Invalid CLOSED_AT timestamp in {meta_path}: {env['CLOSED_AT']}")
 
     return events
 
@@ -205,7 +226,8 @@ def _extract_run_events(ops_dir: Path, project_name: str, ws_id: str) -> list[Ti
             # Completed run - parse result.json
             try:
                 result = json.loads(result_file.read_text())
-            except (json.JSONDecodeError, IOError):
+            except (json.JSONDecodeError, IOError) as e:
+                logger.debug(f"Failed to parse result.json {result_file}: {e}")
                 continue
 
             timestamps = result.get("timestamps", {})
@@ -257,7 +279,7 @@ def _extract_run_events(ops_dir: Path, project_name: str, ws_id: str) -> list[Ti
                         source_file=result_file,
                     ))
                 except ValueError:
-                    pass
+                    logger.debug(f"Invalid ended timestamp in {result_file}: {timestamps['ended']}")
         elif log_file.exists():
             # Track incomplete run (no result.json yet)
             incomplete_runs.append((run_dir, log_file))
@@ -271,14 +293,35 @@ def _extract_run_events(ops_dir: Path, project_name: str, ws_id: str) -> list[Ti
     return events
 
 
-def _parse_run_log(log_file: Path, run_id: str) -> list[TimelineEvent]:
-    """Parse run.log to extract live stage events for in-progress runs."""
-    events = []
+@dataclass
+class _LogEntry:
+    """Parsed run.log entry."""
+    timestamp: datetime
+    event_type: str  # "run_started", "commit_selected", "stage_started", "stage_passed", "stage_failed"
+    stage: Optional[str] = None
+    commit: Optional[str] = None
+    reason: Optional[str] = None
 
+
+def _parse_run_log_entries(log_file: Path) -> tuple[Optional[str], list[_LogEntry]]:
+    """
+    Parse run.log into structured entries.
+
+    Returns:
+        (microcommit, entries) - microcommit is the current commit being processed,
+        entries is a list of parsed log entries.
+
+    Returns (None, []) if file cannot be read.
+    """
     try:
         content = log_file.read_text()
-    except IOError:
-        return events
+    except IOError as e:
+        logger.debug(f"Failed to read run.log {log_file}: {e}")
+        return None, []
+
+    entries = []
+    current_commit = None
+    microcommit = None
 
     for line in content.splitlines():
         ts_match = LOG_TIMESTAMP_RE.match(line)
@@ -288,63 +331,137 @@ def _parse_run_log(log_file: Path, run_id: str) -> list[TimelineEvent]:
         try:
             ts = datetime.fromisoformat(ts_match.group(1))
         except ValueError:
+            # Skip lines with malformed timestamps (expected for non-timestamp lines)
             continue
 
         message = ts_match.group(2)
 
+        # Check for selected commit
+        commit_match = SELECTED_COMMIT_RE.match(message)
+        if commit_match:
+            microcommit = commit_match.group(1)
+            current_commit = _short_commit_name(microcommit)
+            continue
+
         # Check for run start
         run_start = RUN_START_RE.match(message)
         if run_start:
-            events.append(TimelineEvent(
+            entries.append(_LogEntry(
                 timestamp=ts,
                 event_type="run_started",
-                summary=f"Run started: {run_id}",
-                details={"run_id": run_id},
-                source_file=log_file,
             ))
             continue
 
         # Check for stage start
         stage_start = STAGE_START_RE.match(message)
         if stage_start:
-            stage = stage_start.group(1)
-            events.append(TimelineEvent(
+            entries.append(_LogEntry(
                 timestamp=ts,
                 event_type="stage_started",
-                summary=f"Stage: {stage}",
-                details={"run_id": run_id, "stage": stage},
-                source_file=log_file,
+                stage=stage_start.group(1),
+                commit=current_commit,
             ))
             continue
 
         # Check for stage passed
         stage_passed = STAGE_PASSED_RE.match(message)
         if stage_passed:
-            stage = stage_passed.group(1)
-            events.append(TimelineEvent(
+            entries.append(_LogEntry(
                 timestamp=ts,
                 event_type="stage_passed",
-                summary=f"Passed: {stage}",
-                details={"run_id": run_id, "stage": stage},
-                source_file=log_file,
+                stage=stage_passed.group(1),
+                commit=current_commit,
             ))
             continue
 
         # Check for stage failed
         stage_failed = STAGE_FAILED_RE.match(message)
         if stage_failed:
-            stage = stage_failed.group(1)
-            reason = stage_failed.group(2)
-            events.append(TimelineEvent(
+            entries.append(_LogEntry(
                 timestamp=ts,
                 event_type="stage_failed",
-                summary=f"Failed: {stage} - {reason[:50]}",
-                details={"run_id": run_id, "stage": stage, "reason": reason},
-                source_file=log_file,
+                stage=stage_failed.group(1),
+                commit=current_commit,
+                reason=stage_failed.group(2),
             ))
             continue
 
+    return microcommit, entries
+
+
+def _parse_run_log(log_file: Path, run_id: str) -> list[TimelineEvent]:
+    """Parse run.log to extract live stage events for in-progress runs."""
+    _, entries = _parse_run_log_entries(log_file)
+    events = []
+
+    for entry in entries:
+        if entry.event_type == "run_started":
+            events.append(TimelineEvent(
+                timestamp=entry.timestamp,
+                event_type="run_started",
+                summary=f"Run started: {run_id}",
+                details={"run_id": run_id},
+                source_file=log_file,
+            ))
+        elif entry.event_type == "stage_started":
+            prefix = f"[{entry.commit}] " if entry.commit else ""
+            events.append(TimelineEvent(
+                timestamp=entry.timestamp,
+                event_type="stage_started",
+                summary=f"{prefix}Stage: {entry.stage}",
+                details={"run_id": run_id, "stage": entry.stage, "commit": entry.commit},
+                source_file=log_file,
+            ))
+        elif entry.event_type == "stage_passed":
+            prefix = f"[{entry.commit}] " if entry.commit else ""
+            events.append(TimelineEvent(
+                timestamp=entry.timestamp,
+                event_type="stage_passed",
+                summary=f"{prefix}Passed: {entry.stage}",
+                details={"run_id": run_id, "stage": entry.stage, "commit": entry.commit},
+                source_file=log_file,
+            ))
+        elif entry.event_type == "stage_failed":
+            prefix = f"[{entry.commit}] " if entry.commit else ""
+            reason_short = entry.reason[:50] if entry.reason else ""
+            events.append(TimelineEvent(
+                timestamp=entry.timestamp,
+                event_type="stage_failed",
+                summary=f"{prefix}Failed: {entry.stage} - {reason_short}",
+                details={"run_id": run_id, "stage": entry.stage, "reason": entry.reason, "commit": entry.commit},
+                source_file=log_file,
+            ))
+
     return events
+
+
+def parse_run_log_status(log_file: Path) -> Optional[dict]:
+    """
+    Parse run.log to extract current run status for display.
+
+    Returns dict with:
+        - microcommit: str - current commit being processed
+        - stages: dict - stage name -> {"status": "passed"|"running"|"failed"}
+
+    Returns None if no valid run data found.
+    """
+    microcommit, entries = _parse_run_log_entries(log_file)
+
+    if not microcommit:
+        return None
+
+    # Build stages dict from entries
+    # Note: stages dict preserves insertion order (Python 3.7+)
+    stages: dict[str, dict] = {}
+    for entry in entries:
+        if entry.event_type == "stage_started" and entry.stage:
+            stages[entry.stage] = {"status": "running"}
+        elif entry.event_type == "stage_passed" and entry.stage:
+            stages[entry.stage] = {"status": "passed"}
+        elif entry.event_type == "stage_failed" and entry.stage:
+            stages[entry.stage] = {"status": "failed"}
+
+    return {"microcommit": microcommit, "stages": stages}
 
 
 def _summarize_stages(stages: dict) -> dict:

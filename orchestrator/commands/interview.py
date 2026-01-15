@@ -30,18 +30,11 @@ class InterviewConfig:
     merge_gate_test_cmd: str
     reqs_path: str
     merge_mode: str
-    autonomy: str  # "supervised", "gatekeeper", or "autonomous"
-    commit_confidence_threshold: float = 0.7
-    merge_confidence_threshold: float = 0.8
+    supervised_mode: bool
     description: str = ""
     tech_preferred: str = ""
     tech_acceptable: str = ""
     tech_avoid: str = ""
-
-    @property
-    def supervised_mode(self) -> bool:
-        """Backward compatibility: True if autonomy is 'supervised'."""
-        return self.autonomy == "supervised"
 
 
 def _safe_read(path: Path) -> str | None:
@@ -299,7 +292,7 @@ def run_interview(
         merge_gate_test_cmd=detection.test_cmd or "",
         reqs_path="REQS.md",
         merge_mode="local",
-        autonomy="gatekeeper",
+        supervised_mode=False,
     )
 
     # Basic info - validate project name isn't taken
@@ -341,18 +334,10 @@ def run_interview(
         default=1 if defaults.merge_mode == "local" else 2,
     )
 
-    # Autonomy mode
-    autonomy_default = {"supervised": 1, "gatekeeper": 2, "autonomous": 3}.get(
-        defaults.autonomy, 2
-    )
-    autonomy = prompt_choice(
-        "Autonomy mode:",
-        [
-            ("supervised", "supervised - pause for human review after every commit"),
-            ("gatekeeper", "gatekeeper - auto-continue if AI confidence >= 70%"),
-            ("autonomous", "autonomous - auto-continue commits + auto-merge"),
-        ],
-        default=autonomy_default,
+    # Supervised mode
+    supervised_mode = prompt_bool(
+        "Supervised mode (pause for review after each commit)?",
+        defaults.supervised_mode,
     )
 
     return InterviewConfig(
@@ -364,9 +349,7 @@ def run_interview(
         merge_gate_test_cmd=merge_gate_test_cmd,
         reqs_path=reqs_path,
         merge_mode=merge_mode,
-        autonomy=autonomy,
-        commit_confidence_threshold=defaults.commit_confidence_threshold,
-        merge_confidence_threshold=defaults.merge_confidence_threshold,
+        supervised_mode=supervised_mode,
         description=defaults.description,
         tech_preferred=defaults.tech_preferred,
         tech_acceptable=defaults.tech_acceptable,
@@ -375,7 +358,7 @@ def run_interview(
 
 
 def write_config_files(project_dir: Path, config: InterviewConfig) -> None:
-    """Write project.env, project_profile.env, and escalation.json files.
+    """Write project.env and project_profile.env files.
 
     Args:
         project_dir: Directory to write config files to (projects/<name>/)
@@ -407,6 +390,7 @@ MERGE_GATE_TEST_CMD="{config.merge_gate_test_cmd}"
 
 # Merge settings
 MERGE_MODE="{config.merge_mode}"
+SUPERVISED_MODE="{str(config.supervised_mode).lower()}"
 
 # Timeouts (seconds)
 IMPLEMENT_TIMEOUT="1200"
@@ -417,69 +401,14 @@ BREAKDOWN_TIMEOUT="180"
     profile_env.write_text(profile_env_content)
     print(f"Writing {profile_env}... done")
 
-    # Write escalation.json
-    escalation_file = project_dir / "escalation.json"
-    escalation_config = {
-        "autonomy": config.autonomy,
-        "commit_confidence_threshold": config.commit_confidence_threshold,
-        "merge_confidence_threshold": config.merge_confidence_threshold,
-        "sensitive_paths": {
-            "patterns": ["**/auth/**", "**/*.env*", "**/security/**", "**/migrations/**"],
-            "threshold_boost": 0.15,
-        },
-    }
-    escalation_file.write_text(json.dumps(escalation_config, indent=2) + "\n")
-    print(f"Writing {escalation_file}... done")
-
-    # Ensure Codex trusts the worktrees directory
-    # project_dir is ops_dir/projects/<name>, so ops_dir is parent.parent
-    ops_dir = project_dir.parent.parent
-    _ensure_codex_worktrees_trust(ops_dir)
-
-
-def _ensure_codex_worktrees_trust(ops_dir: Path) -> None:
-    """Add worktrees directory to Codex trust config if not already present.
-
-    Codex requires directories to be explicitly trusted in ~/.codex/config.toml.
-    Git worktrees use a .git file instead of .git directory, so Codex doesn't
-    recognize them as part of a trusted repo without explicit configuration.
-    """
-    worktrees_dir = ops_dir / "worktrees"
-    worktrees_dir.mkdir(exist_ok=True)
-
-    codex_config_path = Path.home() / ".codex" / "config.toml"
-    codex_config_path.parent.mkdir(exist_ok=True)
-
-    # Read existing config
-    existing_content = ""
-    if codex_config_path.exists():
-        existing_content = codex_config_path.read_text()
-
-    # Check if worktrees path is already trusted
-    trust_entry = f'[projects."{worktrees_dir}"]'
-    if trust_entry in existing_content:
-        print(f"Codex trust for {worktrees_dir}... already configured")
-        return
-
-    # Append trust entry
-    new_entry = f'\n{trust_entry}\ntrust_level = "trusted"\n'
-    codex_config_path.write_text(existing_content.rstrip() + new_entry)
-    print(f"Codex trust for {worktrees_dir}... added")
-
 
 def cmd_interview(args, ops_dir: Path) -> int:
     """Run interview to update existing project config."""
     # Load existing project config if available
     try:
-        from orchestrator.lib.config import (
-            load_project_config,
-            load_project_profile,
-            load_escalation_config,
-        )
+        from orchestrator.lib.config import load_project_config, load_project_profile
         project_config = load_project_config(ops_dir)
         profile = load_project_profile(ops_dir)
-        project_dir = ops_dir / "projects" / project_config.name
-        escalation = load_escalation_config(project_dir)
 
         existing = InterviewConfig(
             project_name=project_config.name,
@@ -490,9 +419,7 @@ def cmd_interview(args, ops_dir: Path) -> int:
             merge_gate_test_cmd=profile.merge_gate_test_cmd,
             reqs_path=project_config.reqs_path,
             merge_mode=profile.merge_mode,
-            autonomy=escalation.autonomy,
-            commit_confidence_threshold=escalation.commit_confidence_threshold,
-            merge_confidence_threshold=escalation.merge_confidence_threshold,
+            supervised_mode=profile.supervised_mode,
             description=project_config.description,
             tech_preferred=project_config.tech_preferred,
             tech_acceptable=project_config.tech_acceptable,

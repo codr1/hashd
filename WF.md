@@ -300,12 +300,50 @@ Options:
 | `wf archive delete <id> --confirm` | Permanently delete |
 | `wf open <id> [--use] [--force]` | Resurrect archived workstream |
 
+### Directives Commands
+
+| Command | Description |
+|---------|-------------|
+| `wf directives` | Show all directives (global + project) |
+| `wf directives --project-only` | Show only project directives |
+| `wf directives -w <ws>` | Include feature directives for workstream |
+| `wf directives edit [level]` | Edit directives in $EDITOR (global/project/feature) |
+
 ### Other Commands
 
 | Command | Description |
 |---------|-------------|
 | `wf project show` | Show project configuration |
 | `wf --completion bash\|zsh\|fish` | Generate shell completion |
+
+---
+
+## Directives
+
+Directives are curated rules that guide AI implementation. They exist at three levels:
+
+```
+~/.config/wf/directives.md        # Global user preferences
+{repo}/WF_DIRECTIVES.md           # Project rules
+workstreams/{id}/directives.md    # Feature-specific (rare)
+```
+
+**Key principle:** Directives are documentation, not runtime state. They persist and are version-controlled.
+
+### Example WF_DIRECTIVES.md
+
+```markdown
+# Project Directives
+
+- No backward compatibility. We have zero users.
+- Use sync.Once pattern for handler initialization
+- Follow existing templ component patterns in internal/templates
+- HTMX handlers should set HX-Trigger for related component updates
+```
+
+### Usage
+
+Directives are automatically included in Codex implementation prompts. Use `wf directives` to view current directives.
 
 ---
 
@@ -441,6 +479,31 @@ cleanup cannot be lost during rebase conflicts.
 | Final Review fixes | 3 | HITL |
 | Merge conflict resolution | 3 | HITL |
 | PR auto-rebase | 3 | HITL |
+
+---
+
+## Resume Behavior
+
+When `wf run` detects uncommitted changes in the worktree, it checks the previous run's status to determine whether to resume or re-implement:
+
+| Last Run Failed At | Failure Type | Action |
+|-------------------|--------------|--------|
+| **test** | Timeout/infra | Resume from test stage |
+| **test** | Tests failed | Re-implement (code bug) |
+| **review** | Timeout/infra | Resume from review stage |
+| **review** | Rejected | Re-implement with feedback |
+| **human_review** | Waiting | Continue waiting |
+
+### Auto-Skip Logic
+
+When Codex reports "already_done" (work is complete):
+
+| Uncommitted Changes | Action |
+|---------------------|--------|
+| **None** | Auto-skip to next micro-commit |
+| **Present** | Proceed to test/review (changes ARE the implementation) |
+
+This prevents orphaned changes when a timeout leaves uncommitted work in the worktree.
 
 ---
 

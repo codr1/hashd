@@ -32,6 +32,8 @@ from orchestrator.commands import diff as cmd_diff_module
 from orchestrator.commands import project as cmd_project_module
 from orchestrator.commands import docs as cmd_docs_module
 from orchestrator.commands import skip as cmd_skip_module
+from orchestrator.commands import interview as cmd_interview_module
+from orchestrator.commands import directives as cmd_directives_module
 
 
 def get_ops_dir() -> Path:
@@ -143,6 +145,16 @@ def cmd_conflicts(args):
     return cmd_conflicts_module.cmd_conflicts(args, ops_dir, project_config)
 
 
+def cmd_directives(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_directives_module.cmd_directives(args, ops_dir, project_config)
+
+
+def cmd_directives_edit(args):
+    project_config, ops_dir = get_project_config(args)
+    return cmd_directives_module.cmd_directives_edit(args, ops_dir, project_config)
+
+
 def cmd_run(args):
     project_config, ops_dir = get_project_config(args)
     id_arg = getattr(args, 'id', None)
@@ -170,7 +182,17 @@ def cmd_close(args):
     if is_story_id(id_arg):
         return cmd_close_module.cmd_close_story(args, ops_dir, project_config, id_arg)
 
-    # Otherwise close workstream
+    # Handle --no-changes flag (close as complete without code)
+    if getattr(args, 'no_changes', False):
+        reason = getattr(args, 'reason', None)
+        if not reason:
+            print("ERROR: --no-changes requires a reason")
+            print("  Usage: wf close [ws_id] --no-changes \"reason\"")
+            return 2
+        args.id = resolve_workstream_id(args, ops_dir)
+        return cmd_close_module.cmd_close_no_changes(args, ops_dir, project_config)
+
+    # Otherwise close workstream (abandon)
     args.id = resolve_workstream_id(args, ops_dir)
     return cmd_close_module.cmd_close(args, ops_dir, project_config)
 
@@ -290,6 +312,26 @@ def cmd_diff(args):
 def cmd_project_show(args):
     project_config, ops_dir = get_project_config(args)
     return cmd_project_module.cmd_project_show(args, ops_dir, project_config)
+
+
+def cmd_project_add(args):
+    ops_dir = get_ops_dir()
+    return cmd_project_module.cmd_project_add(args, ops_dir)
+
+
+def cmd_project_list(args):
+    ops_dir = get_ops_dir()
+    return cmd_project_module.cmd_project_list(args, ops_dir)
+
+
+def cmd_project_use(args):
+    ops_dir = get_ops_dir()
+    return cmd_project_module.cmd_project_use(args, ops_dir)
+
+
+def cmd_interview(args):
+    ops_dir = get_ops_dir()
+    return cmd_interview_module.cmd_interview(args, ops_dir)
 
 
 def cmd_docs(args):
@@ -415,6 +457,23 @@ def main():
     p_conflicts.add_argument('id', nargs='?', help='Workstream ID (uses current if not specified)')
     p_conflicts.set_defaults(func=cmd_conflicts)
 
+    # wf directives
+    p_directives = subparsers.add_parser('directives', help='View project directives')
+    p_directives.add_argument('--workstream', '-w', help='Include feature directives for workstream')
+    p_directives.add_argument('--global-only', action='store_true', help='Show only global directives')
+    p_directives.add_argument('--project-only', action='store_true', help='Show only project directives')
+    p_directives.add_argument('--feature-only', action='store_true', help='Show only feature directives')
+    p_directives.set_defaults(func=cmd_directives)
+    directives_sub = p_directives.add_subparsers(dest='directives_cmd')
+
+    # wf directives edit
+    p_directives_edit = directives_sub.add_parser('edit', help='Edit directives in $EDITOR')
+    p_directives_edit.add_argument('level', nargs='?', default='project',
+                                   choices=['global', 'project', 'feature'],
+                                   help='Which level to edit (default: project)')
+    p_directives_edit.add_argument('--workstream', '-w', help='Workstream for feature directives')
+    p_directives_edit.set_defaults(func=cmd_directives_edit)
+
     # wf run
     p_run = subparsers.add_parser('run', help='Run cycle')
     p_run.add_argument('id', nargs='?', help='Workstream or STORY-xxxx (uses current if not specified)')
@@ -434,6 +493,8 @@ def main():
     p_close.add_argument('id', nargs='?', help='Story ID (STORY-xxxx) or workstream ID')
     p_close.add_argument('--force', action='store_true', help='Close even with uncommitted changes')
     p_close.add_argument('--keep-branch', action='store_true', help='Keep git branch for potential resurrection')
+    p_close.add_argument('--no-changes', action='store_true', help='Close as complete (no code changes needed)')
+    p_close.add_argument('reason', nargs='?', help='Reason why no changes needed (required with --no-changes)')
     p_close.set_defaults(func=cmd_close)
 
     # wf merge
@@ -531,12 +592,31 @@ def main():
 
     # wf project
     p_project = subparsers.add_parser('project', help='Project management')
-    p_project.set_defaults(func=cmd_project_show)
+    p_project.set_defaults(func=cmd_project_list)  # Default to list when no subcommand
     project_sub = p_project.add_subparsers(dest='project_cmd')
+
+    # wf project add <path> [--no-interview]
+    p_project_add = project_sub.add_parser('add', help='Register a new project')
+    p_project_add.add_argument('path', help='Path to project repository')
+    p_project_add.add_argument('--no-interview', action='store_true', help='Skip interactive setup')
+    p_project_add.set_defaults(func=cmd_project_add)
+
+    # wf project list
+    p_project_list = project_sub.add_parser('list', help='List registered projects')
+    p_project_list.set_defaults(func=cmd_project_list)
+
+    # wf project use <name>
+    p_project_use = project_sub.add_parser('use', help='Set active project')
+    p_project_use.add_argument('name', help='Project name')
+    p_project_use.set_defaults(func=cmd_project_use)
 
     # wf project show
     p_project_show = project_sub.add_parser('show', help='Show project configuration')
     p_project_show.set_defaults(func=cmd_project_show)
+
+    # wf interview
+    p_interview = subparsers.add_parser('interview', help='Update project configuration interactively')
+    p_interview.set_defaults(func=cmd_interview)
 
     # wf docs
     p_docs = subparsers.add_parser('docs', help='Update SPEC.md from workstream')

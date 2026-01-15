@@ -18,6 +18,25 @@ from orchestrator.lib.history import format_review_history
 
 logger = logging.getLogger(__name__)
 
+# Known Claude CLI error patterns and their user-friendly messages
+# Only add patterns here that we've actually observed in the wild
+_CLI_ERROR_PATTERNS = {
+    "You must run `claude` to review the updated terms": (
+        "Claude CLI requires terms acceptance. "
+        "Run 'claude' interactively to accept the updated terms, then retry."
+    ),
+}
+
+
+def _detect_cli_error(stderr: str) -> Optional[str]:
+    """Detect known Claude CLI errors and return a user-friendly message."""
+    stderr_lower = stderr.lower()
+    for pattern, message in _CLI_ERROR_PATTERNS.items():
+        if pattern.lower() in stderr_lower:
+            logger.warning(f"Claude CLI error detected: {message}")
+            return message
+    return None
+
 
 @dataclass
 class FreeformResult:
@@ -81,10 +100,13 @@ class ClaudeAgent:
         elapsed = time.time() - start_time
 
         if result.returncode != 0:
-            return FreeformResult(
-                text=f"ERROR: Claude failed with exit code {result.returncode}\n{result.stderr}",
-                elapsed_seconds=elapsed,
-            )
+            # Check for known CLI errors and provide clear message
+            cli_error = _detect_cli_error(result.stderr)
+            if cli_error:
+                error_text = f"ERROR: {cli_error}"
+            else:
+                error_text = f"ERROR: Claude failed with exit code {result.returncode}\n{result.stderr}"
+            return FreeformResult(text=error_text, elapsed_seconds=elapsed)
 
         # Parse JSON wrapper to extract the text result and usage
         try:
@@ -163,6 +185,16 @@ class ClaudeAgent:
             )
         except subprocess.TimeoutExpired:
             elapsed = time.time() - start_time
+            # Write log file on timeout - critical for debugging long reviews
+            if log_file:
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                log_file.write_text(
+                    f"=== COMMAND ===\n{' '.join(cmd)}\n\n"
+                    f"=== TIMING ===\nElapsed: {elapsed:.1f}s (TIMEOUT)\n\n"
+                    f"=== EXIT CODE ===\nN/A - process killed after timeout\n\n"
+                    f"=== STDOUT ===\nN/A - timeout\n\n"
+                    f"=== STDERR ===\nN/A - timeout\n"
+                )
             return ClaudeReview(
                 success=False,
                 exit_code=-1,
@@ -177,6 +209,7 @@ class ClaudeAgent:
             log_file.parent.mkdir(parents=True, exist_ok=True)
             log_file.write_text(
                 f"=== COMMAND ===\n{' '.join(cmd)}\n\n"
+                f"=== TIMING ===\nElapsed: {elapsed:.1f}s\n\n"
                 f"=== EXIT CODE ===\n{result.returncode}\n\n"
                 f"=== STDOUT ===\n{result.stdout}\n\n"
                 f"=== STDERR ===\n{result.stderr}\n"
@@ -191,6 +224,14 @@ class ClaudeAgent:
         )
 
         if result.returncode != 0:
+            # Check for known CLI errors and provide clear message
+            cli_error = _detect_cli_error(result.stderr)
+            if cli_error:
+                review.notes = cli_error
+            else:
+                # Include truncated stderr for unknown errors
+                stderr_snippet = result.stderr.strip()[:200] if result.stderr else "no output"
+                review.notes = f"Claude CLI failed (exit {result.returncode}): {stderr_snippet}"
             return review
 
         # Parse JSON wrapper from --output-format json, then extract review from result
@@ -204,6 +245,28 @@ class ClaudeAgent:
                 review.output_tokens = wrapper["usage"].get("output_tokens")
             else:
                 logger.debug("No usage info in Claude response (expected 'usage' key in JSON wrapper)")
+
+            # Log diagnostics for understanding review behavior
+            num_turns = wrapper.get("num_turns")
+            session_id = wrapper.get("session_id")
+
+            if num_turns is not None:
+                logger.info(f"Review completed in {num_turns} turns")
+            if session_id:
+                logger.debug(f"Claude session: {session_id}")
+            if review.input_tokens and review.output_tokens:
+                logger.info(f"Review tokens: {review.input_tokens} in, {review.output_tokens} out")
+
+            # Append diagnostics to log file for post-mortem analysis
+            # This is critical for understanding 15-minute timeouts
+            if log_file:
+                diagnostics = "\n=== DIAGNOSTICS ===\n"
+                diagnostics += f"Turns: {num_turns}\n" if num_turns else "Turns: unknown\n"
+                diagnostics += f"Session: {session_id}\n" if session_id else ""
+                diagnostics += f"Input tokens: {review.input_tokens}\n" if review.input_tokens else ""
+                diagnostics += f"Output tokens: {review.output_tokens}\n" if review.output_tokens else ""
+                with open(log_file, "a") as f:
+                    f.write(diagnostics)
 
             # Now parse the review JSON from the result text
             # Find and extract JSON from markdown code blocks

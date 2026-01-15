@@ -4,7 +4,10 @@ wf run - Execute the run loop with retry and human gate.
 
 import json
 import logging
+import os
+import re
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -41,6 +44,8 @@ from orchestrator.runner.impl.stages import (
 )
 from orchestrator.runner.impl.fix_generation import generate_fix_commits
 from orchestrator.runner.impl.breakdown import append_commits_to_plan
+from orchestrator.runner.git_utils import has_uncommitted_changes
+from orchestrator.lib.test_parser import parse_test_output, format_parsed_output
 
 
 MAX_REVIEW_ATTEMPTS = 5
@@ -337,11 +342,63 @@ def _run_merge_gate(ctx: RunContext) -> tuple[str, int]:
             )
 
             if rebase_result.returncode == 0:
-                ctx.log("Automatic rebase succeeded")
+                ctx.log("Automatic rebase succeeded, verifying build...")
+                # Verify build still works after rebase
+                build_result = subprocess.run(
+                    ["task", "-d", worktree, "build"],
+                    capture_output=True, text=True, timeout=120
+                )
+                if build_result.returncode != 0:
+                    # Go build errors often go to stdout, not stderr
+                    build_error = build_result.stderr or build_result.stdout
+                    ctx.log(f"Build failed after rebase: {build_error[:500]}")
+                    print("\n" + "="*60)
+                    print("WARNING: Build failed after rebase")
+                    print("="*60)
+                    print("\nThe rebase succeeded but the build now fails.")
+                    print("This may indicate semantic conflicts that need manual review.")
+                    print(f"\nBuild error:\n{build_error[:1000]}")
+                    print(f"\nFix the issue, then run: wf run {ctx.workstream.id}")
+                    notify_blocked(ctx.workstream.id, "Build failed after rebase")
+                    return "blocked", 8
+                ctx.log("Build verified after rebase")
                 print("Automatic rebase succeeded")
                 return "rebased", 0
 
-            # Rebase failed - abort and block for human
+            # Rebase failed - try to auto-resolve trivial conflicts
+            # NOTE: We only attempt resolution for the first conflicting commit.
+            # If subsequent commits also have conflicts, rebase --continue will fail
+            # and we'll abort. This is conservative but safe.
+            conflicted = _get_conflicted_files(worktree)
+            if conflicted and _try_auto_resolve_conflicts(worktree, conflicted):
+                # Try to continue rebase after auto-resolution
+                continue_result = subprocess.run(
+                    ["git", "-C", worktree, "rebase", "--continue"],
+                    capture_output=True, text=True,
+                    env={**os.environ, "GIT_EDITOR": "true"}  # Skip commit message editor
+                )
+                if continue_result.returncode == 0:
+                    ctx.log("Auto-resolved trivial conflicts and completed rebase")
+                    # Verify build after auto-resolution too
+                    build_result = subprocess.run(
+                        ["task", "-d", worktree, "build"],
+                        capture_output=True, text=True, timeout=120
+                    )
+                    if build_result.returncode != 0:
+                        build_error = build_result.stderr or build_result.stdout
+                        ctx.log(f"Build failed after auto-resolved rebase: {build_error[:500]}")
+                        print("\n" + "="*60)
+                        print("WARNING: Build failed after rebase")
+                        print("="*60)
+                        print("\nAuto-resolved conflicts but the build now fails.")
+                        print(f"\nBuild error:\n{build_error[:1000]}")
+                        print(f"\nFix the issue, then run: wf run {ctx.workstream.id}")
+                        notify_blocked(ctx.workstream.id, "Build failed after rebase")
+                        return "blocked", 8
+                    print("Auto-resolved trivial conflicts, rebase succeeded")
+                    return "rebased", 0
+
+            # Still failed - abort and block for human
             ctx.log(f"Rebase failed with conflicts: {rebase_result.stderr}")
             subprocess.run(
                 ["git", "-C", worktree, "rebase", "--abort"],
@@ -566,6 +623,113 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
         except (json.JSONDecodeError, IOError):
             pass  # Fall through to normal flow
 
+    # === Check for uncommitted changes from previous run ===
+    # If there are uncommitted changes and the last run failed at test/review due to
+    # timeout or infrastructure error (not rejection), resume from that stage instead
+    # of re-implementing.
+    if has_uncommitted_changes(ctx.workstream.worktree):
+        # Derive ops_dir from run_dir (run_dir is ops_dir/runs/run_id)
+        ops_dir = ctx.run_dir.parent.parent
+        last_run_dir = _find_last_run(ops_dir, ctx.workstream.id)
+        if not last_run_dir or last_run_dir == ctx.run_dir:
+            ctx.log("Uncommitted changes exist but no previous run found - proceeding normally")
+        else:
+            last_result = _load_last_run_result(last_run_dir)
+            if not last_result:
+                ctx.log(f"Uncommitted changes exist but couldn't load last run result - proceeding normally")
+            else:
+                last_status = last_result.get("status")
+                last_stages = last_result.get("stages", {})
+                failed_stage = last_result.get("failed_stage")
+
+                # Check if this is a resumable situation
+                # Resumable: test/review failed due to timeout or other infra error
+                # Not resumable: review rejected (needs re-implement), test failed (code bug)
+                if last_status != "failed":
+                    ctx.log(f"Uncommitted changes exist, last run status was '{last_status}' - proceeding normally")
+                elif failed_stage not in ("test", "review"):
+                    ctx.log(f"Uncommitted changes exist, last run failed at '{failed_stage}' - re-implementing")
+                else:
+                    # At this point: last_status == "failed" and failed_stage in ("test", "review")
+                    stage_notes = last_stages.get(failed_stage, {}).get("notes", "")
+                    # Check if it was a timeout or infrastructure failure (not a rejection)
+                    is_timeout = "timed out" in stage_notes.lower() or "timeout" in stage_notes.lower()
+                    is_rejection = "rejected" in stage_notes.lower()
+
+                    if not is_timeout:
+                        ctx.log(f"Uncommitted changes exist but last run failed at {failed_stage} (not timeout) - re-implementing")
+                    elif is_rejection:
+                        ctx.log(f"Uncommitted changes exist but last run was rejected - re-implementing with feedback")
+                    elif is_timeout and not is_rejection:
+                        ctx.log(f"Found uncommitted changes from previous run that failed at {failed_stage} (timeout)")
+                        ctx.log(f"Resuming from {failed_stage} stage instead of re-implementing")
+
+                        # Run test if needed
+                        if failed_stage == "test":
+                            try:
+                                result = run_stage(ctx, "test", stage_test)
+                                if result == StageResult.BLOCKED:
+                                    reason = ctx.stages.get("test", {}).get("notes", "unknown")
+                                    ctx.write_result("blocked", blocked_reason=reason)
+                                    return "blocked", 8, None
+                            except StageError as e:
+                                ctx.write_result("failed", e.stage)
+                                return "failed", e.exit_code, e.stage
+
+                        # Run review
+                        try:
+                            result = run_stage(ctx, "review", stage_review)
+                            if result == StageResult.BLOCKED:
+                                reason = ctx.stages.get("review", {}).get("notes", "unknown")
+                                ctx.write_result("blocked", blocked_reason=reason)
+                                return "blocked", 8, None
+                            ctx.log("Review approved on resume")
+                        except StageError as e:
+                            if "Review rejected" in e.message:
+                                # Rejection means we need to re-implement
+                                ctx.log("Review rejected on resume - falling through to implement")
+                                # Fall through to normal flow
+                            else:
+                                ctx.write_result("failed", e.stage)
+                                return "failed", e.exit_code, e.stage
+                        else:
+                            # Review passed - go to human gate
+                            ctx.log("Proceeding to human review gate")
+                            try:
+                                result = run_stage(ctx, "human_review", stage_human_review)
+                                if result == StageResult.BLOCKED:
+                                    reason = ctx.stages.get("human_review", {}).get("notes", "unknown")
+                                    ctx.write_result("blocked", blocked_reason=reason)
+                                    return "blocked", 8, None
+                            except StageError as e:
+                                ctx.write_result("failed", e.stage)
+                                return "failed", e.exit_code, e.stage
+
+                            # Human approved - commit
+                            try:
+                                result = run_stage(ctx, "qa_gate", stage_qa_gate)
+                                if result == StageResult.BLOCKED:
+                                    reason = ctx.stages.get("qa_gate", {}).get("notes", "unknown")
+                                    ctx.write_result("blocked", blocked_reason=reason)
+                                    return "blocked", 8, None
+                            except StageError as e:
+                                ctx.write_result("failed", e.stage)
+                                return "failed", e.exit_code, e.stage
+
+                            try:
+                                result = run_stage(ctx, "update_state", stage_update_state)
+                                if result == StageResult.BLOCKED:
+                                    reason = ctx.stages.get("update_state", {}).get("notes", "unknown")
+                                    ctx.write_result("blocked", blocked_reason=reason)
+                                    return "blocked", 8, None
+                            except StageError as e:
+                                ctx.write_result("failed", e.stage)
+                                return "failed", e.exit_code, e.stage
+
+                            ctx.write_result("passed")
+                            ctx.log("Run complete: passed (resumed from timeout)")
+                            return "passed", 0, None
+
     # === Phase 2: Inner Loop (Implement -> Test -> Review) ===
     human_feedback, should_reset = get_human_feedback(ctx.workstream_dir)  # From previous human rejection
 
@@ -594,6 +758,12 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
             )
             if result == StageResult.BLOCKED:
                 reason = ctx.stages.get("implement", {}).get("notes", "unknown")
+                # Handle auto-skip: commit was already done, continue to next
+                if reason.startswith("auto_skip:"):
+                    commit_id = reason.split(":", 1)[1]
+                    ctx.log(f"Auto-skipped {commit_id}, continuing to next commit")
+                    ctx.write_result("passed")
+                    return "passed", 0, None
                 ctx.write_result("blocked", blocked_reason=reason)
                 return "blocked", 8, None
         except StageError as e:
@@ -612,19 +782,29 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
                 return "blocked", 8, None
         except StageError as e:
             if attempt < MAX_REVIEW_ATTEMPTS:
-                # Test failure - capture output and retry
-                ctx.log(f"Tests failed on attempt {attempt}, will retry")
-                test_output = _load_test_output(ctx.run_dir)
+                # Detect build vs test failure
+                is_build_failure = "Build failed" in e.message
+
+                if is_build_failure:
+                    ctx.log(f"Build failed on attempt {attempt}, will retry")
+                    failure_output = _load_build_output(ctx.run_dir)
+                    failure_type = "build_failure"
+                else:
+                    ctx.log(f"Tests failed on attempt {attempt}, will retry")
+                    failure_output = _load_test_output(ctx.run_dir)
+                    failure_type = "test_failure"
+
                 implement_summary = _load_implement_summary(ctx.run_dir)
                 ctx.review_history.append({
                     "attempt": attempt,
-                    "test_failure": test_output,
+                    failure_type: failure_output,
                     "implement_summary": implement_summary,
                 })
                 continue
             else:
                 # Final attempt failed - fall through to HITL
-                ctx.log(f"Tests failed after {MAX_REVIEW_ATTEMPTS} attempts")
+                failure_desc = "Build" if "Build failed" in e.message else "Tests"
+                ctx.log(f"{failure_desc} failed after {MAX_REVIEW_ATTEMPTS} attempts")
                 ctx.write_result("failed", e.stage)
                 break
 
@@ -722,24 +902,241 @@ def _load_implement_summary(run_dir: Path) -> str:
 
 
 def _load_test_output(run_dir: Path) -> str:
-    """Load test output from test.log."""
+    """Load and parse test output from test.log.
+
+    Returns formatted structured output for LLM consumption.
+    Falls back to raw output if parsing fails.
+    """
     log_path = run_dir / "stages" / "test.log"
     if not log_path.exists():
         return ""
     try:
         content = log_path.read_text()
-        # Truncate if too long (keep last 2000 chars for most relevant output)
-        if len(content) > 2000:
-            content = "... (truncated)\n" + content[-2000:]
-        return content.strip()
+
+        # Split into stdout/stderr sections
+        stdout = ""
+        stderr = ""
+        if "=== STDOUT ===" in content:
+            parts = content.split("=== STDERR ===")
+            stdout = parts[0].replace("=== STDOUT ===", "").strip()
+            if len(parts) > 1:
+                stderr = parts[1].strip()
+        else:
+            stdout = content
+
+        # Parse and format
+        parsed = parse_test_output(stdout, stderr)
+        return format_parsed_output(parsed)
     except IOError as e:
         logger.warning(f"Failed to load test output from {log_path}: {e}")
         return ""
 
 
+def _load_build_output(run_dir: Path) -> str:
+    """Load build error output from build.log.
+
+    Returns formatted output for LLM consumption.
+    """
+    log_path = run_dir / "stages" / "build.log"
+    if not log_path.exists():
+        return ""
+    try:
+        content = log_path.read_text()
+        # Extract stderr which typically contains the compiler error
+        if "=== STDERR ===" in content:
+            parts = content.split("=== STDERR ===")
+            if len(parts) > 1:
+                stderr = parts[1].strip()
+                if stderr:
+                    return f"Build error:\n{stderr}"
+        # Fallback to full content
+        return f"Build output:\n{content}"
+    except IOError as e:
+        logger.warning(f"Failed to load build output from {log_path}: {e}")
+        return ""
+
+
+def _get_conflicted_files(worktree: str) -> list[str]:
+    """Get list of files with conflicts during rebase."""
+    result = subprocess.run(
+        ["git", "-C", worktree, "diff", "--name-only", "--diff-filter=U"],
+        capture_output=True, text=True
+    )
+    return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+
+
+def _get_conflict_type(worktree: str, filepath: str) -> str:
+    """Get the conflict type for a file (UU, AA, etc.) from git status."""
+    result = subprocess.run(
+        ["git", "-C", worktree, "status", "--porcelain", filepath],
+        capture_output=True, text=True
+    )
+    # Format is "XY filename" where XY is the two-letter status
+    if result.stdout and len(result.stdout) >= 2:
+        return result.stdout[:2]
+    return ""
+
+
+def _git_show_index(worktree: str, stage: int, filepath: str) -> Optional[str]:
+    """Get file content from git index at given stage.
+
+    During merge/rebase conflicts:
+      stage 1 = base (common ancestor)
+      stage 2 = ours (HEAD)
+      stage 3 = theirs (incoming)
+
+    Returns None if:
+      - File doesn't exist at that stage
+      - File is binary (contains null bytes)
+      - File can't be decoded as UTF-8
+    """
+    result = subprocess.run(
+        ["git", "-C", worktree, "show", f":{stage}:{filepath}"],
+        capture_output=True  # returns bytes
+    )
+    if result.returncode != 0:
+        return None
+
+    # Check for binary content (null bytes)
+    if b'\x00' in result.stdout:
+        logger.info(f"File {filepath} stage {stage} is binary, skipping auto-resolution")
+        return None
+
+    # Try to decode as UTF-8
+    try:
+        return result.stdout.decode('utf-8')
+    except UnicodeDecodeError:
+        logger.info(f"File {filepath} stage {stage} is not valid UTF-8, skipping auto-resolution")
+        return None
+
+
+def _try_auto_resolve_conflicts(worktree: str, files: list[str]) -> bool:
+    """Try to auto-resolve conflicts using git merge-file --union.
+
+    Only attempts resolution for 'both modified' (UU) conflicts where:
+    - The file existed in the common ancestor
+    - Both sides modified it
+
+    Does NOT attempt:
+    - 'both added' (AA) - usually completely different files
+    - Any delete conflicts (UD, DU, DD)
+    - Added by one side (AU, UA)
+
+    Returns True if all conflicts were successfully resolved.
+
+    WARNING: Union merge can produce syntactically valid but semantically
+    incorrect code (e.g., wrong execution order). Build verification catches
+    syntax errors but cannot detect semantic issues. Human review of
+    auto-resolved merges is recommended.
+    """
+    for filepath in files:
+        conflict_type = _get_conflict_type(worktree, filepath)
+
+        # Only auto-resolve UU (both modified) conflicts
+        if conflict_type != "UU":
+            logger.info(f"Conflict {filepath}: type {conflict_type!r} not auto-resolvable")
+            # Return False - caller will abort rebase which handles cleanup
+            return False
+
+        # Get the three versions from git index
+        base = _git_show_index(worktree, 1, filepath)
+        ours = _git_show_index(worktree, 2, filepath)
+        theirs = _git_show_index(worktree, 3, filepath)
+
+        if base is None or ours is None or theirs is None:
+            logger.warning(f"Conflict {filepath}: missing index stage (base={base is not None}, "
+                          f"ours={ours is not None}, theirs={theirs is not None})")
+            return False
+
+        # Use git merge-file --union to resolve
+        resolved_content = _merge_union(base, ours, theirs)
+        if resolved_content is None:
+            logger.warning(f"Conflict {filepath}: git merge-file failed")
+            return False
+
+        # Write resolved content and stage
+        file_path = Path(worktree) / filepath
+        try:
+            file_path.write_text(resolved_content)
+        except IOError as e:
+            logger.warning(f"Conflict {filepath}: failed to write resolved content: {e}")
+            return False
+
+        stage_result = subprocess.run(
+            ["git", "-C", worktree, "add", filepath],
+            capture_output=True, text=True
+        )
+        if stage_result.returncode != 0:
+            logger.warning(f"Conflict {filepath}: failed to stage: {stage_result.stderr}")
+            return False
+
+        logger.info(f"Auto-resolved conflict in {filepath} using union merge")
+
+    return True
+
+
+def _merge_union(base: str, ours: str, theirs: str) -> Optional[str]:
+    """Run git merge-file --union and return resolved content.
+
+    Returns None on error (not conflict - union resolves conflicts).
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_path = Path(tmpdir) / "base"
+        ours_path = Path(tmpdir) / "ours"
+        theirs_path = Path(tmpdir) / "theirs"
+
+        base_path.write_text(base)
+        ours_path.write_text(ours)
+        theirs_path.write_text(theirs)
+
+        # git merge-file --union modifies ours_path in place
+        # Exit codes: negative=error, 0=clean merge, positive=conflicts (but --union resolves them)
+        result = subprocess.run(
+            ["git", "merge-file", "--union",
+             str(ours_path), str(base_path), str(theirs_path)],
+            capture_output=True, text=True
+        )
+
+        if result.returncode < 0:
+            logger.error(f"git merge-file error: {result.stderr}")
+            return None
+
+        return ours_path.read_text()
+
+
+def _find_last_run(ops_dir: Path, ws_id: str) -> Optional[Path]:
+    """Find the most recent run directory for a workstream.
+
+    Run directories are named: YYYYMMDD-HHMMSS_project_wsid
+    We match on _wsid suffix to avoid false matches (e.g., 'foo' matching 'foobar').
+    """
+    runs_dir = ops_dir / "runs"
+    if not runs_dir.exists():
+        return None
+
+    # Match runs ending with _ws_id to avoid substring false positives
+    suffix = f"_{ws_id}"
+    ws_runs = sorted(
+        [d for d in runs_dir.iterdir() if d.name.endswith(suffix) and d.is_dir()],
+        key=lambda d: d.name,  # Lexicographic sort on timestamp prefix is reliable
+        reverse=True
+    )
+    return ws_runs[0] if ws_runs else None
+
+
+def _load_last_run_result(run_dir: Path) -> Optional[dict]:
+    """Load result.json from a run directory."""
+    result_path = run_dir / "result.json"
+    if not result_path.exists():
+        return None
+    try:
+        return json.loads(result_path.read_text())
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
 def _reset_worktree(worktree: Path):
     """Reset uncommitted changes in worktree for clean retry."""
-    import subprocess
     result = subprocess.run(
         ["git", "-C", str(worktree), "checkout", "."],
         capture_output=True, text=True
@@ -786,11 +1183,19 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         from orchestrator.lib.config import ProjectProfile
         from orchestrator.lib.github import get_default_merge_mode
         profile = ProjectProfile(
+            # New command-based fields
+            test_cmd="make test",
+            build_cmd="make build",
+            merge_gate_test_cmd="make test",
+            # Legacy fields (for backward compat)
+            build_runner="make",
             makefile_path="Makefile",
-            make_target_test="test",
+            build_target="build",
+            test_target="test",
             merge_gate_test_target="test",
+            # Timeouts and modes
             implement_timeout=1200,
-            review_timeout=600,
+            review_timeout=900,
             test_timeout=300,
             breakdown_timeout=180,
             supervised_mode=False,

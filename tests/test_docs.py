@@ -26,11 +26,12 @@ class TestBuildSpecPrompt:
             "commits": [],
         }
         result = build_spec_prompt(context)
-        assert "No SPEC exists yet" in result
+        # Function builds update prompt regardless of current_spec
+        assert "Update SPEC.md" in result
         assert "Test Workstream" in result
 
     def test_builds_prompt_with_current_spec(self):
-        """Should include current SPEC content."""
+        """Should build prompt regardless of current SPEC (Claude reads file directly)."""
         context = {
             "workstream_id": "test-ws",
             "title": "Test Workstream",
@@ -40,11 +41,12 @@ class TestBuildSpecPrompt:
             "commits": [],
         }
         result = build_spec_prompt(context)
-        assert "# Existing SPEC" in result
-        assert "Some content here" in result
+        # current_spec is no longer embedded - Claude reads SPEC.md directly
+        assert "Update SPEC.md" in result
+        assert "Test Workstream" in result
 
     def test_builds_prompt_with_story(self):
-        """Should include story details."""
+        """Should include story problem and acceptance criteria."""
         context = {
             "workstream_id": "test-ws",
             "title": "Test Workstream",
@@ -60,14 +62,13 @@ class TestBuildSpecPrompt:
             "commits": [],
         }
         result = build_spec_prompt(context)
-        assert "STORY-0001" in result
-        assert "Add feature X" in result
+        # Function includes problem and acceptance criteria, but not id/title/non_goals
         assert "Users need feature X" in result
         assert "AC1" in result
-        assert "NG1" in result
+        assert "AC2" in result
 
     def test_builds_prompt_with_microcommits(self):
-        """Should include micro-commit details."""
+        """Microcommits are not included in prompt (Claude reads code directly)."""
         context = {
             "workstream_id": "test-ws",
             "title": "Test Workstream",
@@ -80,12 +81,13 @@ class TestBuildSpecPrompt:
             "commits": [],
         }
         result = build_spec_prompt(context)
-        assert "COMMIT-TEST-001" in result
-        assert "[x]" in result  # done marker
-        assert "[ ]" in result  # not done marker
+        # Microcommits are not embedded in prompt
+        assert "COMMIT-TEST-001" not in result
+        assert "COMMIT-TEST-002" not in result
+        assert "First commit" not in result
 
     def test_builds_prompt_with_commits(self):
-        """Should include git commit messages."""
+        """Commits are not included in prompt (Claude reads code directly)."""
         context = {
             "workstream_id": "test-ws",
             "title": "Test Workstream",
@@ -95,23 +97,25 @@ class TestBuildSpecPrompt:
             "commits": ["abc123 First commit", "def456 Second commit"],
         }
         result = build_spec_prompt(context)
-        assert "abc123 First commit" in result
-        assert "def456 Second commit" in result
+        # Commits are not embedded in prompt
+        assert "abc123" not in result
+        assert "def456" not in result
 
-    def test_truncates_long_commit_list(self):
-        """Should truncate commit list beyond 15."""
+    def test_includes_diff_stat_and_code_diff(self):
+        """Should include diff_stat and code_diff when provided."""
         context = {
             "workstream_id": "test-ws",
             "title": "Test Workstream",
             "current_spec": None,
             "story": None,
             "microcommits": [],
-            "commits": [f"commit{i} Message {i}" for i in range(20)],
+            "commits": [],
+            "diff_stat": "file.py | 5 +++++",
+            "code_diff": "+def new_func():\n+    pass",
         }
         result = build_spec_prompt(context)
-        assert "commit14" in result  # 15th commit (0-indexed)
-        assert "commit15" not in result  # 16th commit should be truncated
-        assert "... and 5 more" in result
+        assert "file.py | 5" in result
+        assert "+def new_func" in result
 
     def test_builds_prompt_with_diff(self):
         """Should include code diff."""

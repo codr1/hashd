@@ -138,103 +138,43 @@ When story is created via `wf plan refine`, Claude annotates REQS.md with WIP ma
 
 ---
 
-### GitHub PR Workflow
-**Status:** [ ] Designed, not started
+### GitHub PR Workflow (COMPLETE)
+**Status:** [x] COMPLETE
 
 Optional PR-based merge workflow for projects using GitHub.
 
-**Config:**
-```env
-MERGE_MODE=local          # default - current behavior (git merge)
-MERGE_MODE=github_pr      # create PR, merge via gh pr merge
-```
+**Implemented:**
+- [x] `orchestrator/lib/github.py` - `create_github_pr()`, `merge_github_pr()`, `get_pr_status()`
+- [x] `orchestrator/commands/merge.py` - PR creation, auto-rebase, merge via `gh pr merge`
+- [x] `MERGE_MODE` config in `project_profile.env`
+- [x] `wf watch` shows PR status, URL, CI checks
+- [x] `o` key opens PR in browser
+- [x] Auto-rebase with `--force-with-lease` when PR conflicts
+- [x] Review requirements respected (APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED)
 
-**Flow (when `MERGE_MODE=github_pr`):**
-1. All micro-commits complete
-2. Final review (Claude) passes
-3. Human approves final review
-4. **PR created automatically** (branch pushed, `gh pr create`)
-5. External review (CodeRabbit, humans, CI) - new status: `pr_open`
-6. If changes requested → same as reject, back to active state
-7. When approved → `wf merge` does `gh pr merge`
-
-**`wf watch` integration:**
-- Show PR status, URL, CI checks in workstream detail view
-- `a` key triggers merge when PR is approved (reuses existing approve action)
-- `o` key opens PR in browser (new)
-
-**Requirements:**
-- `gh` CLI must be configured
-- Falls back to error if `gh` unavailable
-
-See PRD.md section 10.6.2 for full spec.
+See PRD.md section 10.6.2 and WF.md "Merge Safety" for details.
 
 ---
 
 ### No-Op Handling (Stories and Micro-Commits)
-**Status:** [ ] Designed, not started
+**Status:** [x] MOSTLY COMPLETE - minor gaps remain
 
-Two related problems where "no changes" breaks the workflow:
+#### Implemented (Individual Micro-Commits)
 
-#### Problem 1: Entire Story is No-Op
-Stories that result in zero source code changes:
-- **Investigations** - research tasks that conclude "already handled" or "not needed"
-- **External tooling** - GitHub Actions, CI/CD config, infrastructure changes
-- **Documentation-only** - README updates, external docs
-- **Validation** - confirming existing behavior meets requirements
+- [x] `prompts/implement.md` - Codex outputs `{"status": "already_done", "reason": "..."}`
+- [x] `orchestrator/runner/impl/stages.py` - Parses JSON, handles `already_done` status
+- [x] Auto-skip logic: if no uncommitted changes, marks commit done and proceeds
+- [x] Edge case: if uncommitted changes exist, proceeds to test/review (changes ARE the work)
+- [x] `orchestrator/commands/run.py` - Handles `auto_skip:` prefix, returns "passed"
+- [x] `orchestrator/commands/skip.py` - Manual `wf skip [ws] [commit-id] -m "reason"`
+- [x] `WF.md` - Documents auto-skip logic
 
-#### Problem 2: Individual Micro-Commit is No-Op
-Within a story, specific commits may be unnecessary:
-- **AI consolidated work** - AI did commits 001 and 002 together, so 002 has nothing to do
-- **Already implemented** - Code already exists from previous work
-- **Spec was wrong** - Commit described work that isn't actually needed
+#### Not Implemented (Entire No-Op Stories)
 
-**Current Behavior (broken):**
-```
-AI: "No changes needed - this is already done"
-System: "FAILED - Codex made no changes"
-→ Workflow stuck, requires manual intervention
-```
+- [ ] `wf close --no-changes "reason"` - For stories with zero code changes
+- [ ] Story `type` field (e.g., `investigation`) - Different workflow expectations
 
-**Desired Behavior:**
-```
-AI: "No changes needed - already done" (with explanation)
-System: Recognizes valid no-op, marks commit complete, proceeds to next
-```
-
-**Proposed Solutions:**
-
-1. **Recognize "already done" responses** - Parse AI output for phrases like:
-   - "already implemented", "no changes needed", "already exists"
-   - If explanation is coherent, treat as success, not failure
-   - Mark commit as `done` with note: "Skipped: {reason}"
-
-2. **`wf skip [ws] [commit-id]`** - Manual skip with reason
-   ```bash
-   wf skip dev_onecmd COMMIT-002 "Already done in COMMIT-001"
-   ```
-
-3. **`wf close --no-changes`** - For entire no-op stories
-   ```bash
-   wf close WS-xxx --no-changes "Investigation complete: already handled by X"
-   ```
-
-4. **Story type field** - Mark stories as `type: investigation` at creation
-   - Different workflow expectations per type
-
-**Key Insight:** No-op stories should COMPLETE SUCCESSFULLY, not "close" or "abort". They:
-- May include non-code changes (commands, config, external systems)
-- Still need docs, specs, and tests updated
-- Go through full workflow: run → review → merge
-- End up in `_implemented` as successful completions
-
-**Requirements:**
-- No-op commits recorded in history with reason
-- Full workflow runs: review, docs/spec update, merge
-- Story moves to `_implemented` (successful, not abandoned)
-- REQS annotations cleaned up
-- Works in automated (`-y`) mode without human intervention
-- AI output like "already done" = SUCCESS, not failure
+**Workaround:** Use `wf skip` on all commits, then `wf merge`.
 
 ---
 
@@ -279,12 +219,29 @@ Refining story with Claude PM...
 ### CLI Improvements
 - `--autonomous` flag deferred (requires skipping merge gate human review - see PRD section 19)
 
+### Project Management (COMPLETE)
+**Status:** [x] COMPLETE
+
+- [x] `wf project add <path>` - Register project with interview
+- [x] `wf project add <path> --no-interview` - Quick register without interview
+- [x] `wf project list` - List registered projects
+- [x] `wf project use <name>` - Set active project
+- [x] `wf project show` - Display current project config
+- [x] `wf interview` - Update existing project config interactively
+
+**Command-based config:**
+```env
+TEST_CMD="npm test"           # Full command, not just target
+BUILD_CMD="npm run build"     # Optional build command
+MERGE_GATE_TEST_CMD="npm test-all"  # Optional, defaults to TEST_CMD
+```
+
+Auto-detects: Makefile, package.json, pyproject.toml, Taskfile.yml, Cargo.toml, go.mod
+
 ### Project Maintenance Commands (not designed)
-- `wf project describe` - AI-assisted update of project.yaml description field
+- `wf project describe` - AI-assisted update of description field
 - `wf project refresh` - re-bootstrap project context from README/codebase
-- `wf project show` - display current project config including tech stack
 - `wf project stack` - view/edit tech stack (preferred, acceptable, avoid)
-- Manual edit of project.env remains the simple path for now
 
 ### wf watch Enhancements (not designed)
 - Display tech stack summary in project header
@@ -296,6 +253,5 @@ Refining story with Claude PM...
 
 ### Infrastructure
 - Integration tests (after design stabilizes)
-- `wf interview` (convenience, not critical)
 
 See PRD.md section 24 for full deferred feature specs.

@@ -5,11 +5,8 @@ Provides directory structure and key file listings to reduce
 agent exploration time during implementation.
 """
 
-import logging
 import subprocess
 from pathlib import Path
-
-logger = logging.getLogger(__name__)
 
 __all__ = ["get_codebase_context"]
 
@@ -46,8 +43,8 @@ def get_codebase_context(worktree: Path, max_files: int = 50) -> str:
             lines.append("```")
             lines.extend(dirs)
             lines.append("```\n")
-    except Exception as e:
-        logger.debug(f"Failed to get directory structure: {e}")
+    except Exception:
+        pass
 
     # Detect project type and get relevant files
     file_patterns = _detect_file_patterns(worktree)
@@ -67,8 +64,8 @@ def get_codebase_context(worktree: Path, max_files: int = 50) -> str:
                 for f in files:
                     lines.append(f"- {f}")
                 lines.append("")
-        except Exception as e:
-            logger.debug(f"Failed to find {label} files: {e}")
+        except Exception:
+            pass
 
     return "\n".join(lines)
 

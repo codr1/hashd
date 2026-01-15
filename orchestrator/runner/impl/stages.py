@@ -19,10 +19,13 @@ from orchestrator.lib.planparse import parse_plan, get_next_microcommit, mark_do
 from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.history import format_conversation_history
 from orchestrator.lib.review import load_review, format_review, print_review
+from orchestrator.lib.context import get_codebase_context
+from orchestrator.lib.directives import load_directives
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
 from orchestrator.lib.stats import AgentStats, record_agent_stats
+from orchestrator.runner.git_utils import has_uncommitted_changes
 
 
 def _verbose_header(title: str):
@@ -242,6 +245,23 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
             review_content=review_content
         )
 
+    # Pre-compute codebase context to reduce agent exploration time
+    codebase_context = ""
+    if ctx.workstream and ctx.workstream.worktree:
+        codebase_context = get_codebase_context(Path(ctx.workstream.worktree))
+
+    # Build directives section from global/project/feature directives
+    directives_section = ""
+    repo_path = Path(ctx.project.repo_path) if ctx.project.repo_path else None
+    workstream_dir = ctx.workstream_dir if ctx.workstream_dir else None
+    if repo_path:
+        directives_content = load_directives(repo_path, workstream_dir)
+        if directives_content:
+            directives_section = render_prompt(
+                "implement_directives",
+                directives_content=directives_content
+            )
+
     # Build the full prompt from template
     prompt = render_prompt(
         "implement",
@@ -252,6 +272,8 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
         commit_id=ctx.microcommit.id,
         commit_title=ctx.microcommit.title,
         commit_description=ctx.microcommit.block_content,
+        codebase_context=codebase_context,
+        directives_section=directives_section,
         review_context_section=review_context_section,
         conversation_history_section=conversation_history_section,
         human_guidance_section=human_guidance_section
@@ -301,6 +323,43 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     if not result.success:
         raise StageError("implement", f"Codex failed: {result.stderr}", 4)
 
+    # Parse structured status output (JSON block with "status" key)
+    # Scan lines in reverse to find the last valid JSON status block
+    status_data = None
+    if result.stdout:
+        for line in reversed(result.stdout.splitlines()):
+            line = line.strip()
+            if line.startswith('{') and '"status"' in line:
+                try:
+                    status_data = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+
+    # Handle structured status responses
+    if status_data:
+        status = status_data.get("status")
+        if status == "already_done":
+            reason = status_data.get("reason", "work already complete")
+            # Only auto-skip if there are NO uncommitted changes.
+            # If there ARE uncommitted changes, the work IS done - proceed to test/review.
+            if has_uncommitted_changes(ctx.workstream.worktree):
+                ctx.log(f"Codex says '{reason}' but uncommitted changes exist - proceeding to test/review")
+                # Fall through to normal completion (changes exist, will be tested/reviewed)
+            else:
+                ctx.log(f"Auto-skipping: {reason}")
+                # Mark commit as done without changes
+                plan_path = ctx.workstream_dir / "plan.md"
+                mark_done(str(plan_path), ctx.microcommit.id)
+                ctx.log(f"Marked {ctx.microcommit.id} as done (auto-skip)")
+                # HACK: We abuse StageBlocked to signal "success, move to next commit".
+                # The caller (run.py) checks for "auto_skip:" prefix and returns "passed".
+                # A proper fix would be a dedicated return type, but this minimizes changes.
+                raise StageBlocked("implement", f"auto_skip:{ctx.microcommit.id}")
+        elif status == "blocked":
+            reason = status_data.get("reason", "Codex is blocked")
+            raise StageBlocked("implement", f"Codex blocked: {reason}")
+
     # Verify Codex wrote something
     git_status = subprocess.run(
         ["git", "-C", str(ctx.workstream.worktree), "status", "--porcelain"],
@@ -318,14 +377,71 @@ def stage_implement(ctx: RunContext, human_feedback: str = None):
     ctx.log(f"Implementation complete, {len(git_status.stdout.strip().splitlines())} files changed")
 
 
-def stage_test(ctx: RunContext):
-    """Run tests."""
-    makefile = ctx.workstream.worktree / ctx.profile.makefile_path
-    if not makefile.exists():
-        ctx.log("No Makefile found, skipping tests")
+def _stage_untracked_files(worktree: Path, ctx: RunContext) -> None:
+    """Stage any untracked files before test.
+
+    Codex sometimes creates new files but doesn't git add them. This causes:
+    - Build failures (e.g., templ files not generating .go files)
+    - Review blockers ("untracked files" warnings)
+
+    By auto-staging before test, we catch this early and avoid wasted iterations.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(worktree), "status", "--porcelain"],
+        capture_output=True, text=True
+    )
+    untracked = [line[3:] for line in result.stdout.splitlines() if line.startswith("??")]
+    if not untracked:
         return
 
-    cmd = ["make", "-C", str(ctx.workstream.worktree), ctx.profile.make_target_test]
+    ctx.log(f"Auto-staging {len(untracked)} untracked file(s)")
+    for f in untracked:
+        ctx.log(f"  + {f}")
+
+    # Stage only the untracked files, not modified files
+    add_result = subprocess.run(
+        ["git", "-C", str(worktree), "add", "--"] + untracked,
+        capture_output=True, text=True
+    )
+    if add_result.returncode != 0:
+        ctx.log(f"  Warning: git add failed: {add_result.stderr.strip()}")
+
+
+def stage_test(ctx: RunContext):
+    """Run tests."""
+    worktree = ctx.workstream.worktree
+
+    # Auto-stage any untracked files before build/test
+    # Codex sometimes creates files but doesn't git add them
+    _stage_untracked_files(worktree, ctx)
+
+    # Run build first to catch compile errors fast (if build command is configured)
+    build_cmd = ctx.profile.get_build_command_str()
+    if build_cmd:
+        ctx.log(f"Running build: {' '.join(build_cmd)}")
+        build_start = time.time()
+        build_result = subprocess.run(
+            build_cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree),
+            timeout=ctx.profile.test_timeout
+        )
+        build_duration = time.time() - build_start
+        ctx.log_command(build_cmd, build_result.returncode, build_duration)
+
+        if build_result.returncode != 0:
+            # Save build output
+            log_path = ctx.run_dir / "stages" / "build.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(
+                f"=== STDOUT ===\n{build_result.stdout}\n\n=== STDERR ===\n{build_result.stderr}\n"
+            )
+            raise StageError("test", f"Build failed (exit {build_result.returncode})", 5)
+        ctx.log("Build passed")
+
+    # Then run tests
+    cmd = ctx.profile.get_test_command()
 
     ctx.log(f"Running: {' '.join(cmd)}")
     start = time.time()
@@ -334,6 +450,7 @@ def stage_test(ctx: RunContext):
         cmd,
         capture_output=True,
         text=True,
+        cwd=str(worktree),
         timeout=ctx.profile.test_timeout
     )
 
@@ -580,56 +697,55 @@ def stage_merge_gate(ctx: RunContext) -> dict:
         StageError with details dict containing 'type' and 'output' on failure.
     """
     ctx.log("Running merge gate...")
-    worktree = str(ctx.workstream.worktree)
+    worktree = ctx.workstream.worktree
+    worktree_str = str(worktree)
     default_branch = ctx.project.default_branch
 
     # 1. Run full test suite
-    makefile = ctx.workstream.worktree / ctx.profile.makefile_path
-    if makefile.exists():
-        test_target = ctx.profile.merge_gate_test_target
-        cmd = ["make", "-C", worktree, test_target]
+    cmd = ctx.profile.get_merge_gate_test_command()
 
-        ctx.log(f"Running full test suite: {' '.join(cmd)}")
-        start = time.time()
+    ctx.log(f"Running full test suite: {' '.join(cmd)}")
+    start = time.time()
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=ctx.profile.test_timeout
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        cwd=worktree_str,
+        timeout=ctx.profile.test_timeout
+    )
+
+    duration = time.time() - start
+    ctx.log_command(cmd, result.returncode, duration)
+
+    # Save test output
+    log_path = ctx.run_dir / "stages" / "merge_gate_test.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        f"=== STDOUT ===\n{result.stdout}\n\n=== STDERR ===\n{result.stderr}\n"
+    )
+
+    if result.returncode != 0:
+        output = result.stdout + "\n" + result.stderr
+        raise StageError(
+            "merge_gate",
+            f"Full test suite failed (exit {result.returncode})",
+            10,
+            details={"type": "test_failure", "output": output}
         )
 
-        duration = time.time() - start
-        ctx.log_command(cmd, result.returncode, duration)
-
-        # Save test output
-        log_path = ctx.run_dir / "stages" / "merge_gate_test.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(
-            f"=== STDOUT ===\n{result.stdout}\n\n=== STDERR ===\n{result.stderr}\n"
-        )
-
-        if result.returncode != 0:
-            output = result.stdout + "\n" + result.stderr
-            raise StageError(
-                "merge_gate",
-                f"Full test suite failed (exit {result.returncode})",
-                10,
-                details={"type": "test_failure", "output": output}
-            )
-
-        ctx.log("Full test suite passed")
+    ctx.log("Full test suite passed")
 
     # 2. Check branch is up to date with main
     # First, fetch to ensure we have latest main
     subprocess.run(
-        ["git", "-C", worktree, "fetch", "origin", default_branch],
+        ["git", "-C", worktree_str, "fetch", "origin", default_branch],
         capture_output=True, text=True
     )
 
     # Check if main is ancestor of HEAD (meaning we're rebased on main)
     result = subprocess.run(
-        ["git", "-C", worktree, "merge-base", "--is-ancestor",
+        ["git", "-C", worktree_str, "merge-base", "--is-ancestor",
          f"origin/{default_branch}", "HEAD"],
         capture_output=True, text=True
     )
@@ -637,7 +753,7 @@ def stage_merge_gate(ctx: RunContext) -> dict:
     if result.returncode != 0:
         # Get divergence info for context
         diverge_result = subprocess.run(
-            ["git", "-C", worktree, "rev-list", "--left-right", "--count",
+            ["git", "-C", worktree_str, "rev-list", "--left-right", "--count",
              f"origin/{default_branch}...HEAD"],
             capture_output=True, text=True
         )
@@ -659,16 +775,32 @@ def stage_merge_gate(ctx: RunContext) -> dict:
 
     # 3. Check for conflict markers in tracked files
     result = subprocess.run(
-        ["git", "-C", worktree, "diff", "--check", f"origin/{default_branch}...HEAD"],
+        ["git", "-C", worktree_str, "diff", "--check", f"origin/{default_branch}...HEAD"],
         capture_output=True, text=True
     )
 
     if result.returncode != 0 and result.stdout.strip():
+        output = result.stdout.strip()
+
+        # Detect actual issue type - git diff --check reports both conflicts and whitespace
+        has_conflicts = any(m in output for m in ["<<<<<<<", "=======", ">>>>>>>"])
+        has_whitespace = "trailing whitespace" in output.lower() or "space before tab" in output.lower()
+
+        if has_conflicts:
+            message = "Conflict markers detected in files"
+            error_type = "conflict"
+        elif has_whitespace:
+            message = "Whitespace errors detected"
+            error_type = "whitespace"
+        else:
+            message = "Git diff check failed"
+            error_type = "diff_check"
+
         raise StageError(
             "merge_gate",
-            "Conflict markers detected in files",
+            message,
             12,
-            details={"type": "conflict", "output": result.stdout}
+            details={"type": error_type, "output": output}
         )
 
     ctx.log("No conflict markers found")
