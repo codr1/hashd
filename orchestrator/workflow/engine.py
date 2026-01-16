@@ -23,6 +23,7 @@ from orchestrator.runner.impl.stages import (
     stage_human_review,
 )
 from orchestrator.runner.impl.state_files import update_workstream_status
+from orchestrator.lib.github import get_pr_status, STATUS_PR_OPEN, STATUS_MERGED
 from orchestrator.workflow.tasks import (
     task_implement,
     task_test,
@@ -314,8 +315,25 @@ def handle_all_commits_complete(
     gate_status, gate_code = run_merge_gate(ctx)
 
     if gate_status == "merge_ready":
-        # Only mark complete when truly done - merge gate passed
-        update_workstream_status(workstream_dir, "complete")
+        # TODO(prefect): Status should be derived from reality, not stored.
+        # See DAS_PLAN.md "Prefect State Machine (Level 3)" for future fix.
+        # Check if PR already exists - don't overwrite pr_open status
+        ws = load_workstream(workstream_dir)
+        if ws.pr_number:
+            # PR exists - check its actual state
+            repo_path = Path(ws.worktree) if ws.worktree else project_config.repo_path
+            pr_status = get_pr_status(repo_path, ws.pr_number)
+            if pr_status.error:
+                # Can't determine PR state - preserve current status, don't overwrite
+                logger.warning(f"Failed to check PR #{ws.pr_number}: {pr_status.error}")
+            elif pr_status.state == "open":
+                update_workstream_status(workstream_dir, STATUS_PR_OPEN)
+            elif pr_status.state == "merged":
+                update_workstream_status(workstream_dir, STATUS_MERGED)
+            else:
+                update_workstream_status(workstream_dir, "complete")
+        else:
+            update_workstream_status(workstream_dir, "complete")
         exit_code = _run_final_review_and_exit(workstream_dir, project_config, ws_id, verbose)
         return "return", exit_code
     elif gate_status == "fixed":

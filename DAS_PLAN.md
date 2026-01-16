@@ -53,6 +53,12 @@ Replace file-based human gates with `suspend_flow_run()`. Requires running Prefe
 - Deletes: `human_approval.json` handling, `_check_pending_approval()`, resume detection
 - Gains: Dashboard, flow state visibility, cleaner architecture
 
+### Prefect State Machine (Level 3)
+Centralize all workstream status transitions into a Prefect state machine.
+- Current: Ad-hoc `update_workstream_status()` calls scattered across codebase
+- Target: Single `WorkstreamStateMachine` with explicit transitions and guards
+- Locations with status updates: engine.py, merge.py, approve.py, stages.py, state_files.py
+
 ### Infrastructure
 - Integration tests (after design stabilizes)
 
