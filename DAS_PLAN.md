@@ -44,6 +44,7 @@ Interactive CLI flow for answering open questions during `wf plan edit`.
 ### wf watch Enhancements
 - Display tech stack summary in project header
 - Show when commits are flagged for tech stack violations
+- TUI operation coordination: Prevent run while reject is in progress (race condition where run reads stale state before reject finishes writing). Add state tracking to disable conflicting actions.
 
 ### Session Reuse Phase 2
 Maintain sessions across commits within a workstream (Phase 1 done for within-commit).

@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from orchestrator.lib.config import ProjectConfig, load_workstream, Workstream
-from orchestrator.runner.impl.state_files import update_workstream_status
+from orchestrator.runner.impl.state_files import update_workstream_status, clear_pr_metadata
 from orchestrator.lib.planparse import (
     parse_plan,
     get_next_microcommit,
@@ -18,7 +18,7 @@ from orchestrator.lib.planparse import (
     append_commit_to_plan,
 )
 from orchestrator.lib.review import parse_final_review_concerns
-from orchestrator.lib.github import STATUS_PR_OPEN, STATUS_PR_APPROVED
+from orchestrator.lib.github import STATUS_PR_OPEN, STATUS_PR_APPROVED, close_pr
 from orchestrator.pm.stories import load_story, accept_story
 
 logger = logging.getLogger(__name__)
@@ -192,13 +192,32 @@ def _reject_post_completion(
         print(f"  Complete current work first: wf run {ws_id}")
         return 1
 
-    # === For PR states: require -f, no magic auto-fetch ===
+    # === For PR states: close PR, require -f, no magic auto-fetch ===
     if is_pr_state:
         if not user_feedback:
             print("ERROR: -f required for PR states")
             print(f"  View feedback first: wf pr feedback {ws_id}")
             print(f"  Then: wf reject {ws_id} -f 'description'")
             return 1
+
+        # Close the PR - new PR will be created after fixes
+        pr_number = workstream.pr_number
+        if pr_number:
+            print(f"Closing PR #{pr_number}...")
+            success, msg = close_pr(
+                workstream.worktree,
+                pr_number,
+                comment="Closing to address feedback. A new PR will be created after fixes."
+            )
+            if success:
+                print(f"  {msg}")
+                clear_pr_metadata(workstream_dir)
+            else:
+                logger.error(f"Failed to close PR: {msg}")
+                print(f"  ERROR: {msg}")
+                print(f"  Close the PR manually: gh pr close {pr_number}")
+                return 1
+
         # Use user feedback only, no auto-fetch
         feedback_items = []
         feedback_source = None

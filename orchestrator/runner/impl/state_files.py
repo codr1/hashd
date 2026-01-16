@@ -61,6 +61,17 @@ def update_workstream_status(workstream_dir: Path, status: str) -> None:
         logger.warning(f"Failed to update workstream status: {e}")
 
 
+def clear_pr_metadata(workstream_dir: Path) -> None:
+    """Clear PR_NUMBER and PR_URL from meta.env.
+
+    Called when a PR is closed/rejected so a new PR can be created.
+    """
+    try:
+        update_workstream_meta(workstream_dir, {"PR_NUMBER": None, "PR_URL": None})
+    except OSError as e:
+        logger.warning(f"Failed to clear PR metadata: {e}")
+
+
 def store_human_feedback(workstream_dir: Path, feedback: str, reset: bool = False) -> None:
     """Store human feedback and reset flag for next implement run."""
     feedback_file = workstream_dir / "human_feedback.json"

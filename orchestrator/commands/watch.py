@@ -1654,6 +1654,10 @@ class DetailScreen(Screen):
         """Run reject in background thread."""
         try:
             cmd = [sys.executable, "-m", "orchestrator.cli", "reject", ws_id, "-f", feedback]
+            # For PR states, use --no-run to avoid long-running auto-run that would timeout
+            # User can trigger run manually after PR is closed
+            if is_pr_state:
+                cmd.append("--no-run")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -1664,7 +1668,7 @@ class DetailScreen(Screen):
 
             if result.returncode == 0:
                 if is_pr_state:
-                    self.notify("Fix commit created", severity="information")
+                    self.notify("PR closed, fix commit created. Run to continue.", severity="information")
                 else:
                     self.notify("Rejected with feedback", severity="information")
             else:

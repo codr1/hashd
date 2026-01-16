@@ -215,6 +215,41 @@ def merge_github_pr(repo_path: Path, pr_number: int) -> tuple[bool, str]:
         return False, f"Merge operation failed: {e}"
 
 
+def close_pr(repo_path: Path, pr_number: int, comment: str | None = None) -> tuple[bool, str]:
+    """Close a PR without merging.
+
+    Args:
+        repo_path: Path to repo (for gh context)
+        pr_number: PR number to close
+        comment: Optional comment to add before closing
+
+    Returns:
+        (success, message)
+    """
+    try:
+        args = ["gh", "pr", "close", str(pr_number)]
+        if comment:
+            args.extend(["--comment", comment])
+
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            cwd=str(repo_path),
+            timeout=GH_TIMEOUT_SECONDS,
+        )
+
+        if result.returncode != 0:
+            return False, f"Failed to close PR: {result.stderr}"
+
+        return True, f"PR #{pr_number} closed"
+
+    except subprocess.TimeoutExpired:
+        return False, "Close operation timed out"
+    except subprocess.SubprocessError as e:
+        return False, f"Close operation failed: {e}"
+
+
 def check_gh_available() -> tuple[bool, str]:
     """Check gh CLI is installed and authenticated.
 

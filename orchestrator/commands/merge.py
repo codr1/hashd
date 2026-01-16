@@ -491,8 +491,9 @@ def cmd_pr(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     commit_count = result.stdout.strip()
 
     # Push branch to remote before creating PR
+    # Use --force-with-lease to handle rebased branches (e.g., after PR rejection)
     print(f"Pushing {ws.branch} to remote...")
-    push_result = _run_git(["git", "push", "-u", "origin", ws.branch], git_cwd)
+    push_result = _run_git(["git", "push", "--force-with-lease", "-u", "origin", ws.branch], git_cwd)
     if push_result.returncode != 0:
         print(f"ERROR: Push failed: {push_result.stderr.strip()}")
         return 1
