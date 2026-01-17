@@ -96,14 +96,19 @@ class TestStageHumanReviewWithCallback:
                 with patch("orchestrator.runner.impl.stages._get_changed_files", return_value=[]):
                     with patch("orchestrator.runner.impl.stages.get_effective_autonomy", return_value="supervised"):
                         from orchestrator.runner.impl.stages import stage_human_review
-                        stage_human_review(mock_ctx)
+                        from orchestrator.runner.stages import StageHumanGateProcessed
+
+                        with pytest.raises(StageHumanGateProcessed) as exc_info:
+                            stage_human_review(mock_ctx)
+
+                        assert exc_info.value.action == "approve"
 
         assert len(callback_called) == 1
         assert "confidence" in callback_called[0]
         assert "workstream_id" in callback_called[0]
 
     def test_callback_approval_proceeds(self, mock_ctx):
-        """Callback returning approve should allow flow to proceed."""
+        """Callback returning approve should raise StageHumanGateProcessed with approve action."""
         def approve_callback(context):
             return {"action": "approve"}
 
@@ -116,11 +121,16 @@ class TestStageHumanReviewWithCallback:
                 with patch("orchestrator.runner.impl.stages._get_changed_files", return_value=[]):
                     with patch("orchestrator.runner.impl.stages.get_effective_autonomy", return_value="supervised"):
                         from orchestrator.runner.impl.stages import stage_human_review
-                        result = stage_human_review(mock_ctx)
-                        assert result is None
+                        from orchestrator.runner.stages import StageHumanGateProcessed
+
+                        with pytest.raises(StageHumanGateProcessed) as exc_info:
+                            stage_human_review(mock_ctx)
+
+                        assert exc_info.value.action == "approve"
+                        assert exc_info.value.stage == "human_review"
 
     def test_callback_rejection_raises(self, mock_ctx):
-        """Callback returning reject should raise StageError."""
+        """Callback returning reject should raise StageHumanGateProcessed with reject action."""
         def reject_callback(context):
             return {"action": "reject", "feedback": "needs fixes", "reset": False}
 
@@ -134,12 +144,14 @@ class TestStageHumanReviewWithCallback:
                     with patch("orchestrator.runner.impl.stages.get_effective_autonomy", return_value="supervised"):
                         with patch("orchestrator.runner.impl.stages.store_human_feedback"):
                             from orchestrator.runner.impl.stages import stage_human_review
-                            from orchestrator.runner.stages import StageError
+                            from orchestrator.runner.stages import StageHumanGateProcessed
 
-                            with pytest.raises(StageError) as exc_info:
+                            with pytest.raises(StageHumanGateProcessed) as exc_info:
                                 stage_human_review(mock_ctx)
 
-                            assert "rejected" in str(exc_info.value).lower()
+                            assert exc_info.value.action == "reject"
+                            assert exc_info.value.feedback == "needs fixes"
+                            assert exc_info.value.reset is False
 
     def test_callback_returning_none_raises_error(self, mock_ctx):
         """Callback returning None should raise StageError (invalid response)."""

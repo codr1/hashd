@@ -10,6 +10,9 @@ MAX_WS_ID_LEN = 16
 ACTION_APPROVE = "approve"
 ACTION_REJECT = "reject"
 
+# Flow status constants (used by run_once return values)
+STATUS_HUMAN_GATE_DONE = "human_gate_done"
+
 # Exit codes for CLI commands
 # These provide consistent, documented exit status across all commands.
 # Scripts can use these to distinguish failure modes programmatically.

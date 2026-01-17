@@ -338,3 +338,122 @@ Done: [x]
         assert result == 1
         captured = capsys.readouterr()
         assert "-f required" in captured.out
+
+
+class TestTriggerContinuationRun:
+    """Test _trigger_continuation_run helper for approve/reject/reset."""
+
+    def test_waits_for_flow_exit_before_triggering(self, tmp_path):
+        """Should wait for old flow to exit before starting new one."""
+        from orchestrator.commands.approve import _trigger_continuation_run
+
+        with patch("orchestrator.commands.approve.wait_for_flow_exit") as mock_wait, \
+             patch("orchestrator.commands.approve.trigger_run") as mock_trigger:
+            mock_wait.return_value = True
+            mock_trigger.return_value = "new-flow-id"
+
+            mock_project = MagicMock()
+            mock_project.name = "test_project"
+
+            result = _trigger_continuation_run("ws_id", tmp_path, mock_project)
+
+            # Verify wait was called before trigger
+            assert mock_wait.called
+            assert mock_trigger.called
+            # Wait should be called with ws_id
+            mock_wait.assert_called_once()
+            call_args = mock_wait.call_args[0]
+            assert call_args[0] == "ws_id"
+
+            assert result == 0
+
+    def test_proceeds_even_if_wait_times_out(self, tmp_path):
+        """Should proceed with new run even if wait times out."""
+        from orchestrator.commands.approve import _trigger_continuation_run
+
+        with patch("orchestrator.commands.approve.wait_for_flow_exit") as mock_wait, \
+             patch("orchestrator.commands.approve.trigger_run") as mock_trigger:
+            mock_wait.return_value = False  # Timeout
+            mock_trigger.return_value = "new-flow-id"
+
+            mock_project = MagicMock()
+            mock_project.name = "test_project"
+
+            result = _trigger_continuation_run("ws_id", tmp_path, mock_project)
+
+            # Should still trigger new run
+            assert mock_trigger.called
+            assert result == 0
+
+    def test_returns_error_on_trigger_failure(self, tmp_path):
+        """Should return error if trigger fails."""
+        from orchestrator.commands.approve import _trigger_continuation_run
+        from prefect.exceptions import PrefectException
+
+        with patch("orchestrator.commands.approve.wait_for_flow_exit") as mock_wait, \
+             patch("orchestrator.commands.approve.trigger_run") as mock_trigger:
+            mock_wait.return_value = True
+            mock_trigger.side_effect = PrefectException("Connection failed")
+
+            mock_project = MagicMock()
+            mock_project.name = "test_project"
+
+            result = _trigger_continuation_run("ws_id", tmp_path, mock_project)
+
+            assert result == 1  # EXIT_ERROR
+
+
+class TestCmdApproveTriggersNewRun:
+    """Test that cmd_approve triggers new run after resume."""
+
+    def test_approve_triggers_new_run(self, tmp_path):
+        """Approve should trigger new run after resuming flow."""
+        from orchestrator.commands.approve import cmd_approve
+
+        ws_dir = tmp_path / "workstreams" / "test_ws"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "meta.env").write_text('ID="test_ws"\nSTATUS="awaiting_human_review"\n')
+
+        args = SimpleNamespace(id="test_ws", no_run=False)
+
+        with patch("orchestrator.commands.approve.load_workstream") as mock_load, \
+             patch("orchestrator.commands.approve._get_suspended_flow") as mock_get, \
+             patch("orchestrator.commands.approve._resume_flow") as mock_resume, \
+             patch("orchestrator.commands.approve._trigger_continuation_run") as mock_trigger:
+            mock_load.return_value = MagicMock(status="awaiting_human_review")
+            mock_get.return_value = "flow-run-123"
+            mock_resume.return_value = True
+            mock_trigger.return_value = 0
+
+            mock_project = MagicMock()
+            mock_project.name = "test_project"
+
+            result = cmd_approve(args, tmp_path, mock_project)
+
+            assert result == 0
+            mock_resume.assert_called_once()
+            mock_trigger.assert_called_once_with("test_ws", tmp_path, mock_project)
+
+    def test_approve_no_run_skips_trigger(self, tmp_path):
+        """Approve with --no-run should not trigger new run."""
+        from orchestrator.commands.approve import cmd_approve
+
+        ws_dir = tmp_path / "workstreams" / "test_ws"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "meta.env").write_text('ID="test_ws"\nSTATUS="awaiting_human_review"\n')
+
+        args = SimpleNamespace(id="test_ws", no_run=True)
+
+        with patch("orchestrator.commands.approve.load_workstream") as mock_load, \
+             patch("orchestrator.commands.approve._get_suspended_flow") as mock_get, \
+             patch("orchestrator.commands.approve._resume_flow") as mock_resume, \
+             patch("orchestrator.commands.approve._trigger_continuation_run") as mock_trigger:
+            mock_load.return_value = MagicMock(status="awaiting_human_review")
+            mock_get.return_value = "flow-run-123"
+            mock_resume.return_value = True
+
+            result = cmd_approve(args, tmp_path, MagicMock())
+
+            assert result == 0
+            mock_resume.assert_called_once()
+            mock_trigger.assert_not_called()

@@ -6,6 +6,7 @@ Resumes suspended Prefect flows via the Prefect API.
 
 import asyncio
 import logging
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +15,12 @@ from prefect.exceptions import PrefectException
 from orchestrator.lib.config import ProjectConfig, load_workstream, Workstream
 from orchestrator.runner.impl.state_files import clear_pr_metadata
 from orchestrator.workflow.state_machine import transition, WorkstreamState
-from orchestrator.workflow.deployment import get_suspended_flow_run, resume_flow_run
+from orchestrator.workflow.deployment import (
+    get_suspended_flow_run,
+    resume_flow_run,
+    wait_for_flow_exit,
+)
+from orchestrator.workflow.deployable_flow import trigger_run
 from orchestrator.lib.planparse import (
     parse_plan,
     get_next_microcommit,
@@ -78,9 +84,58 @@ def _error_no_suspended_flow(ws_id: str) -> int:
     return EXIT_ERROR
 
 
+def _trigger_continuation_run(
+    ws_id: str,
+    ops_dir: Path,
+    project_config: ProjectConfig,
+) -> int:
+    """Wait for old flow to exit, then trigger a new run.
+
+    Shared helper for approve/reject/reset after resuming a suspended flow.
+    Waits for the resumed flow to fully exit before starting a new one to
+    avoid race conditions.
+
+    Returns EXIT_SUCCESS on success, EXIT_ERROR on failure.
+    """
+    # Wait for the resumed flow to exit before starting new one
+    try:
+        flow_exited = asyncio.run(wait_for_flow_exit(ws_id))
+        if not flow_exited:
+            logger.warning(f"Timeout waiting for flow to exit for {ws_id}, proceeding anyway")
+    except PrefectException as e:
+        logger.warning(f"Could not wait for flow exit: {e}")
+    except (ConnectionError, TimeoutError, OSError, RuntimeError) as e:
+        logger.warning(f"Network error waiting for flow exit: {e}")
+
+    # Trigger new flow
+    run_id = f"{ws_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    try:
+        new_flow_id = asyncio.run(trigger_run(
+            workstream_id=ws_id,
+            ops_dir=ops_dir,
+            project_name=project_config.name,
+            run_id=run_id,
+            verbose=False,
+        ))
+        print(f"  Flow run ID: {new_flow_id}")
+        print(f"  Monitor: wf watch {ws_id}")
+        return EXIT_SUCCESS
+    except PrefectException as e:
+        logger.error(f"Prefect error triggering new run: {e}")
+        print(f"ERROR: Prefect error triggering new run: {e}")
+        print(f"  Run manually: wf run {ws_id}")
+        return EXIT_ERROR
+    except (ConnectionError, TimeoutError, OSError, RuntimeError) as e:
+        logger.error(f"Network error triggering new run: {e}")
+        print(f"ERROR: Network error triggering new run: {e}")
+        print(f"  Run manually: wf run {ws_id}")
+        return EXIT_ERROR
+
+
 def cmd_approve(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     """Approve workstream and resume Prefect flow."""
     ws_id = args.id
+    no_run = getattr(args, 'no_run', False)
     workstream_dir = ops_dir / "workstreams" / ws_id
 
     if not workstream_dir.exists():
@@ -104,13 +159,19 @@ def cmd_approve(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         return _error_no_suspended_flow(ws_id)
 
     logger.info(f"Resuming suspended flow {flow_run_id} for {ws_id}")
-    if _resume_flow(flow_run_id, action=ACTION_APPROVE):
-        print(f"Approved workstream '{ws_id}'")
-        print("Flow resumed - worker will continue execution")
-        return EXIT_SUCCESS
-    else:
+    if not _resume_flow(flow_run_id, action=ACTION_APPROVE):
         print(f"ERROR: Failed to resume flow for '{ws_id}'")
         return EXIT_ERROR
+
+    print(f"Approved workstream '{ws_id}'")
+
+    # Trigger new run to continue (unless --no-run)
+    if no_run:
+        print(f"Run 'wf run {ws_id}' to continue")
+        return EXIT_SUCCESS
+
+    print("Continuing...")
+    return _trigger_continuation_run(ws_id, ops_dir, project_config)
 
 
 def cmd_reject(args, ops_dir: Path, project_config: ProjectConfig) -> int:
@@ -136,7 +197,9 @@ def cmd_reject(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     # === Case 1: Mid-commit human gate (Prefect flow resume) ===
     if workstream.status == "awaiting_human_review":
-        return _reject_at_human_gate(ws_id, user_feedback, should_reset)
+        return _reject_at_human_gate(
+            ws_id, user_feedback, should_reset, no_run, ops_dir, project_config
+        )
 
     # === Case 2: Post-completion rejection (generate fix commit) ===
     return _reject_post_completion(
@@ -149,6 +212,9 @@ def _reject_at_human_gate(
     ws_id: str,
     user_feedback: str | None,
     should_reset: bool,
+    no_run: bool,
+    ops_dir: Path,
+    project_config: ProjectConfig,
 ) -> int:
     """Handle rejection during human review gate via Prefect flow resume."""
     # Find and resume suspended Prefect flow
@@ -158,24 +224,30 @@ def _reject_at_human_gate(
         return _error_no_suspended_flow(ws_id)
 
     logger.info(f"Resuming suspended flow {flow_run_id} for {ws_id} with rejection")
-    if _resume_flow(flow_run_id, action=ACTION_REJECT, feedback=user_feedback or "", reset=should_reset):
-        if should_reset:
-            if user_feedback:
-                print(f"Reset workstream '{ws_id}' with feedback:")
-                print(f"  {user_feedback}")
-            else:
-                print(f"Reset workstream '{ws_id}'")
-        else:
-            if user_feedback:
-                print(f"Rejected workstream '{ws_id}' with feedback:")
-                print(f"  {user_feedback}")
-            else:
-                print(f"Rejected workstream '{ws_id}'")
-        print("Flow resumed - worker will continue with feedback")
-        return EXIT_SUCCESS
-    else:
+    if not _resume_flow(flow_run_id, action=ACTION_REJECT, feedback=user_feedback or "", reset=should_reset):
         print(f"ERROR: Failed to resume flow for '{ws_id}'")
         return EXIT_ERROR
+
+    if should_reset:
+        if user_feedback:
+            print(f"Reset workstream '{ws_id}' with feedback:")
+            print(f"  {user_feedback}")
+        else:
+            print(f"Reset workstream '{ws_id}'")
+    else:
+        if user_feedback:
+            print(f"Rejected workstream '{ws_id}' with feedback:")
+            print(f"  {user_feedback}")
+        else:
+            print(f"Rejected workstream '{ws_id}'")
+
+    # Trigger new run to continue (unless --no-run)
+    if no_run:
+        print(f"Run 'wf run {ws_id}' to continue")
+        return EXIT_SUCCESS
+
+    print("Continuing...")
+    return _trigger_continuation_run(ws_id, ops_dir, project_config)
 
 
 def _reject_post_completion(
@@ -338,17 +410,18 @@ def cmd_reset(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         return _error_no_suspended_flow(ws_id)
 
     logger.info(f"Resuming suspended flow {flow_run_id} for {ws_id} with reset")
-    if _resume_flow(flow_run_id, action=ACTION_REJECT, feedback=feedback or "", reset=True):
-        if feedback:
-            print(f"Reset workstream '{ws_id}' with feedback:")
-            print(f"  {feedback}")
-        else:
-            print(f"Reset workstream '{ws_id}'")
-        print("Flow resumed - worker will reset and start fresh")
-        return EXIT_SUCCESS
-    else:
+    if not _resume_flow(flow_run_id, action=ACTION_REJECT, feedback=feedback or "", reset=True):
         print(f"ERROR: Failed to resume flow for '{ws_id}'")
         return EXIT_ERROR
+
+    if feedback:
+        print(f"Reset workstream '{ws_id}' with feedback:")
+        print(f"  {feedback}")
+    else:
+        print(f"Reset workstream '{ws_id}'")
+
+    print(f"Run 'wf run {ws_id}' to start fresh")
+    return EXIT_SUCCESS
 
 
 def cmd_accept_story(args, ops_dir: Path, project_config: ProjectConfig, story_id: str) -> int:

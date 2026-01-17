@@ -110,6 +110,11 @@ Override per-run: `wf run --supervised`, `wf run --gatekeeper`, or `wf run --aut
         $ wf run STORY-xxxx custom_name  # Override workstream name
         $ wf run <workstream_id>         # Run existing workstream
 
+        Execution is asynchronous - `wf run` submits to Prefect worker and returns.
+        Monitor progress with:
+        $ wf watch <workstream_id>       # Interactive TUI
+        $ wf show <workstream_id>        # Current status
+
 Options:
         --once        Single micro-commit cycle
         --loop        Run until blocked/complete (default behavior)
@@ -354,7 +359,7 @@ Options:
 | `wf plan clone STORY-xxx` | Clone a locked story |
 | `wf plan add <ws> "title" [-f ".."]` | Add micro-commit to workstream |
 | `wf plan resurrect STORY-xxx` | Resurrect abandoned story |
-| `wf run [id] [--once\|--loop] [--gatekeeper\|--supervised]` | Run workstream |
+| `wf run [id] [--once\|--loop] [--gatekeeper\|--supervised]` | Submit workstream to Prefect (async) |
 | `wf list` | List stories and workstreams |
 | `wf show <id> [--stats]` | Show story or workstream details |
 | `wf approve <id> [--no-run]` | Accept story or approve gate |
@@ -371,7 +376,7 @@ Options:
 | Command | Description |
 |---------|-------------|
 | `wf use [id] [--clear]` | Set/show/clear current workstream |
-| `wf watch [id]` | Interactive TUI (dashboard, workstream, or STORY-xxxx) |
+| `wf watch [id]` | Interactive TUI - monitor execution progress |
 | `wf review [id]` | Run final branch review |
 | `wf diff [id] [--stat\|--staged\|--branch]` | Show workstream diff |
 | `wf log [id] [-s since] [-n limit] [-v] [-r]` | Show workstream timeline |

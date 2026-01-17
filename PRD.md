@@ -542,7 +542,14 @@ wf --completion fish >> ~/.config/fish/completions/wf.fish
 
 ### 10.8 wf run behavior
 
-wf run <id> --once performs exactly ONE micro-commit cycle:
+`wf run` submits workstream execution to the Prefect worker and returns immediately.
+The worker executes micro-commit cycles asynchronously.
+
+Monitor progress with:
+- `wf watch <id>` - Interactive TUI with real-time updates
+- `wf show <id>` - Current status snapshot
+
+Each micro-commit cycle:
 
     acquire locks
 
@@ -572,7 +579,7 @@ Options:
 - `--yes`: Skip confirmation prompts (for automation/CI)
 - `-v/--verbose`: Show implement/review exchange
 
-wf run <id> --loop repeats --once until:
+With `--loop`, execution repeats until:
 
     all micro-commits complete AND merge gate passes
 
@@ -592,16 +599,18 @@ When all micro-commits are done, the MERGE_GATE stage runs:
 
     if FAIL: AI generates fix commits, loop continues
 
-11) Orchestrator requirements (Agents SDK integration)
+11) Orchestrator requirements (Prefect integration)
 11.1 What the orchestrator is
 
-A program (in orchestrator/runner/) that:
+A program (in orchestrator/) that:
 
-    runs role agents via an SDK-based runner
+    executes workstream flows via Prefect worker
 
     uses tools (Codex, shell, git, Claude CLI)
 
-    records traces and structured events (optional in MVP but architecture should allow it)
+    suspends at human gates (awaiting approval/rejection)
+
+    records traces and structured events
 
 11.2 MVP: roles required
 
@@ -1514,45 +1523,65 @@ A2) run_summary.md template
 - ...
 
 APPENDIX B — Orchestration pseudocode
-B1) wf run --once pseudocode
+B1) wf run pseudocode
+
+# CLI submits to Prefect worker
+submit flow to prefect worker with parameters:
+  - workstream_id
+  - project_name
+  - run_id
+  - autonomy mode
+print "Flow submitted. Monitor: wf watch <id>"
+exit
+
+# Worker executes the flow
+B2) Prefect flow pseudocode
 
 load project.env + project_profile.env
 load workstream meta.env + plan.md
-acquire global lock (or workstream lock)
+acquire workstream lock
 
-micro = first plan item with Done: [ ]
-if none: exit "complete"
+loop:
+  micro = first plan item with Done: [ ]
+  if none: run merge gate, exit
 
-create ops run dir
-record tool versions (git/node/npm/codex/claude)
+  create ops run dir
+  record tool versions (git/node/npm/codex/claude)
 
-implement:
-  call Codex with instructions:
-    - implement ONLY micro
-    - run required make tests
-    - commit with message "<micro>: ..."
-  verify commit created
+  implement:
+    call Codex with instructions:
+      - implement ONLY micro
+      - run required make tests
+      - commit with message "<micro>: ..."
+    verify commit created
 
-test:
-  run make test-unit (always)
-  run additional suites if required by policy/micro
-  validate artifacts exist and are valid
+  test:
+    run make test-unit (always)
+    run additional suites if required by policy/micro
+    validate artifacts exist and are valid
 
-review:
-  diff = git diff BASE_BRANCH...HEAD
-  call Claude Code for JSON review
-  parse JSON
-  if request_changes and blockers > 0 => fail
+  review:
+    diff = git diff BASE_BRANCH...HEAD
+    call Claude Code for JSON review
+    parse JSON
+    if request_changes and blockers > 0 => fail
 
-qa gate:
-  confirm outputs are present and consistent
+  human_review:
+    if confidence < threshold or escalation triggered:
+      suspend flow (Prefect suspend_flow_run)
+      # Flow resumes when wf approve/reject called
+      on resume: process approval/rejection, exit flow
 
-if all passed:
-  mark micro Done: [x] in plan.md (workflow repo)
-  wf refresh (touched files)
-  write run result.json + summary.md
-else:
-  write failure details and STOP
+  qa gate:
+    confirm outputs are present and consistent
+
+  if all passed:
+    mark micro Done: [x] in plan.md
+    wf refresh (touched files)
+    write run result.json + summary.md
+    continue to next micro-commit
+  else:
+    write failure details and STOP
 
 release lock
 
@@ -1782,10 +1811,11 @@ Last updated: <timestamp>
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           WORKSTREAM LIFECYCLE                               │
+│                     (Prefect flow execution model)                          │
 └─────────────────────────────────────────────────────────────────────────────┘
 
   ┌──────────┐
-  │  CREATE  │  wf run STORY-xxx
+  │  wf run  │  Submits flow to Prefect worker
   └────┬─────┘
        │
        ▼
@@ -1804,11 +1834,19 @@ Last updated: <timestamp>
   │         IMPLEMENTATION LOOP             │               │
   │                                         │               │
   │  IMPLEMENT ──► TEST ──► REVIEW ──►      │               │
-  │  HUMAN_REVIEW ──► COMMIT                │               │
+  │                                         │               │
+  │  HUMAN_REVIEW (if escalated):           │               │
+  │    ┌─────────────────────────────┐      │               │
+  │    │ Flow SUSPENDS               │      │               │
+  │    │ (Prefect suspend_flow_run)  │      │               │
+  │    │                             │      │               │
+  │    │ wf approve/reject resumes   │      │               │
+  │    │ Flow exits, new flow starts │      │               │
+  │    └─────────────────────────────┘      │               │
   │         │                               │               │
   │         ▼                               │               │
-  │    more commits? ──yes──► SELECT        │               │
-  │         │                               │               │
+  │    COMMIT ──► more commits? ──yes──►    │               │
+  │         │                    SELECT     │               │
   │         no                              │               │
   └─────────┼───────────────────────────────┘               │
             │                                               │

@@ -25,6 +25,7 @@ from orchestrator.runner.locking import (
 )
 from orchestrator.lib.prefect_server import ensure_prefect_infrastructure
 from orchestrator.workflow.deployable_flow import trigger_run
+from orchestrator.workflow.deployment import get_running_flow
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +282,17 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     if running_count >= CONCURRENCY_WARNING_THRESHOLD:
         print(f"WARNING: {running_count} workstreams already running (threshold: {CONCURRENCY_WARNING_THRESHOLD})")
         print("Consider waiting for some to complete to avoid API rate limits")
+
+    # Idempotency check: don't start duplicate flows
+    try:
+        existing_flow = asyncio.run(get_running_flow(ws_id))
+        if existing_flow:
+            print(f"Flow {existing_flow} running.")
+            print(f"  Use 'wf show {ws_id}' or 'wf watch' to monitor execution")
+            return EXIT_SUCCESS
+    except Exception as e:
+        # If we can't check, proceed with caution (will fail on duplicate anyway)
+        logger.debug(f"Could not check for existing flow: {e}")
 
     # Trigger flow via Prefect
     run_id = f"{ws_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"

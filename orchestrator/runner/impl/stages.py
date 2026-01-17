@@ -14,7 +14,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from orchestrator.runner.context import RunContext
-from orchestrator.runner.stages import StageError, StageBlocked
+from orchestrator.runner.stages import StageError, StageBlocked, StageHumanGateProcessed
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit, mark_done
 from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.review import format_review_for_retry
@@ -899,61 +899,6 @@ def _get_changed_files(worktree: Path) -> list[str]:
     return files
 
 
-def _format_escalation_context(
-    ctx: RunContext,
-    confidence: float,
-    threshold: float,
-    concerns: list[str],
-    changed_files: list[str],
-    sensitive_touched: bool,
-    reason: str,
-) -> str:
-    """Format rich escalation context for human review pause.
-
-    Shows confidence, concerns, changed files, and available commands.
-    """
-    lines = []
-
-    # Header with confidence
-    lines.append(f"REVIEW PAUSED - {reason}")
-    lines.append("")
-
-    # Commit info
-    if ctx.microcommit:
-        lines.append(f"Commit: {ctx.microcommit.id} - {ctx.microcommit.title}")
-
-    # Confidence vs threshold
-    lines.append(f"Confidence: {confidence:.0%} (threshold: {threshold:.0%})")
-    if sensitive_touched:
-        lines.append("  [Sensitive paths touched - threshold raised]")
-
-    # Changed files summary
-    if changed_files:
-        lines.append(f"Changed: {len(changed_files)} file(s)")
-        # Show first few files
-        for f in changed_files[:5]:
-            lines.append(f"  - {f}")
-        if len(changed_files) > 5:
-            lines.append(f"  ... and {len(changed_files) - 5} more")
-
-    # Concerns from AI
-    if concerns:
-        lines.append("")
-        lines.append("Concerns:")
-        for c in concerns:
-            lines.append(f"  - {c}")
-
-    # Commands
-    lines.append("")
-    lines.append("Commands:")
-    lines.append("  wf approve           # Accept and continue")
-    lines.append("  wf approve -f \"...\"  # Accept with guidance")
-    lines.append("  wf reject -f \"...\"   # Reject with feedback")
-    lines.append("  wf diff              # See full diff")
-
-    return "\n".join(lines)
-
-
 def stage_human_review(ctx: RunContext):
     """Block until human approves or rejects.
 
@@ -1063,7 +1008,8 @@ def stage_human_review(ctx: RunContext):
         # distinct from action constants ("approve") used in the protocol layer
         ctx.transcript.record_human_input("human_review", "approved")
         transition(ctx.workstream_dir, WorkstreamState.ACTIVE, reason="human approved")
-        return
+        # Exit flow so approve command can trigger new run
+        raise StageHumanGateProcessed("human_review", ACTION_APPROVE)
 
     elif action == ACTION_REJECT:
         feedback = approval.get("feedback", "")
@@ -1073,7 +1019,8 @@ def stage_human_review(ctx: RunContext):
         # Store feedback and reset flag for next implement run
         store_human_feedback(ctx.workstream_dir, feedback, reset)
         transition(ctx.workstream_dir, WorkstreamState.HUMAN_REJECTED, reason="human rejected")
-        raise StageError("human_review", f"Human rejected: {feedback[:100]}", 6)
+        # Exit flow so reject command can trigger new run
+        raise StageHumanGateProcessed("human_review", ACTION_REJECT, feedback, reset)
 
     else:
         raise StageError("human_review", f"Unknown action: {action}", 9)

@@ -4,17 +4,17 @@ Contains the core orchestration logic for running micro-commit cycles.
 Wrapped with Prefect @flow for observability and future state management.
 """
 
-import json
 import logging
 import subprocess
 from pathlib import Path
 from prefect import flow
 
 from orchestrator.lib.config import ProjectConfig, ProjectProfile, Workstream, load_workstream
+from orchestrator.lib.constants import STATUS_HUMAN_GATE_DONE
 from orchestrator.lib.review import load_review
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit
 from orchestrator.lib.test_parser import parse_test_output, format_parsed_output
-from orchestrator.runner.stages import run_stage, StageError, StageResult
+from orchestrator.runner.stages import run_stage, StageError, StageResult, StageHumanGateProcessed
 from orchestrator.runner.impl.stages import (
     stage_load,
     stage_breakdown,
@@ -188,6 +188,10 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
             reason = ctx.stages.get("human_review", {}).get("notes", "unknown")
             ctx.write_result("blocked", blocked_reason=reason)
             return "blocked", 8, None
+    except StageHumanGateProcessed as e:
+        # Human gate was processed - exit so command can trigger new run
+        ctx.write_result(STATUS_HUMAN_GATE_DONE, blocked_reason=f"human_{e.action}")
+        return STATUS_HUMAN_GATE_DONE, 0, None
     except StageError as e:
         ctx.write_result("failed", e.stage)
         return "failed", e.exit_code, e.stage
@@ -310,8 +314,6 @@ def handle_all_commits_complete(
     gate_status, gate_code = run_merge_gate(ctx)
 
     if gate_status == "merge_ready":
-        # TODO(prefect): Status should be derived from reality, not stored.
-        # See DAS_PLAN.md "Prefect State Machine (Level 3)" for future fix.
         # Check if PR already exists - don't overwrite pr_open status
         ws = load_workstream(workstream_dir)
         if ws.pr_number:

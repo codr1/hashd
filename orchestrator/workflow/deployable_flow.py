@@ -15,7 +15,7 @@ from prefect import flow, suspend_flow_run, get_run_logger
 from pydantic import BaseModel
 
 from orchestrator.lib.prefect_server import WORKER_POOL_NAME
-from orchestrator.lib.constants import EXIT_ERROR, EXIT_LOCK_TIMEOUT
+from orchestrator.lib.constants import EXIT_ERROR, EXIT_LOCK_TIMEOUT, STATUS_HUMAN_GATE_DONE
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +208,11 @@ def workstream_flow(
 
                 # Run one micro-commit cycle
                 status, exit_code, failed_stage = run_once(ctx)
+
+                # Human gate was processed - exit so command can trigger new run
+                if status == STATUS_HUMAN_GATE_DONE:
+                    log.info("Human gate processed - exiting for new run")
+                    return {"status": status, "exit_code": exit_code, "failed_stage": None}
 
                 if status == "blocked":
                     reason = ctx.stages.get("select", {}).get("notes", "")
