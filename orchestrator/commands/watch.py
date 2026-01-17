@@ -53,6 +53,8 @@ from orchestrator.pm.models import Story
 from orchestrator.pm.stories import list_stories, load_story, is_story_locked, update_story
 from orchestrator.lib.suggestions import load_suggestions, SuggestionsFile
 from orchestrator.lib.agents_config import load_agents_config, validate_stage_binaries
+from orchestrator.lib.prefect_server import ensure_prefect_infrastructure
+from orchestrator.lib.constants import EXIT_SUCCESS, EXIT_ERROR, EXIT_NOT_FOUND
 
 logger = logging.getLogger(__name__)
 
@@ -3191,6 +3193,13 @@ class WatchApp(App):
 
 def cmd_watch(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     """Watch workstreams and stories."""
+    # Ensure Prefect server and worker are running for flow orchestration
+    try:
+        ensure_prefect_infrastructure()
+    except RuntimeError as e:
+        print(f"ERROR: {e}")
+        return EXIT_ERROR
+
     target_id = getattr(args, 'id', None)
 
     if target_id:
@@ -3200,14 +3209,14 @@ def cmd_watch(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             story = load_story(project_dir, target_id)
             if not story:
                 print(f"ERROR: Story '{target_id}' not found")
-                return 2
+                return EXIT_NOT_FOUND
         else:
             # Validate workstream exists
             workstream_dir = ops_dir / "workstreams" / target_id
             if not workstream_dir.exists():
                 print(f"ERROR: Workstream '{target_id}' not found")
-                return 2
+                return EXIT_NOT_FOUND
 
     app = WatchApp(ops_dir, project_config, target_id=target_id)
     app.run()
-    return 0
+    return EXIT_SUCCESS

@@ -1,7 +1,7 @@
 """Tests for agents_config module."""
 
-import json
 import pytest
+import yaml
 
 from orchestrator.lib.agents_config import (
     AgentsConfig,
@@ -29,15 +29,15 @@ class TestLoadAgentsConfig:
                 "review": "custom-claude --fast -p {prompt}"
             }
         }
-        (tmp_path / "agents.json").write_text(json.dumps(config_data))
+        (tmp_path / "agents.yaml").write_text(yaml.dump(config_data))
 
         config = load_agents_config(tmp_path)
         assert config.stages["review"] == "custom-claude --fast -p {prompt}"
         # Other stages should still have defaults
         assert config.stages["implement"] == DEFAULT_STAGE_COMMANDS["implement"]
 
-    def test_handles_invalid_json(self, tmp_path):
-        (tmp_path / "agents.json").write_text("not valid json {{{")
+    def test_handles_invalid_yaml(self, tmp_path):
+        (tmp_path / "agents.yaml").write_text("not valid yaml: {{{")
         config = load_agents_config(tmp_path)
         assert config.stages == DEFAULT_STAGE_COMMANDS
 
@@ -151,6 +151,6 @@ class TestGetStageBinary:
                 "review": "my-custom-agent --flag"
             }
         }
-        (tmp_path / "agents.json").write_text(json.dumps(config_data))
+        (tmp_path / "agents.yaml").write_text(yaml.dump(config_data))
         config = load_agents_config(tmp_path)
         assert get_stage_binary(config, "review") == "my-custom-agent"

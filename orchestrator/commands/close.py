@@ -23,6 +23,8 @@ from orchestrator.pm.stories import (
     find_story_by_workstream,
 )
 from orchestrator.pm.reqs_annotate import remove_reqs_annotations, delete_reqs_sections
+from orchestrator.workflow.state_machine import transition, WorkstreamState
+from orchestrator.lib.constants import EXIT_SUCCESS, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_INVALID_STATE
 
 
 def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
@@ -33,7 +35,7 @@ def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     if not workstream_dir.exists():
         print(f"ERROR: Workstream '{ws_id}' not found")
-        return 2
+        return EXIT_NOT_FOUND
 
     ws = load_workstream(workstream_dir)
 
@@ -47,7 +49,7 @@ def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print("ERROR: Uncommitted changes in worktree")
             print(result.stdout)
             print("\nUse --force to close anyway, or commit/discard changes first")
-            return 2
+            return EXIT_INVALID_STATE
 
     # Remove worktree
     if ws.worktree.exists():
@@ -64,7 +66,7 @@ def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             )
             if result.returncode != 0:
                 print(f"ERROR: Failed to remove worktree: {result.stderr}")
-                return 1
+                return EXIT_ERROR
 
     # Delete the branch unless --keep-branch specified
     if not getattr(args, 'keep_branch', False):
@@ -76,16 +78,13 @@ def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         if result.returncode != 0:
             print(f"Warning: Failed to delete branch: {result.stderr.strip()}")
 
-    # Update meta.env with closed status
+    # Update status via FSM
+    transition(workstream_dir, WorkstreamState.CLOSED, reason="workstream closed")
+
+    # Add CLOSED_AT timestamp
     meta_path = workstream_dir / "meta.env"
-    content = meta_path.read_text()
-    lines = content.splitlines()
-    for i, line in enumerate(lines):
-        if line.startswith("STATUS="):
-            lines[i] = 'STATUS="closed"'
-            break
-    lines.append(f'CLOSED_AT="{datetime.now().isoformat()}"')
-    meta_path.write_text("\n".join(lines) + "\n")
+    with open(meta_path, "a") as f:
+        f.write(f'CLOSED_AT="{datetime.now().isoformat()}"\n')
 
     # Move workstream to _closed/
     closed_dir = workstreams_dir / "_closed"
@@ -113,7 +112,7 @@ def cmd_close(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         print(f"  Use 'wf open {ws_id}' to resurrect")
     print(f"  Use 'wf archive delete {ws_id} --confirm' to permanently delete")
 
-    return 0
+    return EXIT_SUCCESS
 
 
 def cmd_close_story(args, ops_dir: Path, project_config: ProjectConfig, story_id: str) -> int:
@@ -123,18 +122,18 @@ def cmd_close_story(args, ops_dir: Path, project_config: ProjectConfig, story_id
     story = load_story(project_dir, story_id)
     if not story:
         print(f"Story not found: {story_id}")
-        return 1
+        return EXIT_ERROR
 
     # Check if story has active workstream
     if story.status == "implementing" and story.workstream:
         print(f"Story has active workstream: {story.workstream}")
         print(f"Close the workstream first:")
         print(f"  wf close {story.workstream}")
-        return 1
+        return EXIT_ERROR
 
     if story.status == "implemented":
         print(f"Story is already implemented. Cannot close.")
-        return 1
+        return EXIT_ERROR
 
     # Remove REQS annotations for this story
     success, msg = remove_reqs_annotations(story_id, project_config)
@@ -148,7 +147,7 @@ def cmd_close_story(args, ops_dir: Path, project_config: ProjectConfig, story_id
 
     if not updated:
         print(f"Failed to close story {story_id}")
-        return 1
+        return EXIT_ERROR
 
     # Archive to _abandoned/
     if archive_story(project_dir, story_id, "_abandoned"):
@@ -157,7 +156,7 @@ def cmd_close_story(args, ops_dir: Path, project_config: ProjectConfig, story_id
         print(f"Warning: Failed to archive story (may already be archived)")
 
     print(f"Closed story: {story_id}")
-    return 0
+    return EXIT_SUCCESS
 
 
 def cmd_close_no_changes(args, ops_dir: Path, project_config: ProjectConfig) -> int:
@@ -173,7 +172,7 @@ def cmd_close_no_changes(args, ops_dir: Path, project_config: ProjectConfig) -> 
 
     if not workstream_dir.exists():
         print(f"ERROR: Workstream '{ws_id}' not found")
-        return 2
+        return EXIT_NOT_FOUND
 
     ws = load_workstream(workstream_dir)
     project_dir = ops_dir / "projects" / project_config.name
@@ -183,11 +182,11 @@ def cmd_close_no_changes(args, ops_dir: Path, project_config: ProjectConfig) -> 
     if not story:
         print(f"ERROR: No story linked to workstream '{ws_id}'")
         print("  Use 'wf close' to abandon an unlinked workstream")
-        return 2
+        return EXIT_NOT_FOUND
 
     if story.status != "implementing":
         print(f"ERROR: Story {story.id} is not in 'implementing' state (status={story.status})")
-        return 2
+        return EXIT_INVALID_STATE
 
     # Check for uncommitted changes (warn but allow with --force)
     if ws.worktree.exists():
@@ -199,7 +198,7 @@ def cmd_close_no_changes(args, ops_dir: Path, project_config: ProjectConfig) -> 
             print("ERROR: Uncommitted changes in worktree")
             print(result.stdout)
             print("\nUse --force to close anyway, or commit/discard changes first")
-            return 2
+            return EXIT_INVALID_STATE
 
     print(f"Closing workstream '{ws_id}' with no code changes...")
     print(f"  Story: {story.id}")
@@ -209,7 +208,7 @@ def cmd_close_no_changes(args, ops_dir: Path, project_config: ProjectConfig) -> 
     updated_story = mark_story_implemented(project_dir, story.id)
     if not updated_story:
         print(f"ERROR: Failed to mark story {story.id} as implemented")
-        return 1
+        return EXIT_ERROR
     print(f"  Marked {story.id} as implemented")
 
     # 2. Delete REQS annotations from main repo (story is done, requirements satisfied)
@@ -243,18 +242,15 @@ def cmd_close_no_changes(args, ops_dir: Path, project_config: ProjectConfig) -> 
     if result.returncode != 0:
         print(f"  Warning: Failed to delete branch: {result.stderr.strip()}")
 
-    # 6. Update meta.env with closed status and reason
+    # 6. Update status via FSM
+    transition(workstream_dir, WorkstreamState.CLOSED_NO_CHANGES, reason="closed with no code changes")
+
+    # Add timestamps and reason
     meta_path = workstream_dir / "meta.env"
-    content = meta_path.read_text()
-    lines = content.splitlines()
-    for i, line in enumerate(lines):
-        if line.startswith("STATUS="):
-            lines[i] = 'STATUS="closed_no_changes"'
-            break
-    lines.append(f'CLOSED_AT="{datetime.now().isoformat()}"')
     escaped_reason = reason.replace('"', '\\"')
-    lines.append(f'CLOSE_REASON="{escaped_reason}"')
-    meta_path.write_text("\n".join(lines) + "\n")
+    with open(meta_path, "a") as f:
+        f.write(f'CLOSED_AT="{datetime.now().isoformat()}"\n')
+        f.write(f'CLOSE_REASON="{escaped_reason}"\n')
 
     # 7. Move workstream to _closed/
     closed_dir = workstreams_dir / "_closed"
@@ -268,4 +264,4 @@ def cmd_close_no_changes(args, ops_dir: Path, project_config: ProjectConfig) -> 
 
     print(f"\nWorkstream '{ws_id}' closed (no code changes).")
     print(f"Story {story.id} marked as implemented.")
-    return 0
+    return EXIT_SUCCESS

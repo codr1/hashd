@@ -10,10 +10,10 @@ from orchestrator.commands.approve import cmd_reject
 
 
 class TestCmdRejectAtHumanGate:
-    """Test cmd_reject when status is awaiting_human_review (original behavior)."""
+    """Test cmd_reject when status is awaiting_human_review."""
 
-    def test_writes_rejection_file(self, tmp_path):
-        # Setup workstream directory
+    def test_resumes_prefect_flow_with_rejection(self, tmp_path):
+        """Rejection should resume suspended Prefect flow."""
         ws_dir = tmp_path / "workstreams" / "test_ws"
         ws_dir.mkdir(parents=True)
         (ws_dir / "meta.env").write_text('ID="test_ws"\nSTATUS="awaiting_human_review"\n')
@@ -25,18 +25,41 @@ class TestCmdRejectAtHumanGate:
             no_run=True,
         )
 
-        # Mock load_workstream
-        with patch("orchestrator.commands.approve.load_workstream") as mock_load:
+        with patch("orchestrator.commands.approve.load_workstream") as mock_load, \
+             patch("orchestrator.commands.approve._get_suspended_flow") as mock_get, \
+             patch("orchestrator.commands.approve._resume_flow") as mock_resume:
             mock_load.return_value = MagicMock(status="awaiting_human_review")
+            mock_get.return_value = "flow-run-123"
+            mock_resume.return_value = True
 
             result = cmd_reject(args, tmp_path, MagicMock())
 
-        assert result == 0
-        approval_file = ws_dir / "human_approval.json"
-        assert approval_file.exists()
-        data = json.loads(approval_file.read_text())
-        assert data["action"] == "reject"
-        assert data["feedback"] == "Fix the bug"
+            assert result == 0
+            mock_resume.assert_called_once_with(
+                "flow-run-123", action="reject", feedback="Fix the bug", reset=False
+            )
+
+    def test_returns_error_when_no_suspended_flow(self, tmp_path):
+        """Should error if no suspended flow found."""
+        ws_dir = tmp_path / "workstreams" / "test_ws"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "meta.env").write_text('ID="test_ws"\nSTATUS="awaiting_human_review"\n')
+
+        args = SimpleNamespace(
+            id="test_ws",
+            feedback="Fix the bug",
+            reset=False,
+            no_run=True,
+        )
+
+        with patch("orchestrator.commands.approve.load_workstream") as mock_load, \
+             patch("orchestrator.commands.approve._get_suspended_flow") as mock_get:
+            mock_load.return_value = MagicMock(status="awaiting_human_review")
+            mock_get.return_value = None  # No suspended flow
+
+            result = cmd_reject(args, tmp_path, MagicMock())
+
+        assert result == 1  # Error
 
     def test_returns_error_for_nonexistent_workstream(self, tmp_path):
         args = SimpleNamespace(id="nonexistent", feedback=None, reset=False)
@@ -283,8 +306,9 @@ Done: [x]
             mock_ws.pr_number = 42
             mock_load.return_value = mock_ws
 
-            with patch("orchestrator.commands.approve.update_workstream_status"):
-                result = cmd_reject(args, tmp_path, mock_project)
+            with patch("orchestrator.commands.approve.transition"):
+                with patch("orchestrator.commands.approve.close_pr", return_value=(True, "Closed")):
+                    result = cmd_reject(args, tmp_path, mock_project)
 
         assert result == 0
         plan_content = (ws_dir / "plan.md").read_text()

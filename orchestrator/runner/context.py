@@ -7,13 +7,44 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable, TypedDict
 
 from orchestrator.lib.config import ProjectConfig, ProjectProfile, Workstream
 from orchestrator.lib.planparse import MicroCommit
 from orchestrator.lib.validate import validate_before_write
 from orchestrator.lib.agents_config import AgentsConfig, load_agents_config
 from orchestrator.stages.transcript import Transcript
+
+
+class EscalationContext(TypedDict, total=False):
+    """Context passed to human gate callback for review decisions.
+
+    All fields are optional to allow flexibility in what context is provided.
+    """
+    confidence: float  # Review confidence score (0.0-1.0)
+    threshold: float  # Required confidence threshold
+    concerns: list[str]  # List of review concerns
+    changed_files: list[str]  # Files modified in this commit
+    sensitive_touched: list[str]  # Sensitive files that were modified
+    reason: str  # Human-readable reason for escalation
+    workstream_id: str
+    workstream_dir: str
+    run_id: str
+
+
+class ApprovalResult(TypedDict, total=False):
+    """Result from human gate callback.
+
+    All fields are optional. Typical usage includes 'action' with optional
+    'feedback' for rejections and 'reset' to control worktree behavior.
+    """
+    action: str  # "approve" or "reject" (use ACTION_APPROVE/ACTION_REJECT constants)
+    feedback: str  # Feedback for rejection
+    reset: bool  # Whether to reset worktree on rejection
+
+
+# Type for human gate callback: receives escalation context, returns approval result
+HumanGateCallback = Callable[[EscalationContext], Optional[ApprovalResult]]
 
 
 @dataclass
@@ -51,6 +82,11 @@ class RunContext:
 
     # Transcript for observability (created lazily)
     _transcript: Optional[Transcript] = field(default=None, repr=False)
+
+    # Callback for human gate (e.g., Prefect suspend_flow_run)
+    # Required for flow execution - returns approval dict with action/feedback/reset
+    # If not set, stage_human_review will raise StageError
+    human_gate_callback: Optional[HumanGateCallback] = field(default=None, repr=False)
 
     @property
     def project_dir(self) -> Path:

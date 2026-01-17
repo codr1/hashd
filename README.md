@@ -533,6 +533,25 @@ To fix this, either:
      ...
 ```
 
+## Local-Only Mode
+
+Hashd works without a git remote configured. When no `origin` remote exists:
+
+- Rebase checks are skipped (no fetch/rebase against remote main)
+- Conflict detection against remote is skipped
+- PR features are unavailable
+- Workstreams complete locally after tests pass
+
+This is useful for:
+- Local experimentation before pushing
+- Air-gapped development environments
+- Learning hashd without setting up a remote
+
+To enable full features later:
+```bash
+git remote add origin <url>
+```
+
 ## License
 
 BSL 1.1 (Business Source License)

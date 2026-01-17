@@ -19,6 +19,7 @@ from orchestrator.lib.planparse import parse_plan, get_next_microcommit, mark_do
 from orchestrator.lib.prompts import render_prompt
 from orchestrator.lib.review import format_review_for_retry
 from orchestrator.lib.config import load_escalation_config, get_confidence_threshold, update_workstream_meta, AUTONOMY_MODES, EscalationConfig
+from orchestrator.lib.constants import ACTION_APPROVE, ACTION_REJECT
 from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.runner.impl.breakdown import generate_breakdown, append_commits_to_plan
@@ -27,10 +28,10 @@ from orchestrator.runner.impl.output import verbose_header, verbose_footer, trun
 from orchestrator.runner.impl.state_files import (
     save_codex_session_id,
     clear_codex_session_id,
-    update_workstream_status,
     store_human_feedback,
     get_human_feedback,
 )
+from orchestrator.workflow.state_machine import transition, WorkstreamState
 from orchestrator.runner.impl.prompt_context import (
     get_uncommitted_changes_context,
     build_full_implement_prompt,
@@ -53,6 +54,7 @@ from orchestrator.git import (
     has_changes_vs_head,
     get_diff_names,
     get_divergence_count,
+    has_remote,
 )
 from orchestrator.stages import Actor
 
@@ -208,7 +210,7 @@ def stage_select(ctx: RunContext):
     # Transition from awaiting_human_review when we have work to do
     if ctx.workstream.status == "awaiting_human_review":
         ctx.log("Pending commits found - transitioning to implementing")
-        update_workstream_status(ctx.workstream_dir, "implementing")
+        transition(ctx.workstream_dir, WorkstreamState.IMPLEMENTING, reason="pending commits found")
 
     ctx.microcommit = next_commit
     ctx.log(f"Selected micro-commit: {next_commit.id} - {next_commit.title}")
@@ -827,54 +829,58 @@ def stage_merge_gate(ctx: RunContext) -> dict:
 
     ctx.log("Full test suite passed")
 
-    # 2. Check branch is up to date with main
-    # First, fetch to ensure we have latest main
-    fetch(worktree, "origin", default_branch)
+    # 2. Check branch is up to date with main (only if remote exists)
+    if has_remote(worktree):
+        # Fetch to ensure we have latest main
+        fetch(worktree, "origin", default_branch)
 
-    # Check if main is ancestor of HEAD (meaning we're rebased on main)
-    if not is_ancestor(worktree, f"origin/{default_branch}", "HEAD"):
-        # Get divergence info for context
-        divergence = get_divergence_count(worktree, f"origin/{default_branch}", "HEAD")
-        output = f"Branch needs rebase on {default_branch}.\n"
-        if divergence:
-            output += f"Main is {divergence[0]} commits ahead, branch is {divergence[1]} commits ahead.\n"
-        output += f"Run: git rebase origin/{default_branch}"
+        # Check if main is ancestor of HEAD (meaning we're rebased on main)
+        if not is_ancestor(worktree, f"origin/{default_branch}", "HEAD"):
+            # Get divergence info for context
+            divergence = get_divergence_count(worktree, f"origin/{default_branch}", "HEAD")
+            output = f"Branch needs rebase on {default_branch}.\n"
+            if divergence:
+                output += f"Main is {divergence[0]} commits ahead, branch is {divergence[1]} commits ahead.\n"
+            output += f"Run: git rebase origin/{default_branch}"
 
-        raise StageError(
-            "merge_gate",
-            f"Branch needs rebase on {default_branch}",
-            11,
-            details={"type": "rebase", "output": output}
-        )
+            raise StageError(
+                "merge_gate",
+                f"Branch needs rebase on {default_branch}",
+                11,
+                details={"type": "rebase", "output": output}
+            )
 
-    ctx.log(f"Branch is up to date with {default_branch}")
+        ctx.log(f"Branch is up to date with {default_branch}")
 
-    # 3. Check for conflict markers in tracked files
-    has_issues, diff_output = get_diff_check(worktree, f"origin/{default_branch}...HEAD")
+        # 3. Check for conflict markers in tracked files
+        has_issues, diff_output = get_diff_check(worktree, f"origin/{default_branch}...HEAD")
 
-    if has_issues and diff_output:
-        # Detect actual issue type - git diff --check reports both conflicts and whitespace
-        has_conflicts = any(m in diff_output for m in ["<<<<<<<", "=======", ">>>>>>>"])
-        has_whitespace = "trailing whitespace" in diff_output.lower() or "space before tab" in diff_output.lower()
+        if has_issues and diff_output:
+            # Detect actual issue type - git diff --check reports both conflicts and whitespace
+            has_conflicts = any(m in diff_output for m in ["<<<<<<<", "=======", ">>>>>>>"])
+            has_whitespace = "trailing whitespace" in diff_output.lower() or "space before tab" in diff_output.lower()
 
-        if has_conflicts:
-            message = "Conflict markers detected in files"
-            error_type = "conflict"
-        elif has_whitespace:
-            message = "Whitespace errors detected"
-            error_type = "whitespace"
-        else:
-            message = "Git diff check failed"
-            error_type = "diff_check"
+            if has_conflicts:
+                message = "Conflict markers detected in files"
+                error_type = "conflict"
+            elif has_whitespace:
+                message = "Whitespace errors detected"
+                error_type = "whitespace"
+            else:
+                message = "Git diff check failed"
+                error_type = "diff_check"
 
-        raise StageError(
-            "merge_gate",
-            message,
-            12,
-            details={"type": error_type, "output": diff_output}
-        )
+            raise StageError(
+                "merge_gate",
+                message,
+                12,
+                details={"type": error_type, "output": diff_output}
+            )
 
-    ctx.log("No conflict markers found")
+        ctx.log("No conflict markers found")
+    else:
+        ctx.log("No remote configured - skipping rebase/conflict checks (local-only mode)")
+
     ctx.log("Merge gate passed")
 
     return {}
@@ -958,10 +964,10 @@ def stage_human_review(ctx: RunContext):
 
     Sensitive paths (auth/*, *.env) increase the required threshold.
 
-    Checks for approval file:
-    - human_approval.json with {"action": "approve"} -> proceed
-    - human_approval.json with {"action": "reject", "reset": bool, "feedback": "..."} -> StageError
-    - No file -> StageBlocked (waiting for human)
+    Human gate callback (required):
+    - Returns {"action": "approve"} -> proceed
+    - Returns {"action": "reject", "reset": bool, "feedback": "..."} -> StageError
+    - Callback is mandatory - run must be executed via Prefect flow
     """
     # Load escalation config
     escalation_config = load_escalation_config(ctx.project_dir)
@@ -1017,50 +1023,56 @@ def stage_human_review(ctx: RunContext):
         )
         return
 
-    approval_file = ctx.workstream_dir / "human_approval.json"
-
-    if not approval_file.exists():
-        # Update status to awaiting human review
-        update_workstream_status(ctx.workstream_dir, "awaiting_human_review")
-        ctx.log("Awaiting human review")
-
-        # Build rich escalation context
-        escalation_msg = _format_escalation_context(
-            ctx=ctx,
-            confidence=confidence,
-            threshold=threshold,
-            concerns=concerns,
-            changed_files=changed_files,
-            sensitive_touched=sensitive_touched,
-            reason=reason,
+    # Human gate callback is required (Prefect suspend_flow_run)
+    if not ctx.human_gate_callback:
+        raise StageError(
+            "human_review",
+            "No human gate callback configured. Run must be executed via Prefect flow.",
+            9
         )
-        raise StageBlocked("human_review", escalation_msg)
+
+    # Build escalation context for callback
+    escalation_context = {
+        "confidence": confidence,
+        "threshold": threshold,
+        "concerns": concerns,
+        "changed_files": changed_files,
+        "sensitive_touched": sensitive_touched,
+        "reason": reason,
+        "workstream_id": ctx.workstream.id,
+        "workstream_dir": str(ctx.workstream_dir),
+        "run_id": ctx.run_id,
+    }
+
+    transition(ctx.workstream_dir, WorkstreamState.AWAITING_HUMAN_REVIEW,
+              reason="review confidence below threshold")
+    ctx.log("Awaiting human review")
 
     try:
-        approval = json.loads(approval_file.read_text())
-    except (json.JSONDecodeError, IOError) as e:
-        raise StageError("human_review", f"Invalid approval file: {e}", 9)
+        approval = ctx.human_gate_callback(escalation_context)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as e:
+        raise StageError("human_review", f"Human gate callback failed: {e}", 9)
 
     action = approval.get("action")
 
-    if action == "approve":
+    if action == ACTION_APPROVE:
         ctx.log("Human approved")
+        # Transcript uses past tense ("approved") for human-readable logging,
+        # distinct from action constants ("approve") used in the protocol layer
         ctx.transcript.record_human_input("human_review", "approved")
-        # Clean up approval file
-        approval_file.unlink()
-        update_workstream_status(ctx.workstream_dir, "active")
+        transition(ctx.workstream_dir, WorkstreamState.ACTIVE, reason="human approved")
         return
 
-    elif action == "reject":
+    elif action == ACTION_REJECT:
         feedback = approval.get("feedback", "")
         reset = approval.get("reset", False)
         ctx.log(f"Human rejected (reset={reset}) with feedback: {feedback[:100]}...")
         ctx.transcript.record_human_input("human_review", "rejected", feedback)
         # Store feedback and reset flag for next implement run
         store_human_feedback(ctx.workstream_dir, feedback, reset)
-        # Clean up approval file
-        approval_file.unlink()
-        update_workstream_status(ctx.workstream_dir, "human_rejected")
+        transition(ctx.workstream_dir, WorkstreamState.HUMAN_REJECTED, reason="human rejected")
         raise StageError("human_review", f"Human rejected: {feedback[:100]}", 6)
 
     else:
