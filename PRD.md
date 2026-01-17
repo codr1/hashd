@@ -1218,7 +1218,7 @@ AOS supports configurable autonomy levels per project, controlling how much huma
 | Level | Name | Behavior | Status |
 |-------|------|----------|--------|
 | `supervised` | Supervised | Human approves each micro-commit after AI review. Human triggers merge with `--confirm`. | **implemented** |
-| `gatekeeper` | Gatekeeper | Auto-continue commits if AI confidence >= threshold (default 70%). Human approves at merge. | **implemented** |
+| `gatekeeper` | Gatekeeper | Auto-continue commits if AI confidence >= 90%. Human approves at merge. | **implemented** |
 | `autonomous` | Autonomous | Auto-continue commits >= 70%. Auto-merge locally (GitHub PR mode still requires PR approval). | **implemented** |
 
 ### 19.2 Confidence-based escalation

@@ -349,7 +349,7 @@ def run_interview(
         "Autonomy mode:",
         [
             ("supervised", "supervised - pause for human review after every commit"),
-            ("gatekeeper", "gatekeeper - auto-continue if AI confidence >= 70%"),
+            ("gatekeeper", "gatekeeper - auto-continue if AI confidence >= 90%"),
             ("autonomous", "autonomous - auto-continue commits + auto-merge"),
         ],
         default=autonomy_default,

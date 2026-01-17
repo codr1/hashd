@@ -224,7 +224,7 @@ def workstream_flow(
                         )
                         if action == "return":
                             notify_complete(workstream_id)
-                            return {"status": "complete", "exit_code": code, "failed_stage": None}
+                            return {"status": "ready_to_merge", "exit_code": code, "failed_stage": None}
                         elif action == "continue":
                             log.info("Fix commits generated, continuing...")
                             continue
@@ -257,7 +257,7 @@ def workstream_flow(
                         )
                         if action == "return":
                             notify_complete(workstream_id)
-                            return {"status": "complete", "exit_code": code, "failed_stage": None}
+                            return {"status": "ready_to_merge", "exit_code": code, "failed_stage": None}
                         elif action == "continue":
                             log.info("Fix commits generated after merge gate, continuing...")
                             continue

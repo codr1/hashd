@@ -247,7 +247,7 @@ def _extract_run_events(ops_dir: Path, project_name: str, ws_id: str) -> list[Ti
                     if status == "passed":
                         summary = f"Run passed: {microcommit or 'unknown'}"
                         event_type = "run_passed"
-                    elif status == "complete":
+                    elif status == "ready_to_merge":
                         summary = "All micro-commits complete"
                         event_type = "run_complete"
                     elif status == "failed":

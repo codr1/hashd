@@ -31,7 +31,8 @@ STATES = [
     "implementing",
     "awaiting_human_review",
     "human_rejected",
-    "complete",
+    "ready_to_merge",
+    "awaiting_final_decision",  # Final review had concerns, needs human decision
     "merging",
     "merge_conflicts",
     "pr_open",
@@ -62,24 +63,31 @@ TRANSITIONS = [
     {"trigger": "retry", "source": "human_rejected", "dest": "active"},
 
     # All commits done
-    {"trigger": "all_commits_done", "source": "active", "dest": "complete"},
-    {"trigger": "all_commits_done", "source": "implementing", "dest": "complete"},
+    {"trigger": "all_commits_done", "source": "active", "dest": "ready_to_merge"},
+    {"trigger": "all_commits_done", "source": "implementing", "dest": "ready_to_merge"},
+
+    # Final review concerns path
+    {"trigger": "final_review_concerns", "source": "ready_to_merge", "dest": "awaiting_final_decision"},
+    {"trigger": "final_review_approve", "source": "awaiting_final_decision", "dest": "ready_to_merge"},
+    {"trigger": "address_concerns", "source": "awaiting_final_decision", "dest": "active"},
 
     # PR workflow
     {"trigger": "create_pr", "source": "active", "dest": "pr_open"},
-    {"trigger": "create_pr", "source": "complete", "dest": "pr_open"},
+    {"trigger": "create_pr", "source": "ready_to_merge", "dest": "pr_open"},
+    {"trigger": "create_pr", "source": "awaiting_final_decision", "dest": "pr_open"},
     {"trigger": "pr_approved", "source": "pr_open", "dest": "pr_approved"},
     {"trigger": "pr_changes_requested", "source": "pr_open", "dest": "active"},
     {"trigger": "pr_changes_requested", "source": "pr_approved", "dest": "active"},
 
     # Merge workflow
     {"trigger": "start_merge", "source": "active", "dest": "merging"},
-    {"trigger": "start_merge", "source": "complete", "dest": "merging"},
+    {"trigger": "start_merge", "source": "ready_to_merge", "dest": "merging"},
+    {"trigger": "start_merge", "source": "awaiting_final_decision", "dest": "merging"},
     {"trigger": "start_merge", "source": "pr_open", "dest": "merging"},
     {"trigger": "start_merge", "source": "pr_approved", "dest": "merging"},
     {"trigger": "merge_conflict", "source": "merging", "dest": "merge_conflicts"},
     {"trigger": "merge_success", "source": "merging", "dest": "merged"},
-    {"trigger": "merge_aborted", "source": "merging", "dest": "complete"},
+    {"trigger": "merge_aborted", "source": "merging", "dest": "ready_to_merge"},
     {"trigger": "push_for_pr", "source": "merging", "dest": "pr_open"},  # During merge, pushed to PR instead
 
     # Conflict resolution
@@ -92,7 +100,7 @@ TRANSITIONS = [
     {"trigger": "github_merged", "source": "pr_approved", "dest": "merged"},
 
     # Post-completion fix commit
-    {"trigger": "add_fix_commit", "source": "complete", "dest": "active"},
+    {"trigger": "add_fix_commit", "source": "ready_to_merge", "dest": "active"},
     {"trigger": "add_fix_commit", "source": "pr_open", "dest": "active"},
 
     # Close workstream (abandon path)
@@ -100,7 +108,8 @@ TRANSITIONS = [
     {"trigger": "close", "source": "implementing", "dest": "closed"},
     {"trigger": "close", "source": "awaiting_human_review", "dest": "closed"},
     {"trigger": "close", "source": "human_rejected", "dest": "closed"},
-    {"trigger": "close", "source": "complete", "dest": "closed"},
+    {"trigger": "close", "source": "ready_to_merge", "dest": "closed"},
+    {"trigger": "close", "source": "awaiting_final_decision", "dest": "closed"},
     {"trigger": "close", "source": "pr_open", "dest": "closed"},
     {"trigger": "close", "source": "pr_approved", "dest": "closed"},
 

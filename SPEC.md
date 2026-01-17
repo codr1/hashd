@@ -376,9 +376,10 @@ REVIEW_TIMEOUT=600                  # Claude review timeout (default: 600 = 10 m
 TEST_TIMEOUT=300                    # Test suite timeout (default: 300 = 5 min)
 BREAKDOWN_TIMEOUT=180               # Story breakdown timeout (default: 180 = 3 min)
 
-# Review mode
-SUPERVISED_MODE=false               # true = require human approval for every commit
-                                    # false = auto-approve if AI review passes (gatekeeper mode)
+# Review mode (deprecated - use escalation.json instead)
+# SUPERVISED_MODE is deprecated. Autonomy is now configured in escalation.json:
+#   "autonomy": "supervised" | "gatekeeper" | "autonomous"
+# See WF.md for details on autonomy modes and confidence thresholds.
 
 # Merge workflow
 MERGE_MODE=github_pr                # How to merge completed workstreams:

@@ -34,7 +34,8 @@ class WorkstreamState(Enum):
     HUMAN_REJECTED = "human_rejected"
 
     # Completion states
-    COMPLETE = "complete"
+    READY_TO_MERGE = "ready_to_merge"
+    AWAITING_FINAL_DECISION = "awaiting_final_decision"
 
     # Merge workflow states
     MERGING = "merging"

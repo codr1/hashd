@@ -904,8 +904,8 @@ def stage_human_review(ctx: RunContext):
 
     Uses confidence-based decision logic:
     - Supervised: Always pause (show confidence as info)
-    - Gatekeeper: Always pause (human approval required before PR/merge)
-    - Autonomous: Auto-continue if confidence >= threshold
+    - Gatekeeper: Auto-continue if confidence >= 90% (high bar for unattended operation)
+    - Autonomous: Auto-continue if confidence >= threshold (default 70%)
 
     Sensitive paths (auth/*, *.env) increase the required threshold.
 
@@ -950,8 +950,13 @@ def stage_human_review(ctx: RunContext):
         # Always pause in supervised mode
         reason = f"Supervised mode (confidence: {confidence:.0%})"
     elif autonomy == "gatekeeper":
-        # Gatekeeper always requires human approval before PR/merge
-        reason = f"Gatekeeper mode - human approval required (confidence: {confidence:.0%})"
+        # Gatekeeper: auto-continue if confidence >= 90% (high bar for unattended operation)
+        gatekeeper_threshold = max(threshold, 0.90)
+        if confidence >= gatekeeper_threshold:
+            should_auto_continue = True
+            ctx.log(f"Auto-continuing: confidence {confidence:.0%} >= {gatekeeper_threshold:.0%} (gatekeeper mode)")
+        else:
+            reason = f"Gatekeeper mode: confidence {confidence:.0%} < {gatekeeper_threshold:.0%} required"
     elif autonomy == "autonomous":
         if confidence >= threshold:
             should_auto_continue = True

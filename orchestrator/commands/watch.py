@@ -119,7 +119,7 @@ def _get_workstream_stage(ws: Workstream, workstream_dir: Path) -> str:
 
     if ws.status == "awaiting_human_review":
         return "REVIEW"
-    elif ws.status == "complete":
+    elif ws.status == "ready_to_merge":
         return "COMPLETE"
     elif ws.status == "blocked":
         return "BLOCKED"
@@ -722,7 +722,7 @@ class DashboardWidget(Static):
                     status_str = "[magenta]PR open[/magenta]"
                 elif ws.status == STATUS_PR_APPROVED:
                     status_str = "[green]PR ready[/green]"
-                elif ws.status == "complete":
+                elif ws.status == "ready_to_merge":
                     status_str = "[green]done[/green]"
                 elif ws.status == "blocked":
                     status_str = "[red]blocked[/red]"
@@ -920,7 +920,7 @@ class StatusWidget(Static):
             lines.append(f"Commit: {microcommit}")
 
             # Show stage only when not complete (complete means all done, stage is irrelevant)
-            if ws.status != "complete":
+            if ws.status != "ready_to_merge":
                 stages = self.last_run.get("stages", {})
 
                 # Find first failed stage (if any)
@@ -1274,17 +1274,17 @@ class DetailScreen(Screen):
             # In PR states: generate fix commit from PR feedback
             return status in ("awaiting_human_review", STATUS_PR_OPEN, STATUS_PR_APPROVED)
         if action == "merge":
-            return status == "complete"
+            return status == "ready_to_merge"
         if action == "create_pr":
             # Only show if complete AND no PR exists yet
-            return status == "complete" and not self.workstream.pr_number
+            return status == "ready_to_merge" and not self.workstream.pr_number
         if action == "open_pr":
             return status in (STATUS_PR_OPEN, STATUS_PR_APPROVED)
         if action == "edit":
             if is_running:
                 return False
             # In complete state: only if there are pending microcommits
-            if status == "complete":
+            if status == "ready_to_merge":
                 return any(not done for _, _, done in self._last_microcommits)
             # In review state: not available (use approve/reject)
             if status == "awaiting_human_review":
@@ -1293,7 +1293,7 @@ class DetailScreen(Screen):
             return True
         if action in ("reset", "go_run"):
             # Not available when running or in terminal states
-            if is_running or status in ("complete", STATUS_PR_OPEN, STATUS_PR_APPROVED):
+            if is_running or status in ("ready_to_merge", STATUS_PR_OPEN, STATUS_PR_APPROVED):
                 return False
             return True
         if action == "answer_clq":
@@ -1491,7 +1491,7 @@ class DetailScreen(Screen):
             bindings.extend([("r", "reject"), ("o", "open PR"), ("a", "merge"), ("d", "diff"), ("l", "log")])
         elif status == STATUS_PR_APPROVED:
             bindings.extend([("a", "merge"), ("r", "reject"), ("o", "open PR"), ("d", "diff"), ("l", "log")])
-        elif status == "complete":
+        elif status == "ready_to_merge":
             # Show [P] pr if no PR exists yet, otherwise [m] merge
             if self.workstream.pr_number:
                 bindings.append(("m", "merge"))
@@ -1780,7 +1780,7 @@ class DetailScreen(Screen):
         if self.workstream.status == "awaiting_human_review":
             self.notify("Use approve/reject for review", severity="warning")
             return
-        if self.workstream.status == "complete":
+        if self.workstream.status == "ready_to_merge":
             self.notify("Select a pending microcommit to edit", severity="warning")
             return
 
@@ -1970,7 +1970,7 @@ class DetailScreen(Screen):
             self.notify("Approve or reject first", severity="warning")
             return
 
-        if self.workstream.status == "complete":
+        if self.workstream.status == "ready_to_merge":
             self.notify("Workstream is complete", severity="warning")
             return
 

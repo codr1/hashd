@@ -76,6 +76,18 @@ Replace exception-based stage control flow with explicit return values.
 - Changes: All stage functions, `run_stage()`, `run_once()`, `engine.py` dispatch logic
 - Benefit: No exceptions for control flow, explicit outcomes, easier to test
 
+### Documentation Asset Management
+Automated tracking and updating of documentation when code changes.
+- [ ] Detect when code changes affect documented behavior
+- [ ] Flag stale documentation during AI review
+- [ ] Optionally auto-update WF.md/README when significant changes land
+- [ ] Track doc version alignment with code state
+
+### Deprecation Cleanup
+Remove deprecated code paths and update documentation.
+- [ ] Remove `wf docs show` / `wf docs diff` commands (were stub implementations)
+- [ ] Update docs to reference `escalation.json` instead of `SUPERVISED_MODE` env var
+
 ### Infrastructure
 - Integration tests (after design stabilizes)
 

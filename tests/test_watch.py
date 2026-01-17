@@ -103,10 +103,10 @@ class TestGetWorkstreamStage:
         ws = self._make_workstream("awaiting_human_review")
         assert _get_workstream_stage(ws, tmp_path) == "REVIEW"
 
-    def test_complete_status(self, tmp_path):
-        """complete maps to COMPLETE."""
+    def test_ready_to_merge_status(self, tmp_path):
+        """ready_to_merge maps to COMPLETE."""
         (tmp_path / "plan.md").write_text("### COMMIT-TEST-001: Test\nDone: [x]")
-        ws = self._make_workstream("complete")
+        ws = self._make_workstream("ready_to_merge")
         assert _get_workstream_stage(ws, tmp_path) == "COMPLETE"
 
     def test_blocked_status(self, tmp_path):

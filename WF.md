@@ -5,11 +5,24 @@
 | Mode | Flag | Description |
 |------|------|-------------|
 | **supervised** | `--supervised` | Human approves at each gate |
-| **gatekeeper** | `--gatekeeper` | Auto-continue if AI confidence >= 70% (default) |
+| **gatekeeper** | `--gatekeeper` | Auto-continue if AI confidence >= 90% (default) |
 | **autonomous** | `--autonomous` | Auto-continue commits + auto-merge if thresholds met |
 
 Mode is set per-project via `wf interview` or `escalation.json`.
 Override per-run: `wf run --supervised`, `wf run --gatekeeper`, or `wf run --autonomous`
+
+### Confidence Scoring
+
+AI reviews include a confidence score (0.0-1.0) that influences auto-continue decisions:
+
+| Range | Meaning |
+|-------|---------|
+| 0.9-1.0 | Highly confident - solid code, well-tested patterns |
+| 0.7-0.9 | Confident - standard implementation, minor concerns |
+| 0.5-0.7 | Moderate - some uncertainty, review recommended |
+| 0.0-0.5 | Low - significant concerns, human review required |
+
+Sensitive paths (auth/*, *.env, security/*, migrations/*) boost the required threshold by 15%.
 
 ---
 
@@ -198,10 +211,10 @@ Options:
 |                                                              |
 |  [AI] Auto-reject + iterate if:                              |
 |       - Review decision = "request_changes"                  |
-|       - Retry up to 3 times                                  |
+|       - Retry up to 5 times                                  |
 |                                                              |
 |  [AI] Escalate to HITL if:                                   |
-|       - 3 retries exhausted                                  |
+|       - 5 retries exhausted                                  |
 |       - Clarification needed                                 |
 |                                                              |
 +-------------------------------------------------------------+
@@ -367,7 +380,7 @@ Options:
 | `wf pr [id]` | Create GitHub PR (github_pr mode only) |
 | `wf pr feedback [id]` | View PR comments from GitHub |
 | `wf merge [id] [--push]` | Merge to main and archive |
-| `wf close [id] [--force] [--keep-branch]` | Abandon story or workstream |
+| `wf close [id] [--force] [--keep-branch] [--no-changes]` | Abandon story or workstream (--no-changes for investigation complete) |
 | `wf skip [id] [commit] [-m ".."]` | Mark commit as done without changes |
 | `wf reset [id] [--force] [--hard]` | Reset workstream to start fresh |
 
@@ -439,7 +452,7 @@ The `wf watch` TUI provides context-sensitive keybindings based on workstream st
 | `d` | View diff |
 | `l` | View log |
 
-### Status: complete (pre-PR)
+### Status: ready_to_merge (pre-PR)
 
 | Key | Action |
 |-----|--------|
@@ -464,6 +477,18 @@ The `[r] reject` action in PR states:
 2. User edits/confirms feedback (cannot submit empty)
 3. Creates fix commit (COMMIT-xxx-FIX-NNN)
 4. Use `[g] go` to run and implement the fixes
+
+### Global Keybindings (all screens)
+
+| Key | Action |
+|-----|--------|
+| `?` | Show help (context-aware shortcuts) |
+| `/` | Open command palette |
+| `Ctrl+t` | Toggle dark/light theme |
+| `Ctrl+s` | Save screenshot |
+| `1-9` | Quick-select workstream (dashboard) |
+| `q` | Back / Quit |
+| `Esc` | Back to previous screen |
 
 ---
 
@@ -597,13 +622,15 @@ conflicts  success         +------+------+
                             |
                             v
                        +--------+
-                       | merged |
-                       +---+----+
-                            |
-                            v
-                     +------------+
-                     |  archived  |
-                     +------------+
+                       | merged |  (terminal - workstream moved to _closed/)
+                       +--------+
+
+ABANDON PATH (from any non-terminal state):
+  wf close -> closed
+  wf close --no-changes -> closed_no_changes
+
+REJECT PATH (at human_review gate):
+  reject -> human_rejected -> (fix) -> active
 ```
 
 ---
@@ -643,10 +670,10 @@ cleanup cannot be lost during rebase conflicts.
 
 | Stage | Max Retries | On Exhaust |
 |-------|-------------|------------|
-| Implement/Test/Review loop | 3 | HITL |
-| Final Review fixes | 3 | HITL |
-| Merge conflict resolution | 3 | HITL |
-| PR auto-rebase | 3 | HITL |
+| Implement/Test/Review loop | 5 | HITL |
+| Final Review fixes | 5 | HITL |
+| Merge conflict resolution | 5 | HITL |
+| PR auto-rebase | 5 | HITL |
 
 ### Automatic Transient Failure Retries (Prefect)
 

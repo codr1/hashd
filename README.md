@@ -410,7 +410,7 @@ MERGE_GATE_TEST_CMD="make test"  # Full test suite at merge gate (defaults to TE
 
 # Merge Settings
 MERGE_MODE="local"            # "local" or "github_pr"
-SUPERVISED_MODE="false"       # See "Autonomy Modes" below
+# Note: Autonomy mode is now configured in escalation.json, not here
 
 # Timeouts (seconds)
 IMPLEMENT_TIMEOUT="1200"      # Codex timeout
@@ -423,14 +423,24 @@ BREAKDOWN_TIMEOUT="180"       # Claude breakdown generation timeout
 
 ### Autonomy Modes
 
-Hashd currently supports two modes controlled by `SUPERVISED_MODE`:
+Autonomy is configured per-project via `wf interview` or directly in `escalation.json`:
 
-| Mode | Setting | Behavior |
-|------|---------|----------|
-| **Gatekeeper** | `false` (default) | Runs autonomously between gates, blocks at human checkpoints (clarifications, merge gate) |
-| **Supervised** | `true` | Also pauses after breakdown for human review of plan.md |
+| Mode | Behavior |
+|------|----------|
+| **supervised** | Human approves at each gate |
+| **gatekeeper** (default) | Auto-continue if AI confidence >= 90%, human approves at merge |
+| **autonomous** | Auto-continue commits + auto-merge if thresholds met |
 
-Default is gatekeeper mode - the pipeline runs autonomously but requires human approval at gates.
+Override per-run: `wf run --supervised`, `wf run --gatekeeper`, or `wf run --autonomous`
+
+**escalation.json example:**
+```json
+{
+  "autonomy": "gatekeeper",
+  "commit_confidence_threshold": 0.7,
+  "merge_confidence_threshold": 0.8
+}
+```
 
 ## Merge Behavior
 

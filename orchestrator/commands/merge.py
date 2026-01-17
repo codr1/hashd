@@ -649,7 +649,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         if result.stdout.strip():
             print("ERROR: Uncommitted changes in worktree")
             print(result.stdout)
-            transition(workstream_dir, WorkstreamState.COMPLETE, reason="merge aborted - uncommitted changes")
+            transition(workstream_dir, WorkstreamState.READY_TO_MERGE, reason="merge aborted - uncommitted changes")
             return EXIT_INVALID_STATE
 
     # 2.4 Update SPEC.md (before merge, so it's in the commit)
@@ -670,7 +670,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     )
     if result.returncode != 0 or result.stdout.strip() == "0":
         print("ERROR: No commits to merge (branch is not ahead of base)")
-        transition(workstream_dir, WorkstreamState.COMPLETE, reason="merge aborted - no commits")
+        transition(workstream_dir, WorkstreamState.READY_TO_MERGE, reason="merge aborted - no commits")
         return EXIT_INVALID_STATE
 
     commit_count = result.stdout.strip()
@@ -682,7 +682,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         if not ws.pr_number:
             print("ERROR: No PR exists for this workstream")
             print(f"  Create one first: wf pr {ws_id}")
-            transition(workstream_dir, WorkstreamState.COMPLETE, reason="merge aborted - no PR")
+            transition(workstream_dir, WorkstreamState.READY_TO_MERGE, reason="merge aborted - no PR")
             return EXIT_ERROR
 
         # PR exists - push updates and check status
@@ -690,7 +690,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         push_result = _run_git(["git", "push"], git_cwd)
         if push_result.returncode != 0:
             print(f"ERROR: Push failed: {push_result.stderr.strip()}")
-            transition(workstream_dir, WorkstreamState.COMPLETE, reason="merge aborted - push failed")
+            transition(workstream_dir, WorkstreamState.READY_TO_MERGE, reason="merge aborted - push failed")
             return EXIT_ERROR
         transition(workstream_dir, WorkstreamState.PR_OPEN, reason="pushed for PR review")
         return _handle_pr_open(args, ops_dir, project_config, ws, workstream_dir, workstreams_dir)
@@ -742,7 +742,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             return EXIT_BLOCKED
 
         if merge_result == "failed":
-            transition(workstream_dir, WorkstreamState.COMPLETE, reason="merge failed")
+            transition(workstream_dir, WorkstreamState.READY_TO_MERGE, reason="merge failed")
             return EXIT_ERROR
 
         # Merge succeeded - update status IMMEDIATELY

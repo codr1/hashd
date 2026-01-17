@@ -18,7 +18,8 @@ class TestFSMStates:
         """All expected states should be defined."""
         expected = [
             "active", "implementing", "awaiting_human_review",
-            "human_rejected", "complete", "merging", "merge_conflicts",
+            "human_rejected", "ready_to_merge", "awaiting_final_decision",
+            "merging", "merge_conflicts",
             "pr_open", "pr_approved", "merged", "closed", "closed_no_changes"
         ]
         assert set(STATES) == set(expected)
@@ -76,7 +77,7 @@ class TestFSMBasic:
         assert 'STATUS="implementing"' in content
 
     def test_full_happy_path(self, ws_dir):
-        """Test a complete flow through states."""
+        """Test a ready_to_merge flow through states."""
         fsm = WorkstreamFSM(ws_dir)
 
         # Start implementing
@@ -93,7 +94,7 @@ class TestFSMBasic:
 
         # All commits done
         fsm.all_commits_done()
-        assert fsm.state == "complete"
+        assert fsm.state == "ready_to_merge"
 
         # Create PR
         fsm.create_pr()

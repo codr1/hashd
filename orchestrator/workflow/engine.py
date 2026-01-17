@@ -328,9 +328,9 @@ def handle_all_commits_complete(
             elif pr_status.state == "merged":
                 transition(workstream_dir, WorkstreamState.MERGED, reason="PR already merged")
             else:
-                transition(workstream_dir, WorkstreamState.COMPLETE, reason="PR closed")
+                transition(workstream_dir, WorkstreamState.READY_TO_MERGE, reason="PR closed")
         else:
-            transition(workstream_dir, WorkstreamState.COMPLETE, reason="all commits done")
+            transition(workstream_dir, WorkstreamState.READY_TO_MERGE, reason="all commits done")
         exit_code = _run_final_review_and_exit(workstream_dir, project_config, ws_id, verbose)
         return "return", exit_code
     elif gate_status == "fixed":
@@ -392,6 +392,8 @@ def _run_final_review_and_exit(
         notify_complete(ws_id)
     else:
         print("Final review: CONCERNS")
+        # Transition to awaiting_final_decision state
+        transition(workstream_dir, WorkstreamState.AWAITING_FINAL_DECISION, reason="final review concerns")
         print(f"\nReview the concerns above, then: wf merge {ws_id}")
         notify_awaiting_review(ws_id)
     return 0

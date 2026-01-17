@@ -136,7 +136,7 @@ class TestCanTransition:
     def test_can_transition_valid(self, ws_dir):
         """Should return True for valid transitions."""
         assert can_transition(ws_dir, WorkstreamState.IMPLEMENTING) is True
-        assert can_transition(ws_dir, WorkstreamState.COMPLETE) is True
+        assert can_transition(ws_dir, WorkstreamState.READY_TO_MERGE) is True
 
     def test_can_transition_invalid(self, ws_dir):
         """Should return False for invalid transitions."""
