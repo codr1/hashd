@@ -11,6 +11,8 @@ from orchestrator.lib.config import (
     load_workstream,
     set_current_workstream,
 )
+from orchestrator.workflow.state_machine import transition, WorkstreamState
+from orchestrator.lib.constants import EXIT_SUCCESS, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_INVALID_STATE
 
 
 def analyze_staleness(repo_path: Path, branch: str, base_sha: str, default_branch: str):
@@ -129,12 +131,12 @@ def cmd_open(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     if not closed_dir.exists():
         print(f"ERROR: Archived workstream '{ws_id}' not found")
         print(f"  Use 'wf archive' to list archived workstreams")
-        return 2
+        return EXIT_NOT_FOUND
 
     # 2. Check not already active
     if active_dir.exists():
         print(f"ERROR: Workstream '{ws_id}' already exists as active")
-        return 2
+        return EXIT_INVALID_STATE
 
     # 3. Load metadata
     ws = load_workstream(closed_dir)
@@ -148,7 +150,7 @@ def cmd_open(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     if result.returncode != 0:
         print(f"ERROR: Branch '{ws.branch}' no longer exists")
         print(f"  Was it deleted with 'wf archive delete {ws_id}'?")
-        return 1
+        return EXIT_ERROR
 
     # 5. Analyze staleness
     commits_behind, overlap, main_lines_changed, file_details = analyze_staleness(
@@ -169,10 +171,10 @@ def cmd_open(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             response = input("\nProceed anyway? [y/N]: ").strip().lower()
             if response not in ('y', 'yes'):
                 print("Aborted.")
-                return 1
+                return EXIT_ERROR
         except (EOFError, KeyboardInterrupt):
             print("\nAborted.")
-            return 1
+            return EXIT_ERROR
 
     print("\nReopening...")
 
@@ -195,16 +197,17 @@ def cmd_open(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     )
     if result.returncode != 0:
         print(f"ERROR: Failed to create worktree: {result.stderr}")
-        return 1
+        return EXIT_ERROR
 
-    # 8. Update meta.env - set STATUS back to active, update WORKTREE path
+    # 8. Update meta.env - update WORKTREE path and remove CLOSED_AT
+    # Note: STATUS is preserved here; FSM transition() updates it after directory move
     meta_path = closed_dir / "meta.env"
     content = meta_path.read_text()
     lines = content.splitlines()
     new_lines = []
     for line in lines:
         if line.startswith("STATUS="):
-            new_lines.append('STATUS="active"')
+            new_lines.append(line)
         elif line.startswith("WORKTREE="):
             new_lines.append(f'WORKTREE="{worktree_path}"')
         elif line.startswith("CLOSED_AT="):
@@ -217,7 +220,10 @@ def cmd_open(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     # 9. Move directory back to active
     shutil.move(str(closed_dir), str(active_dir))
 
-    # 10. Optionally set as current workstream
+    # 10. Transition to active via FSM (validates transition from closed -> active)
+    transition(active_dir, WorkstreamState.ACTIVE, reason="reopening workstream")
+
+    # 11. Optionally set as current workstream
     if getattr(args, 'use', False):
         set_current_workstream(ops_dir, ws_id)
         print(f"\nWorkstream '{ws_id}' reopened and set as current.")
@@ -230,4 +236,4 @@ def cmd_open(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     if severity in ("moderate", "high", "critical"):
         print(f"\n  Note: You may need to resolve conflicts with main.")
 
-    return 0
+    return EXIT_SUCCESS

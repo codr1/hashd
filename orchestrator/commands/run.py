@@ -1,28 +1,31 @@
 """
-wf run - Execute the run loop with retry and human gate.
+wf run - Execute workstream via Prefect flow orchestration.
 """
 
-import json
+import asyncio
 import logging
 import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from prefect.exceptions import PrefectException
+
 from orchestrator.lib.config import ProjectConfig, load_project_profile, load_workstream
-from orchestrator.lib.constants import MAX_WS_ID_LEN, WS_ID_PATTERN
-from orchestrator.lib.planparse import parse_plan, get_next_microcommit
+from orchestrator.lib.constants import (
+    MAX_WS_ID_LEN, WS_ID_PATTERN,
+    EXIT_SUCCESS, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_TOOL_MISSING,
+)
 from orchestrator.lib.agents_config import load_agents_config, validate_stage_binaries
 from orchestrator.pm.stories import load_story, lock_story
 from orchestrator.pm.planner import slugify_for_ws_id
 from orchestrator.runner.locking import (
-    workstream_lock, LockTimeout, count_running_workstreams,
+    count_running_workstreams,
     cleanup_stale_lock_files, CONCURRENCY_WARNING_THRESHOLD
 )
-from orchestrator.runner.context import RunContext
-from orchestrator.runner.git_utils import has_uncommitted_changes
-from orchestrator.notifications import notify_awaiting_review, notify_blocked, notify_failed
-from orchestrator.workflow.engine import run_once, run_loop, handle_all_commits_complete
+from orchestrator.lib.prefect_server import ensure_prefect_infrastructure
+from orchestrator.workflow.deployable_flow import trigger_run
+from orchestrator.workflow.deployment import get_running_flow
 
 logger = logging.getLogger(__name__)
 
@@ -220,47 +223,27 @@ def _generate_plan_from_story(story) -> str:
 
 
 def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
-    """Execute the run loop."""
+    """Execute workstream via Prefect flow orchestration."""
+    # Ensure Prefect server and worker are running
+    try:
+        ensure_prefect_infrastructure()
+    except RuntimeError as e:
+        print(f"ERROR: {e}")
+        return EXIT_ERROR
+
     ws_id = args.id
     workstream_dir = ops_dir / "workstreams" / ws_id
 
     if not workstream_dir.exists():
         print(f"ERROR: Workstream '{ws_id}' not found")
-        return 2
+        return EXIT_NOT_FOUND
 
-    workstream = load_workstream(workstream_dir)
-
-    if getattr(args, 'feedback', None):
-        approval_file = workstream_dir / "human_approval.json"
-        approval_file.write_text(json.dumps({
-            "action": "reject",
-            "feedback": args.feedback,
-            "reset": False
-        }))
-        print("Injected feedback for this run")
+    # Validate workstream can be loaded
+    load_workstream(workstream_dir)
 
     project_dir = ops_dir / "projects" / project_config.name
-    try:
-        profile = load_project_profile(project_dir)
-    except FileNotFoundError:
-        from orchestrator.lib.config import ProjectProfile
-        from orchestrator.lib.github import get_default_merge_mode
-        profile = ProjectProfile(
-            test_cmd="make test",
-            build_cmd="make build",
-            merge_gate_test_cmd="make test",
-            build_runner="make",
-            makefile_path="Makefile",
-            build_target="build",
-            test_target="test",
-            merge_gate_test_target="test",
-            implement_timeout=1200,
-            review_timeout=900,
-            test_timeout=300,
-            breakdown_timeout=180,
-            merge_mode=get_default_merge_mode(),
-        )
 
+    # Determine autonomy mode
     autonomy_override = None
     if getattr(args, 'gatekeeper', False):
         autonomy_override = "gatekeeper"
@@ -269,6 +252,7 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     elif getattr(args, 'autonomous', False):
         autonomy_override = "autonomous"
 
+    # Check for uncommitted changes in main repo
     result = subprocess.run(
         ["git", "-C", str(project_config.repo_path), "status", "--porcelain"],
         capture_output=True, text=True
@@ -284,7 +268,6 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     # Check that required tool binaries are available
     agents_config = load_agents_config(project_dir)
-    # Check stages used in the run loop
     check_result = validate_stage_binaries(
         agents_config,
         ["breakdown", "implement", "implement_resume", "review", "review_resume"]
@@ -293,84 +276,59 @@ def cmd_run(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         print(f"ERROR: {check_result.error_message}")
         print()
         print(f"Config file location: {project_dir / 'agents.yaml'}")
-        return 4
+        return EXIT_TOOL_MISSING
 
     running_count = count_running_workstreams(ops_dir)
     if running_count >= CONCURRENCY_WARNING_THRESHOLD:
         print(f"WARNING: {running_count} workstreams already running (threshold: {CONCURRENCY_WARNING_THRESHOLD})")
         print("Consider waiting for some to complete to avoid API rate limits")
 
-    print(f"Acquiring lock for {ws_id}...")
+    # Idempotency check: don't start duplicate flows
     try:
-        with workstream_lock(ops_dir, ws_id):
-            print(f"Lock acquired")
+        existing_flow = asyncio.run(get_running_flow(ws_id))
+        if existing_flow:
+            print(f"Flow {existing_flow} running.")
+            print(f"  Use 'wf show {ws_id}' or 'wf watch' to monitor execution")
+            return EXIT_SUCCESS
+    except Exception as e:
+        # If we can't check, proceed with caution (will fail on duplicate anyway)
+        logger.debug(f"Could not check for existing flow: {e}")
 
-            if args.loop:
-                return run_loop(ops_dir, project_config, profile, workstream, workstream_dir, ws_id, args.verbose, autonomy_override)
-            else:
-                ctx = RunContext.create(ops_dir, project_config, profile, workstream, workstream_dir, args.verbose, autonomy_override)
-                print(f"Run ID: {ctx.run_id}")
+    # Trigger flow via Prefect
+    run_id = f"{ws_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-                status, exit_code, failed_stage = run_once(ctx)
+    print(f"Starting workstream run: {ws_id}")
+    print(f"  Run ID: {run_id}")
 
-                if status == "passed":
-                    plan_path = workstream_dir / "plan.md"
-                    commits = parse_plan(str(plan_path))
-                    if get_next_microcommit(commits) is None:
-                        action, code = handle_all_commits_complete(
-                            ctx, workstream_dir, project_config, ws_id, args.verbose, in_loop=False
-                        )
-                        if action == "return":
-                            return code
+    try:
+        # Determine loop mode: --once means single iteration, default is loop
+        should_loop = not getattr(args, 'once', False)
 
-                if status == "blocked":
-                    select_reason = ctx.stages.get("select", {}).get("notes", "")
-                    if select_reason == "all_complete":
-                        action, code = handle_all_commits_complete(
-                            ctx, workstream_dir, project_config, ws_id, args.verbose, in_loop=False
-                        )
-                        if action == "return":
-                            return code
+        # Get initial feedback if provided
+        initial_feedback = getattr(args, 'feedback', None) or ""
 
-                    reason = ctx.stages.get("human_review", {}).get("notes", "")
-                    if "human approval" in reason.lower():
-                        notify_awaiting_review(ws_id)
-                    else:
-                        notify_blocked(ws_id, reason)
-                elif status == "failed":
-                    notify_failed(ws_id, failed_stage or "unknown")
+        flow_run_id = asyncio.run(trigger_run(
+            workstream_id=ws_id,
+            ops_dir=ops_dir,
+            project_name=project_config.name,
+            run_id=run_id,
+            autonomy_override=autonomy_override,
+            verbose=args.verbose,
+            loop=should_loop,
+            initial_feedback=initial_feedback,
+        ))
 
-                hr_notes = ctx.stages.get("human_review", {}).get("notes", "")
-                if status == "blocked" and "human approval" in hr_notes.lower():
-                    print(f"\nResult: waiting for human")
-                else:
-                    print(f"\nResult: {status}")
-                print(f"Run directory: {ctx.run_dir}")
+        print(f"  Flow run ID: {flow_run_id}")
+        print()
+        print(f"Flow submitted to Prefect worker.")
+        print(f"  Monitor: wf watch {ws_id}")
+        return EXIT_SUCCESS
 
-                if status == "blocked":
-                    if "human approval" in hr_notes.lower():
-                        print(f"\nNext steps:")
-                        print(f"  wf show {ws_id}              # Review changes")
-                        print(f"  wf diff {ws_id}              # See the diff")
-                        print(f"  wf approve {ws_id}")
-                        print(f"  wf reject {ws_id} -f '...'")
-                        print(f"  wf reject {ws_id} --reset")
-                elif status == "failed":
-                    print(f"\nFailed at stage: {failed_stage or 'unknown'}")
-                    stage_notes = ctx.stages.get(failed_stage, {}).get("notes", "")
-                    if stage_notes:
-                        print(f"  Error: {stage_notes}")
-                    print(f"  Log: {ctx.run_dir}/stages/{failed_stage}.log")
-
-                if status in ("failed", "blocked") and has_uncommitted_changes(ctx.workstream.worktree):
-                    if not (status == "blocked" and "human approval" in hr_notes.lower()):
-                        print(f"\nUncommitted changes remain in worktree.")
-                        print(f"  To retry with changes: wf run {ws_id}")
-                        print(f"  To start fresh:        wf reset {ws_id}")
-
-                return exit_code
-
-    except LockTimeout:
-        print(f"ERROR: Could not acquire lock for {ws_id} (timeout)")
-        print("Another run may be active for this workstream")
-        return 3
+    except PrefectException as e:
+        logger.error(f"Failed to trigger flow run: {e}")
+        print(f"ERROR: Prefect error triggering flow run: {e}")
+        return EXIT_ERROR
+    except (ConnectionError, TimeoutError, OSError, RuntimeError) as e:
+        logger.error(f"Failed to trigger flow run: {e}")
+        print(f"ERROR: Failed to trigger flow run: {e}")
+        return EXIT_ERROR

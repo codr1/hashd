@@ -32,6 +32,8 @@ pytestdebug.log
 # =============================================================================
 # Runtime data (don't commit these - they contain project-specific data)
 # =============================================================================
+config/
+projects/
 workstreams/
 worktrees/
 runs/

@@ -4,17 +4,17 @@ Contains the core orchestration logic for running micro-commit cycles.
 Wrapped with Prefect @flow for observability and future state management.
 """
 
-import json
 import logging
 import subprocess
 from pathlib import Path
 from prefect import flow
 
 from orchestrator.lib.config import ProjectConfig, ProjectProfile, Workstream, load_workstream
+from orchestrator.lib.constants import STATUS_HUMAN_GATE_DONE
 from orchestrator.lib.review import load_review
 from orchestrator.lib.planparse import parse_plan, get_next_microcommit
 from orchestrator.lib.test_parser import parse_test_output, format_parsed_output
-from orchestrator.runner.stages import run_stage, StageError, StageResult
+from orchestrator.runner.stages import run_stage, StageError, StageResult, StageHumanGateProcessed
 from orchestrator.runner.impl.stages import (
     stage_load,
     stage_breakdown,
@@ -22,8 +22,8 @@ from orchestrator.runner.impl.stages import (
     stage_clarification_check,
     stage_human_review,
 )
-from orchestrator.runner.impl.state_files import update_workstream_status
-from orchestrator.lib.github import get_pr_status, STATUS_PR_OPEN, STATUS_MERGED
+from orchestrator.workflow.state_machine import transition, WorkstreamState
+from orchestrator.lib.github import get_pr_status
 from orchestrator.workflow.tasks import (
     task_implement,
     task_test,
@@ -75,11 +75,6 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
         except StageError as e:
             ctx.write_result("failed", e.stage)
             return "failed", e.exit_code, e.stage
-
-    # === Check for pending human approval (skip to commit) ===
-    skip_result = _check_pending_approval(ctx)
-    if skip_result:
-        return skip_result
 
     # === Check for uncommitted changes from previous run ===
     if has_uncommitted_changes(ctx.workstream.worktree):
@@ -193,6 +188,10 @@ def run_once(ctx: RunContext) -> tuple[str, int, str | None]:
             reason = ctx.stages.get("human_review", {}).get("notes", "unknown")
             ctx.write_result("blocked", blocked_reason=reason)
             return "blocked", 8, None
+    except StageHumanGateProcessed as e:
+        # Human gate was processed - exit so command can trigger new run
+        ctx.write_result(STATUS_HUMAN_GATE_DONE, blocked_reason=f"human_{e.action}")
+        return STATUS_HUMAN_GATE_DONE, 0, None
     except StageError as e:
         ctx.write_result("failed", e.stage)
         return "failed", e.exit_code, e.stage
@@ -315,8 +314,6 @@ def handle_all_commits_complete(
     gate_status, gate_code = run_merge_gate(ctx)
 
     if gate_status == "merge_ready":
-        # TODO(prefect): Status should be derived from reality, not stored.
-        # See DAS_PLAN.md "Prefect State Machine (Level 3)" for future fix.
         # Check if PR already exists - don't overwrite pr_open status
         ws = load_workstream(workstream_dir)
         if ws.pr_number:
@@ -327,13 +324,13 @@ def handle_all_commits_complete(
                 # Can't determine PR state - preserve current status, don't overwrite
                 logger.warning(f"Failed to check PR #{ws.pr_number}: {pr_status.error}")
             elif pr_status.state == "open":
-                update_workstream_status(workstream_dir, STATUS_PR_OPEN)
+                transition(workstream_dir, WorkstreamState.PR_OPEN, reason="PR is open")
             elif pr_status.state == "merged":
-                update_workstream_status(workstream_dir, STATUS_MERGED)
+                transition(workstream_dir, WorkstreamState.MERGED, reason="PR already merged")
             else:
-                update_workstream_status(workstream_dir, "complete")
+                transition(workstream_dir, WorkstreamState.COMPLETE, reason="PR closed")
         else:
-            update_workstream_status(workstream_dir, "complete")
+            transition(workstream_dir, WorkstreamState.COMPLETE, reason="all commits done")
         exit_code = _run_final_review_and_exit(workstream_dir, project_config, ws_id, verbose)
         return "return", exit_code
     elif gate_status == "fixed":
@@ -355,56 +352,6 @@ def handle_all_commits_complete(
 
 
 # --- Helper functions ---
-
-def _check_pending_approval(ctx: RunContext) -> tuple[str, int, str | None] | None:
-    """Check for pending human approval and skip to commit if approved.
-
-    Returns run result tuple if fast path taken, None otherwise.
-    """
-    approval_file = ctx.workstream_dir / "human_approval.json"
-    if not approval_file.exists():
-        return None
-
-    try:
-        approval = json.loads(approval_file.read_text())
-        if approval.get("action") != "approve":
-            return None
-
-        diff_result = subprocess.run(
-            ["git", "-C", str(ctx.workstream.worktree), "diff", "--quiet", "HEAD"],
-            capture_output=True
-        )
-        has_pending_changes = diff_result.returncode != 0
-
-        if not has_pending_changes:
-            ctx.log("Human approved but no pending changes - previous commit already made")
-            approval_file.unlink()
-            return None
-
-        ctx.log("Human already approved - skipping to commit")
-        approval_file.unlink()
-
-        for stage_name, stage_fn in [
-            ("qa_gate", task_qa_gate),
-            ("commit", task_commit),
-        ]:
-            try:
-                result = run_stage(ctx, stage_name, stage_fn)
-                if result == StageResult.BLOCKED:
-                    reason = ctx.stages.get(stage_name, {}).get("notes", "unknown")
-                    ctx.write_result("blocked", blocked_reason=reason)
-                    return "blocked", 8, None
-            except StageError as e:
-                ctx.write_result("failed", e.stage)
-                return "failed", e.exit_code, e.stage
-
-        ctx.write_result("passed")
-        ctx.log("Run complete: passed (fast path - human pre-approved)")
-        return "passed", 0, None
-
-    except (json.JSONDecodeError, IOError):
-        return None
-
 
 def _reset_worktree(worktree: Path) -> bool:
     """Reset uncommitted changes in worktree for clean retry."""

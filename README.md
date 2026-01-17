@@ -327,9 +327,27 @@ For PR states (`pr_open`, `pr_approved`):
 - Use `wf pr feedback` to view comments first
 - In `wf watch`, the `[r]` modal pre-fills with PR feedback for editing
 
-## Automatic Retries
+## Workflow Execution
 
-Hashd uses [Prefect](https://www.prefect.io/) to automatically retry transient failures:
+Hashd uses [Prefect](https://www.prefect.io/) for workflow orchestration:
+
+```bash
+# Start Prefect (required before using wf)
+wf server start    # Starts Prefect server and worker in background
+
+# Run a workstream
+wf run my_feature  # Submits to Prefect worker, returns immediately
+
+# Monitor progress
+wf watch my_feature  # Interactive TUI showing real-time progress
+wf show my_feature   # Show current status
+```
+
+The `wf run` command submits work to the Prefect worker and returns immediately. Use `wf watch` or `wf show` to monitor execution.
+
+### Automatic Retries
+
+Prefect automatically retries transient failures:
 
 | Stage | Retries | Delay | Handles |
 |-------|---------|-------|---------|
@@ -338,8 +356,6 @@ Hashd uses [Prefect](https://www.prefect.io/) to automatically retry transient f
 | review | 1 | 30s | Claude rate limits |
 | qa_gate | 1 | 5s | Validation errors |
 | update_state | 2 | 5s | Git push failures |
-
-This is transparent - `wf run` works exactly as before. Prefect handles retries automatically without any configuration.
 
 ## Requirements
 
@@ -531,6 +547,25 @@ To fix this, either:
   1. Install codex: https://github.com/openai/codex
   2. Create agents.yaml in your project directory to use a different tool:
      ...
+```
+
+## Local-Only Mode
+
+Hashd works without a git remote configured. When no `origin` remote exists:
+
+- Rebase checks are skipped (no fetch/rebase against remote main)
+- Conflict detection against remote is skipped
+- PR features are unavailable
+- Workstreams complete locally after tests pass
+
+This is useful for:
+- Local experimentation before pushing
+- Air-gapped development environments
+- Learning hashd without setting up a remote
+
+To enable full features later:
+```bash
+git remote add origin <url>
 ```
 
 ## License

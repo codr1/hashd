@@ -4,6 +4,7 @@ wf merge - Merge completed workstream to main and auto-archive.
 Handles merge conflicts with retry loop similar to implement/review cycle.
 """
 
+import logging
 import shutil
 import subprocess
 import time
@@ -23,9 +24,11 @@ from orchestrator.lib.config import (
 from orchestrator.runner.locking import global_lock
 from orchestrator.lib.github import (
     check_gh_cli,
+    check_gh_available,
     get_pr_status,
     create_github_pr,
     merge_github_pr,
+    fetch_pr_feedback,
     GIT_TIMEOUT_SECONDS,
     STATUS_PR_OPEN,
     STATUS_PR_APPROVED,
@@ -43,7 +46,10 @@ from orchestrator.pm.stories import (
 )
 from orchestrator.pm.reqs_annotate import delete_reqs_sections
 from orchestrator.commands.docs import run_docs_update
+from orchestrator.workflow.state_machine import transition, WorkstreamState
+from orchestrator.lib.constants import EXIT_SUCCESS, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_INVALID_STATE, EXIT_BLOCKED
 
+logger = logging.getLogger(__name__)
 
 MAX_CONFLICT_RESOLUTION_ATTEMPTS = 3
 
@@ -149,7 +155,7 @@ def _create_pr_and_wait(
         print()
         print("Or switch to local merge mode:")
         print("  Set MERGE_MODE=local in project_profile.env")
-        return 1
+        return EXIT_ERROR
 
     repo_path = project_config.repo_path
 
@@ -178,18 +184,18 @@ def _create_pr_and_wait(
 
     if not success:
         print(f"ERROR: {result}")
-        return 1
+        return EXIT_ERROR
 
     if pr_number is None:
         print(f"ERROR: Could not extract PR number from URL: {result}")
         print("  PR was created but cannot track it. Check GitHub manually.")
-        return 1
+        return EXIT_ERROR
 
     print(f"PR created: {result}")
 
     # Update workstream metadata
     _update_pr_metadata(workstream_dir, result, pr_number)
-    _update_status(workstream_dir, STATUS_PR_OPEN)
+    transition(workstream_dir, WorkstreamState.PR_OPEN, reason="PR created")
 
     print()
     print("Waiting for PR approval...")
@@ -201,7 +207,7 @@ def _create_pr_and_wait(
     print()
     print("Or use: wf watch to monitor PR status")
 
-    return 0
+    return EXIT_SUCCESS
 
 
 def _sync_local_main(repo_path: Path, default_branch: str) -> None:
@@ -279,7 +285,7 @@ def _handle_pr_open(
     if not ws.pr_number:
         print("ERROR: PR number not found in workstream metadata")
         print("  This shouldn't happen. Try closing and recreating the workstream.")
-        return 1
+        return EXIT_ERROR
 
     repo_path = project_config.repo_path
     print(f"Checking PR #{ws.pr_number} status...")
@@ -288,12 +294,13 @@ def _handle_pr_open(
 
     if status.error:
         print(f"ERROR: Failed to get PR status: {status.error}")
-        return 1
+        return EXIT_ERROR
 
     # Check if already merged (externally via GitHub UI)
     if status.state == "merged":
         print("PR already merged externally, completing archival...")
-        _update_status(workstream_dir, STATUS_MERGED)
+        transition(workstream_dir, WorkstreamState.MERGED, reason="PR merged externally")
+        _write_merged_at(workstream_dir)
         _sync_local_main(repo_path, project_config.default_branch)
         project_dir = ops_dir / "projects" / project_config.name
         story = find_story_by_workstream(project_dir, ws.id)
@@ -306,7 +313,7 @@ def _handle_pr_open(
     if status.state == "closed":
         print("PR was closed without merging.")
         print("  To reopen, use GitHub UI or create a new PR")
-        return 1
+        return EXIT_ERROR
 
     # Show current status
     review = status.review_decision or "PENDING"
@@ -324,7 +331,7 @@ def _handle_pr_open(
             print(f"  git fetch origin {project_config.default_branch}")
             print(f"  git rebase origin/{project_config.default_branch}")
             print("  git push --force-with-lease")
-            return 1
+            return EXIT_ERROR
 
         print("\nPR has conflicts, attempting auto-rebase...")
         worktree = workstreams_dir.parent / "worktrees" / ws.id
@@ -344,19 +351,19 @@ def _handle_pr_open(
                 print(f"  git fetch origin {default_branch}")
                 print(f"  git rebase origin/{default_branch}")
                 print("  git push --force-with-lease")
-                return 1
+                return EXIT_ERROR
         else:
             print(f"  Worktree not found at: {worktree}")
             print("  Manual rebase required")
-            return 1
+            return EXIT_ERROR
 
     # Check if changes requested - treat as rejection
     if review == "CHANGES_REQUESTED":
         print()
         print("Changes requested on PR - treating as rejection")
-        _update_status(workstream_dir, STATUS_ACTIVE)
+        transition(workstream_dir, WorkstreamState.ACTIVE, reason="PR changes requested")
         print(f"  Address feedback and run: wf run {ws.id}")
-        return 0
+        return EXIT_SUCCESS
 
     # Check if ready to merge - proceed directly without redundant status write
     # Allow merge when: APPROVED, PENDING (no review required), or None
@@ -374,7 +381,7 @@ def _handle_pr_open(
         print(f"  View: {ws.pr_url}")
     print(f"  Run: wf merge {ws.id}  (to check again)")
 
-    return 0
+    return EXIT_SUCCESS
 
 
 def _handle_pr_approved(
@@ -384,7 +391,7 @@ def _handle_pr_approved(
     """Handle workstream with approved PR - merge it."""
     if not ws.pr_number:
         print("ERROR: PR number not found in workstream metadata")
-        return 1
+        return EXIT_ERROR
 
     repo_path = project_config.repo_path
     print(f"Merging PR #{ws.pr_number}...")
@@ -393,10 +400,11 @@ def _handle_pr_approved(
 
     if not success:
         print(f"ERROR: {message}")
-        return 1
+        return EXIT_ERROR
 
     print("PR merged successfully!")
-    _update_status(workstream_dir, STATUS_MERGED)
+    transition(workstream_dir, WorkstreamState.MERGED, reason="PR merged via GitHub")
+    _write_merged_at(workstream_dir)
 
     _sync_local_main(repo_path, project_config.default_branch)
 
@@ -422,7 +430,7 @@ def cmd_pr(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     if not workstream_dir.exists():
         print(f"ERROR: Workstream '{ws_id}' not found")
-        return 2
+        return EXIT_NOT_FOUND
 
     ws = load_workstream(workstream_dir)
 
@@ -438,7 +446,7 @@ def cmd_pr(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         print("ERROR: wf pr only works with MERGE_MODE=github_pr")
         print(f"  Current mode: {profile.merge_mode}")
         print(f"  For local merge, use: wf merge {ws_id}")
-        return 1
+        return EXIT_ERROR
 
     # Check if PR already exists
     if ws.pr_number:
@@ -446,12 +454,12 @@ def cmd_pr(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         if ws.pr_url:
             print(f"  URL: {ws.pr_url}")
         print(f"\nTo merge: wf merge {ws_id}")
-        return 0
+        return EXIT_SUCCESS
 
     # Check if already merged
     if ws.status == STATUS_MERGED:
         print("Workstream already merged")
-        return 0
+        return EXIT_SUCCESS
 
     # Verify all micro-commits are complete
     plan_path = workstream_dir / "plan.md"
@@ -462,7 +470,7 @@ def cmd_pr(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print(f"ERROR: Not all micro-commits complete")
             print(f"  Next: {next_commit.id} - {next_commit.title}")
             print(f"  Use 'wf run {ws_id}' to complete remaining work")
-            return 2
+            return EXIT_INVALID_STATE
 
     # Check for uncommitted changes in worktree
     if ws.worktree and ws.worktree.exists():
@@ -470,7 +478,7 @@ def cmd_pr(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         if result.stdout.strip():
             print("ERROR: Uncommitted changes in worktree")
             print(result.stdout)
-            return 2
+            return EXIT_INVALID_STATE
 
     # Find story for PR body and SPEC update
     story = find_story_by_workstream(project_dir, ws.id)
@@ -486,7 +494,7 @@ def cmd_pr(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     )
     if result.returncode != 0 or result.stdout.strip() == "0":
         print("ERROR: No commits to create PR (branch is not ahead of base)")
-        return 2
+        return EXIT_INVALID_STATE
 
     commit_count = result.stdout.strip()
 
@@ -496,7 +504,7 @@ def cmd_pr(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     push_result = _run_git(["git", "push", "--force-with-lease", "-u", "origin", ws.branch], git_cwd)
     if push_result.returncode != 0:
         print(f"ERROR: Push failed: {push_result.stderr.strip()}")
-        return 1
+        return EXIT_ERROR
 
     # Create PR
     return _create_pr_and_wait(
@@ -516,31 +524,31 @@ def cmd_pr_feedback(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     if not workstream_dir.exists():
         print(f"ERROR: Workstream '{ws_id}' not found")
-        return 2
+        return EXIT_NOT_FOUND
 
     ws = load_workstream(workstream_dir)
 
     if not ws.pr_number:
         print("No PR exists for this workstream")
         print(f"  Create one first: wf pr {ws_id}")
-        return 1
+        return EXIT_ERROR
 
     # Check gh availability
     gh_ok, gh_msg = check_gh_available()
     if not gh_ok:
         print(f"ERROR: {gh_msg}")
-        return 1
+        return EXIT_ERROR
 
     print(f"Fetching feedback from PR #{ws.pr_number}...")
     feedback = fetch_pr_feedback(project_config.repo_path, ws.pr_number)
 
     if feedback.error:
         print(f"ERROR: {feedback.error}")
-        return 1
+        return EXIT_ERROR
 
     if not feedback.items:
         print(f"No review comments found on PR #{ws.pr_number}")
-        return 1
+        return EXIT_ERROR
 
     print(f"\n--- PR #{ws.pr_number} Review Comments ---\n")
     for item in feedback.items:
@@ -558,7 +566,7 @@ def cmd_pr_feedback(args, ops_dir: Path, project_config: ProjectConfig) -> int:
 
     print("---")
     print(f"\nTo create fix commit: wf reject {ws_id} -f 'description'")
-    return 0
+    return EXIT_SUCCESS
 
 
 def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
@@ -572,9 +580,9 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         closed_dir = workstreams_dir / "_closed" / ws_id
         if closed_dir.exists():
             print(f"Workstream '{ws_id}' already archived")
-            return 0
+            return EXIT_SUCCESS
         print(f"ERROR: Workstream '{ws_id}' not found")
-        return 2
+        return EXIT_NOT_FOUND
 
     ws = load_workstream(workstream_dir)
 
@@ -610,7 +618,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print(f"ERROR: Not all micro-commits complete")
             print(f"  Next: {next_commit.id} - {next_commit.title}")
             print(f"  Use 'wf run {ws_id}' to complete remaining work")
-            return 2
+            return EXIT_INVALID_STATE
 
     # Load escalation config for autonomy mode
     escalation_config = load_escalation_config(project_dir)
@@ -630,10 +638,10 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print("Commands:")
             print(f"  wf merge {ws.id} --confirm  # Proceed with merge")
             print(f"  wf diff {ws.id}             # Review changes")
-            return 0
+            return EXIT_SUCCESS
 
     # Set status to merging so watch shows progress
-    _update_status(workstream_dir, "merging")
+    transition(workstream_dir, WorkstreamState.MERGING, reason="starting merge")
 
     # 2. Verify no uncommitted changes in worktree
     if ws.worktree and ws.worktree.exists():
@@ -641,8 +649,8 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         if result.stdout.strip():
             print("ERROR: Uncommitted changes in worktree")
             print(result.stdout)
-            _update_status(workstream_dir, "complete")
-            return 2
+            transition(workstream_dir, WorkstreamState.COMPLETE, reason="merge aborted - uncommitted changes")
+            return EXIT_INVALID_STATE
 
     # 2.4 Update SPEC.md (before merge, so it's in the commit)
     # Find story now and pass to _archive_workstream to avoid duplicate lookup
@@ -662,8 +670,8 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
     )
     if result.returncode != 0 or result.stdout.strip() == "0":
         print("ERROR: No commits to merge (branch is not ahead of base)")
-        _update_status(workstream_dir, "complete")
-        return 2
+        transition(workstream_dir, WorkstreamState.COMPLETE, reason="merge aborted - no commits")
+        return EXIT_INVALID_STATE
 
     commit_count = result.stdout.strip()
 
@@ -674,17 +682,17 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         if not ws.pr_number:
             print("ERROR: No PR exists for this workstream")
             print(f"  Create one first: wf pr {ws_id}")
-            _update_status(workstream_dir, "complete")
-            return 1
+            transition(workstream_dir, WorkstreamState.COMPLETE, reason="merge aborted - no PR")
+            return EXIT_ERROR
 
         # PR exists - push updates and check status
         print(f"Pushing updates to PR #{ws.pr_number}...")
         push_result = _run_git(["git", "push"], git_cwd)
         if push_result.returncode != 0:
             print(f"ERROR: Push failed: {push_result.stderr.strip()}")
-            _update_status(workstream_dir, "complete")
-            return 1
-        _update_status(workstream_dir, STATUS_PR_OPEN)
+            transition(workstream_dir, WorkstreamState.COMPLETE, reason="merge aborted - push failed")
+            return EXIT_ERROR
+        transition(workstream_dir, WorkstreamState.PR_OPEN, reason="pushed for PR review")
         return _handle_pr_open(args, ops_dir, project_config, ws, workstream_dir, workstreams_dir)
 
     # Local merge workflow - acquire global lock to serialize merges
@@ -702,7 +710,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
             print("Options:")
             print(f"  cd {repo_path} && git stash     # Save changes for later")
             print(f"  cd {repo_path} && git checkout . # Discard changes")
-            return 2
+            return EXIT_INVALID_STATE
 
         # 4. Checkout main branch
         print(f"Checking out {project_config.default_branch}...")
@@ -710,7 +718,7 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         if result.returncode != 0:
             print(f"ERROR: Failed to checkout {project_config.default_branch}")
             print(result.stderr)
-            return 1
+            return EXIT_ERROR
 
         # 5. Pull latest (optional, only if remote exists)
         result = _run_git(["git", "remote"], repo_path)
@@ -727,19 +735,20 @@ def cmd_merge(args, ops_dir: Path, project_config: ProjectConfig) -> int:
         )
 
         if merge_result == "blocked":
-            _update_status(workstream_dir, "merge_conflicts")
+            transition(workstream_dir, WorkstreamState.MERGE_CONFLICTS, reason="merge conflicts detected")
             print(f"\nBlocked: merge conflicts require human resolution")
             print(f"  Resolve conflicts in {repo_path}")
             print(f"  Then run: wf merge {ws_id}")
-            return 8  # Blocked exit code
+            return EXIT_BLOCKED
 
         if merge_result == "failed":
-            _update_status(workstream_dir, "complete")
-            return 1
+            transition(workstream_dir, WorkstreamState.COMPLETE, reason="merge failed")
+            return EXIT_ERROR
 
         # Merge succeeded - update status IMMEDIATELY
         print(f"Merged: {merge_msg}")
-        _update_status(workstream_dir, STATUS_MERGED)
+        transition(workstream_dir, WorkstreamState.MERGED, reason="local merge completed")
+        _write_merged_at(workstream_dir)
 
     # 7. Archive (outside lock - doesn't touch main branch)
     return _archive_workstream(
@@ -882,7 +891,7 @@ def _resume_merge(args, ops_dir: Path, project_config: ProjectConfig,
         print(f"  cd {repo_path}")
         print(f"  git add . && git commit")
         print(f"  wf merge {ws.id}")
-        return 1
+        return EXIT_ERROR
 
     # Check if conflicts are resolved (merge completed)
     # Verify branch is now merged into main
@@ -893,13 +902,14 @@ def _resume_merge(args, ops_dir: Path, project_config: ProjectConfig,
 
     if project_config.default_branch not in result.stdout:
         # Not merged yet - reset status and try again
-        _update_status(workstream_dir, STATUS_ACTIVE)
+        transition(workstream_dir, WorkstreamState.ACTIVE, reason="retry after conflict resolution")
         print("Merge not complete. Retrying...")
         return cmd_merge(args, ops_dir, project_config)
 
     # Merge was completed - update status and archive
     print("Merge completed. Archiving...")
-    _update_status(workstream_dir, STATUS_MERGED)
+    transition(workstream_dir, WorkstreamState.MERGED, reason="merge after conflict resolution")
+    _write_merged_at(workstream_dir)
 
     if getattr(args, 'push', False):
         print("Pushing to remote...")
@@ -908,27 +918,25 @@ def _resume_merge(args, ops_dir: Path, project_config: ProjectConfig,
     return _archive_workstream(workstream_dir, workstreams_dir, ws, project_config, ops_dir)
 
 
-def _update_status(workstream_dir: Path, status: str):
-    """Update STATUS in meta.env."""
+def _write_merged_at(workstream_dir: Path) -> None:
+    """Add MERGED_AT timestamp to meta.env if not already present.
+
+    Safe to fail silently: MERGED_AT is metadata for observability only.
+    The FSM status (MERGED) is already persisted via transition() before this
+    is called, so the workstream state is correct. Missing timestamp just means
+    slightly less rich audit trail - not worth blocking the merge flow.
+    """
     meta_path = workstream_dir / "meta.env"
-    content = meta_path.read_text()
-    lines = content.splitlines()
+    try:
+        content = meta_path.read_text()
+        lines = content.splitlines()
 
-    status_updated = False
-    for i, line in enumerate(lines):
-        if line.startswith("STATUS="):
-            lines[i] = f'STATUS="{status}"'
-            status_updated = True
-            break
-
-    if not status_updated:
-        lines.append(f'STATUS="{status}"')
-
-    # Add MERGED_AT timestamp only if not already present
-    if status == STATUS_MERGED and not any(line.startswith("MERGED_AT=") for line in lines):
-        lines.append(f'MERGED_AT="{datetime.now().isoformat()}"')
-
-    meta_path.write_text("\n".join(lines) + "\n")
+        if not any(line.startswith("MERGED_AT=") for line in lines):
+            lines.append(f'MERGED_AT="{datetime.now().isoformat()}"')
+            meta_path.write_text("\n".join(lines) + "\n")
+    except OSError as e:
+        # Log but don't fail - see docstring for rationale
+        logger.warning(f"Failed to write MERGED_AT timestamp: {e}")
 
 
 def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
@@ -1007,4 +1015,4 @@ def _archive_workstream(workstream_dir: Path, workstreams_dir: Path,
     print(f"\nWorkstream '{ws.id}' merged and archived.")
     print(f"  Branch '{ws.branch}' preserved in git history")
 
-    return 0
+    return EXIT_SUCCESS

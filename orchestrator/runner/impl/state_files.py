@@ -41,26 +41,6 @@ def clear_codex_session_id(workstream_dir: Path) -> None:
         logger.warning(f"Failed to clear Codex session ID: {e}")
 
 
-def update_workstream_status(workstream_dir: Path, status: str) -> None:
-    """Update STATUS in meta.env."""
-    meta_path = workstream_dir / "meta.env"
-    try:
-        content = meta_path.read_text()
-        lines = content.splitlines()
-
-        for i, line in enumerate(lines):
-            if line.startswith("STATUS="):
-                lines[i] = f'STATUS="{status}"'
-                break
-        else:
-            # STATUS not found, append it
-            lines.append(f'STATUS="{status}"')
-
-        meta_path.write_text("\n".join(lines) + "\n")
-    except OSError as e:
-        logger.warning(f"Failed to update workstream status: {e}")
-
-
 def clear_pr_metadata(workstream_dir: Path) -> None:
     """Clear PR_NUMBER and PR_URL from meta.env.
 
@@ -88,28 +68,10 @@ def store_human_feedback(workstream_dir: Path, feedback: str, reset: bool = Fals
 def get_human_feedback(workstream_dir: Path) -> tuple[str | None, bool]:
     """Get stored human feedback and reset flag if any, and clear it.
 
-    Checks both:
-    - human_feedback.json (from previous run's human_review stage)
-    - human_approval.json with action="reject" (fresh rejection, consume immediately)
+    Reads from human_feedback.json (stored by previous run's human_review stage).
 
     Returns: (feedback: str|None, reset: bool)
     """
-    # First check for fresh rejection in human_approval.json
-    approval_file = workstream_dir / "human_approval.json"
-    if approval_file.exists():
-        try:
-            data = json.loads(approval_file.read_text())
-            if data.get("action") == "reject":
-                feedback = data.get("feedback", "")
-                reset = data.get("reset", False)
-                # Consume the rejection
-                approval_file.unlink()
-                update_workstream_status(workstream_dir, "active")
-                return feedback, reset
-        except (json.JSONDecodeError, IOError) as e:
-            logger.warning(f"Failed to read human approval from {approval_file}: {e}")
-
-    # Fall back to stored feedback from previous run
     feedback_file = workstream_dir / "human_feedback.json"
     if not feedback_file.exists():
         return None, False

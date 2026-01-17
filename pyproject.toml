@@ -9,4 +9,5 @@ dependencies = [
     "textual>=0.86.0",
     "prefect>=3.0.0",
     "pytest>=8.0.0",
+    "transitions>=0.9.3",
 ]
